@@ -1,6 +1,6 @@
-# counting_app
+# auditing_app
 
-Offline Stock Counting App
+Offline Stock Auditing App
 
 ## Getting Started
 
