@@ -1,0 +1,292 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
+import 'offline_storage.dart';
+import 'google_sheets_service.dart';
+
+class SyncResult {
+  final bool hasInternet;
+  final int syncedCount;
+  final String message;
+  final bool success;
+
+  SyncResult({
+    required this.hasInternet,
+    required this.syncedCount,
+    required this.message,
+    this.success = false,
+  });
+}
+
+class SyncService with ChangeNotifier {
+  final OfflineStorage offlineStorage;
+  final GoogleSheetsService googleSheets;
+  final Connectivity connectivity;
+
+  bool _isSyncing = false;
+  String _lastSyncTime = '';
+  int _lastSyncCount = 0;
+  bool _inventoryLoaded = false;
+  String? _lastError;
+
+  bool get isSyncing => _isSyncing;
+  String get lastSyncTime => _lastSyncTime;
+  int get lastSyncCount => _lastSyncCount;
+  bool get inventoryLoaded => _inventoryLoaded;
+  String? get lastError => _lastError;
+
+  SyncService({
+    required this.offlineStorage,
+    required this.googleSheets,
+  }) : connectivity = Connectivity() {
+    _initConnectivity();
+  }
+
+  void _initConnectivity() {
+    connectivity.onConnectivityChanged.listen((List<ConnectivityResult> results) {
+      notifyListeners();
+    });
+  }
+
+  Future<bool> checkConnectivity() async {
+    try {
+      final connectivityResult = await connectivity.checkConnectivity();
+      return connectivityResult.isNotEmpty &&
+          connectivityResult.any((result) => result != ConnectivityResult.none);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<SyncResult> syncAll() async {
+    if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
+
+    _isSyncing = true;
+    _lastError = null;
+    notifyListeners();
+
+    try {
+      final hasInternet = await checkConnectivity();
+      if (!hasInternet) return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+
+      // 1. Sync New Products
+      final newProducts = await offlineStorage.getPendingNewProducts();
+      if (newProducts.isNotEmpty) {
+        await googleSheets.syncNewProducts(newProducts);
+        final barcodes = newProducts.map((e) => e['Barcode'].toString()).toList();
+        await offlineStorage.markNewProductsAsSynced(barcodes);
+      }
+
+      // 2. Sync Counts
+      final pending = offlineStorage.pendingCounts;
+      if (pending.isEmpty) {
+        _lastSyncTime = _formatDateTime(DateTime.now());
+        notifyListeners();
+        return SyncResult(hasInternet: true, syncedCount: 0, message: 'Up to date', success: true);
+      }
+
+      final success = await googleSheets.syncStockCounts(pending);
+
+      if (success) {
+        final ids = pending
+            .where((count) => count['id'] != null)
+            .map((count) => count['id'].toString())
+            .toList();
+
+        await offlineStorage.markMultipleAsSynced(ids);
+
+        _lastSyncTime = _formatDateTime(DateTime.now());
+        _lastSyncCount = pending.length;
+        _lastError = null;
+        return SyncResult(hasInternet: true, syncedCount: pending.length, message: 'Synced ${pending.length} counts', success: true);
+      } else {
+        _lastError = 'Sync failed';
+        return SyncResult(hasInternet: true, syncedCount: 0, message: 'Sync failed', success: false);
+      }
+    } catch (e) {
+      _lastError = e.toString();
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
+    } finally {
+      _isSyncing = false;
+      notifyListeners();
+    }
+  }
+
+  Future<int> downloadExistingCounts() async {
+    if (_isSyncing) return 0;
+    _isSyncing = true;
+    notifyListeners();
+    try {
+      final hasInternet = await checkConnectivity();
+      if (!hasInternet) throw Exception('No internet');
+      final remoteCounts = await googleSheets.fetchStockCounts();
+      if (remoteCounts.isNotEmpty) {
+        await offlineStorage.saveRemoteStockCounts(remoteCounts);
+      }
+      return remoteCounts.length;
+    } catch (e) {
+      rethrow;
+    } finally {
+      _isSyncing = false;
+      notifyListeners();
+    }
+  }
+
+  // --- REFRESH MASTER DATA (UPDATED: FORCE MASTER COST) ---
+  Future<SyncResult> refreshMasterData() async {
+    if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
+
+    _isSyncing = true;
+    _lastError = null;
+    notifyListeners();
+
+    try {
+      final hasInternet = await checkConnectivity();
+      if (!hasInternet) return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+
+      print('Refreshing Master Data...');
+
+      // 1. Fetch RAW Store Inventory (Costs here are ignored)
+      var inventory = await googleSheets.fetchInventory();
+
+      final locations = await googleSheets.fetchLocations();
+      final audits = await googleSheets.fetchAudits();
+
+      // 2. Fetch LATEST COSTS from Master DB
+      print('Fetching Computed Costs...');
+      final masterCosts = await googleSheets.fetchComputedCosts();
+
+      // Indexing: "glenfiddich 18yr" -> 1800.57
+      final costMap = {
+        for (var c in masterCosts)
+          c['productName']?.toString().toLowerCase().trim() : c['avgCost']
+      };
+
+      // 3. FORCE UPDATE: Inject Master Costs into Store Inventory
+      final updatedInventory = inventory.map((item) {
+        final name = item['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
+
+        // Always create a copy to avoid mutating the original fixed list (if any)
+        final newItem = Map<String, dynamic>.from(item);
+
+        // Strict Override: If Master has a cost, use it. Else 0.0.
+        // We do NOT trust the 'Cost Price' coming from the inventory sheet.
+        newItem['Cost Price'] = costMap[name] ?? 0.0;
+
+        return newItem;
+      }).toList();
+
+      // 4. Fetch Master Catalog (Tier 2) - Passing the same cost map
+      print('Fetching Full Master Catalog...');
+      final masterCatalog = await _fetchAndMergeMasterDB(preFetchedCosts: costMap);
+
+      // 5. Save to Local Storage
+      await offlineStorage.clearInventory();
+      await offlineStorage.clearLocations();
+      await offlineStorage.clearAudits();
+
+      await offlineStorage.bulkSaveInventory(updatedInventory); // Save list with updated costs
+      await offlineStorage.bulkSaveLocations(locations);
+      await offlineStorage.saveMasterCatalog(masterCatalog);
+
+      for (final audit in audits) await offlineStorage.saveAudit(audit);
+
+      _inventoryLoaded = true;
+      return SyncResult(
+          hasInternet: true,
+          syncedCount: 0,
+          message: 'Synced ${updatedInventory.length} items. Costs updated from Master.',
+          success: true
+      );
+
+    } catch (e) {
+      _lastError = 'Refresh error: $e';
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
+    } finally {
+      _isSyncing = false;
+      notifyListeners();
+    }
+  }
+
+  // Helper to fetch and merge master tables
+  // Added optional parameter to reuse cost map if we already fetched it
+  Future<List<Map<String, dynamic>>> _fetchAndMergeMasterDB({Map<dynamic, dynamic>? preFetchedCosts}) async {
+    final products = await googleSheets.fetchMasterProducts();
+    final barcodes = await googleSheets.fetchMasterBarcodes();
+
+    // Use the passed costs, or fetch if not provided
+    var costMap = preFetchedCosts;
+    if (costMap == null) {
+      final costs = await googleSheets.fetchComputedCosts();
+      costMap = {
+        for (var c in costs)
+          c['productName']?.toString().toLowerCase().trim() : c['avgCost']
+      };
+    }
+
+    final productMap = { for (var p in products) p['bottleID']?.toString() : p };
+
+    List<Map<String, dynamic>> flatInventory = [];
+
+    for (var b in barcodes) {
+      final bottleID = b['bottleID']?.toString();
+      final barcode = b['Barcode']?.toString();
+      if (barcode == null || barcode.isEmpty) continue;
+
+      final productInfo = productMap[bottleID] ?? {};
+      final name = b['Product Name'] ?? productInfo['Product Name'] ?? 'Unknown';
+
+      // LOOKUP COST
+      final cost = costMap[name.toString().toLowerCase().trim()] ?? 0.0;
+
+      flatInventory.add({
+        'Barcode': barcode,
+        'Inventory Product Name': name,
+        'Main Category': productInfo['Category'] ?? b['Category'] ?? '',
+        'Category': productInfo['Category'] ?? b['Category'] ?? '',
+        'Single Unit Volume': b['Single Unit Volume'] ?? productInfo['Single Unit Volume'],
+        'UoM': b['UoM'] ?? productInfo['UoM'],
+        'Gradient': b['Gradient'] ?? productInfo['Gradient'],
+        'Intercept': b['Intercept'] ?? productInfo['Intercept'],
+        'Pack Size': b['Pack Size'] ?? 'Single',
+        'Cost Price': cost, // Ensure Master Catalog items also use the latest cost
+      });
+    }
+    return flatInventory;
+  }
+
+  Future<void> loadInventory() async { await refreshMasterData(); }
+
+  // Stats & Status
+  Future<Map<String, int>> getDatabaseStats() async {
+    try {
+      return await offlineStorage.getDatabaseStats();
+    } catch (e) {
+      return {'stockCounts': 0, 'inventoryItems': 0};
+    }
+  }
+
+  Future<bool> hasData() async {
+    final stats = await getDatabaseStats();
+    return stats['inventoryItems']! > 0 || stats['locations']! > 0;
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')} ${dateTime.day}/${dateTime.month}/${dateTime.year}';
+  }
+
+  Future<Map<String, dynamic>> getSyncStatus() async {
+    final stats = await getDatabaseStats();
+    final hasInternet = await checkConnectivity();
+    return {
+      'hasInternet': hasInternet,
+      'isSyncing': _isSyncing,
+      'lastSyncTime': _lastSyncTime,
+      'lastSyncCount': _lastSyncCount,
+      'pendingCount': stats['pendingSync'] ?? 0,
+      'totalCounts': stats['stockCounts'] ?? 0,
+      'inventoryLoaded': _inventoryLoaded,
+      'lastError': _lastError,
+      'inventoryCount': stats['inventoryItems'] ?? 0,
+    };
+  }
+}
