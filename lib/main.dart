@@ -1,58 +1,62 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:hive/hive.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter/foundation.dart';
 
 import 'services/offline_storage.dart';
 import 'services/google_sheets_service.dart';
 import 'services/sync_service.dart';
 import 'services/store_manager.dart';
+import 'services/logger_service.dart'; // Import Logger
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  final appDir = await getApplicationDocumentsDirectory();
-  Hive.init(appDir.path);
+  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+
+  await Hive.initFlutter();
+
+  // 1. Initialize Logger FIRST
+  final logger = LoggerService();
+  await logger.init();
+  logger.info("App Started");
 
   // Initialize Global Services
   final storeManager = StoreManager();
   await storeManager.init();
 
   final offlineStorage = OfflineStorage();
-  await offlineStorage.init();
+  // offlineStorage.init(); // Handled by Hive.initFlutter
 
   runApp(
     MultiProvider(
       providers: [
-        // 1. Store Manager (Global)
-        ChangeNotifierProvider.value(value: storeManager),
+        // 2. Add Logger Provider
+        Provider<LoggerService>.value(value: logger),
 
-        // 2. Offline Storage (Global)
+        ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: offlineStorage),
 
-        // 3. Sync Service (Dependent on StoreManager)
-        // This ProxyProvider automatically updates SyncService whenever StoreManager changes (e.g. switching stores)
         ChangeNotifierProxyProvider<StoreManager, SyncService>(
           create: (context) => SyncService(
             offlineStorage: offlineStorage,
-            googleSheets: GoogleSheetsService(scriptUrl: ''), // Empty initially
+            googleSheets: GoogleSheetsService(scriptUrl: ''),
+            logger: logger, // <--- PASS LOGGER HERE
           ),
           update: (context, storeMgr, previousSyncService) {
             final url = storeMgr.activeStore?['url'] ?? '';
-
-            // If we have a previous service and the URL hasn't changed, reuse it
             if (previousSyncService != null && previousSyncService.googleSheets.scriptUrl == url) {
               return previousSyncService;
             }
-
-            // Otherwise create a new SyncService with the correct URL
             return SyncService(
               offlineStorage: offlineStorage,
               googleSheets: GoogleSheetsService(scriptUrl: url),
+              logger: logger, // <--- AND HERE
             );
           },
         ),
@@ -80,8 +84,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// This widget handles the Logic of "Which screen to show?"
-// and "Opening the correct database file"
 class RootSwitcher extends StatefulWidget {
   const RootSwitcher({super.key});
 
@@ -93,9 +95,7 @@ class _RootSwitcherState extends State<RootSwitcher> {
   @override
   void initState() {
     super.initState();
-    // Schedule the initial check
     WidgetsBinding.instance.addPostFrameCallback((_) => _handleStoreChange());
-    // Listen for future changes
     context.read<StoreManager>().addListener(_handleStoreChange);
   }
 
@@ -105,7 +105,6 @@ class _RootSwitcherState extends State<RootSwitcher> {
     super.dispose();
   }
 
-  // Checks if the OfflineStorage matches the Active Store
   void _handleStoreChange() {
     if (!mounted) return;
     final storeManager = context.read<StoreManager>();
@@ -113,10 +112,7 @@ class _RootSwitcherState extends State<RootSwitcher> {
 
     if (storeManager.activeStore != null) {
       final activeId = storeManager.activeStore!['id'];
-
-      // If storage is not ready OR we are pointing to the wrong store ID
       if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
-        // This triggers the async switch (which sets isReady=false, notifies, then true)
         offlineStorage.switchStore(activeId);
       }
     }
@@ -124,22 +120,17 @@ class _RootSwitcherState extends State<RootSwitcher> {
 
   @override
   Widget build(BuildContext context) {
-    // Watch both providers to trigger rebuilds on status change
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
 
-    // 1. No Store Selected -> Setup
     if (storeManager.activeStore == null) {
       return const SetupStoreScreen();
     }
 
-    // 2. Storage is switching/loading -> Loading Indicator
-    // offlineStorage.isReady becomes false immediately when switchStore is called
     if (!offlineStorage.isReady) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // 3. Ready -> Home
     return const HomeScreen();
   }
 }

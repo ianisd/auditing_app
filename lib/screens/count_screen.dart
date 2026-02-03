@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/store_manager.dart';
+import '../services/logger_service.dart'; // Import Logger
 import '../widgets/barcode_scanner.dart';
 import 'add_product_screen.dart';
 import 'package:intl/intl.dart';
@@ -26,8 +27,6 @@ class _CountScreenState extends State<CountScreen> {
   final _countController = TextEditingController(text: '0');
   final _weightController = TextEditingController(text: '0');
 
-  // --- 1. REFINED LISTS ---
-
   // Drinks (Use "Case 1" for single units)
   final List<String> _drinkPackSizes = [
     'Open Bottle',
@@ -44,7 +43,7 @@ class _CountScreenState extends State<CountScreen> {
     'Case 1', 'Case 6', 'Case 12', 'Case 24'
   ];
 
-  // Tobacco (Only category where "Loose" is used for singles)
+  // Tobacco
   final List<String> _tobaccoPackSizes = [
     'Loose',    // Single Cigarette/Cigar
     'Pack 10',
@@ -162,7 +161,6 @@ class _CountScreenState extends State<CountScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _recalculateTotals());
   }
 
-  // --- 2. CATEGORY CHECK HELPER ---
   bool _isFoodCategory(Map<String, dynamic>? product) {
     if (product == null) return false;
     final cat = product['Category']?.toString().toLowerCase() ?? '';
@@ -184,7 +182,6 @@ class _CountScreenState extends State<CountScreen> {
     return ['cigars', 'cigarettes', 'tobacco'].contains(cat) || ['cigars', 'cigarettes', 'tobacco'].contains(mainCat);
   }
 
-  // --- 3. DYNAMIC PACK SIZE LOGIC ---
   List<String> _getFilteredPackSizes() {
     if (_selectedProduct == null) return _drinkPackSizes;
 
@@ -194,7 +191,6 @@ class _CountScreenState extends State<CountScreen> {
     if (_isTobaccoCategory(_selectedProduct)) {
       return _tobaccoPackSizes;
     }
-    // Default for drinks
     return _drinkPackSizes;
   }
 
@@ -341,12 +337,10 @@ class _CountScreenState extends State<CountScreen> {
         case "Portion": multiplier = 1; break;
         case "Loose": multiplier = 1; break;
 
-      // Tobacco
         case "Pack 10": multiplier = 10; break;
         case "Pack 20": multiplier = 20; break;
         case "Carton": multiplier = 200; break;
 
-      // Drinks / General
         case "Case 1": multiplier = 1; break;
         case "Case 2": multiplier = 2; break;
         case "Case 4": multiplier = 4; break;
@@ -452,20 +446,26 @@ class _CountScreenState extends State<CountScreen> {
     };
 
     try {
+      // --- LOGGING ---
       if (_isEditMode) {
         await storage.updateStockCount(countData);
+        context.read<LoggerService>().info('Updated: ${_productController.text} ($id)');
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated'), backgroundColor: Colors.blue));
           Navigator.pop(context);
         }
       } else {
         await storage.saveStockCount(countData);
+        context.read<LoggerService>().info('Saved: ${_productController.text} ($id)');
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles Bottles'), backgroundColor: Colors.green));
           _clearForm();
         }
       }
     } catch (e) {
+      context.read<LoggerService>().error('Save Failed', e);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
     }
   }
@@ -505,7 +505,7 @@ class _CountScreenState extends State<CountScreen> {
       appBar: AppBar(
         title: Text(_isEditMode ? 'Edit Count' : 'New Count'),
         actions: [
-          // --- MOVED SAVE BUTTON HERE ---
+          // SAVE BUTTON IN APPBAR
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: IconButton.filled(

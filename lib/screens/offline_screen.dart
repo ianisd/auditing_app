@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
+import 'debug_log_screen.dart'; // Import the new screen
 
 class OfflineScreen extends StatefulWidget {
   const OfflineScreen({super.key});
@@ -86,6 +87,13 @@ class _OfflineScreenState extends State<OfflineScreen> {
               side: const BorderSide(color: Colors.red),
               padding: const EdgeInsets.all(16),
             ),
+          ),
+          const SizedBox(height: 20),
+          // --- NEW BUTTON FOR LOGS ---
+          OutlinedButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugLogScreen())),
+            icon: const Icon(Icons.bug_report, color: Colors.grey),
+            label: const Text('VIEW DEBUG LOGS', style: TextStyle(color: Colors.grey)),
           ),
         ],
       ),

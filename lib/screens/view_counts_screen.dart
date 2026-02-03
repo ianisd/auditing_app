@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/sync_service.dart'; // Import SyncService
+import '../services/sync_service.dart';
 import 'count_screen.dart';
+import 'package:intl/intl.dart';
 
 class ViewCountsScreen extends StatefulWidget {
   const ViewCountsScreen({super.key});
@@ -17,7 +18,9 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
 
-  // Structure: Date -> Location -> List of Items
+  // New Filter State
+  String _filterOption = 'All'; // 'All', 'Today'
+
   Map<String, Map<String, List<Map<String, dynamic>>>> _groupedCounts = {};
 
   @override
@@ -40,13 +43,41 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
 
     setState(() {
       _allCounts = counts;
-      _filteredCounts = counts;
-      _groupCounts();
+      _applyFilters();
       _isLoading = false;
     });
   }
 
-  // --- NEW: DOWNLOAD FUNCTION ---
+  // --- NEW: APPLY FILTERS ---
+  void _applyFilters() {
+    final query = _searchController.text.toLowerCase();
+    final todayStr = DateTime.now().toIso8601String().split('T')[0];
+
+    setState(() {
+      _filteredCounts = _allCounts.where((c) {
+        // 1. Search Filter
+        final prod = c['productName']?.toString().toLowerCase() ?? '';
+        final loc = c['location']?.toString().toLowerCase() ?? '';
+        final matchesSearch = query.isEmpty || prod.contains(query) || loc.contains(query);
+
+        // 2. Date Filter
+        final date = c['date']?.toString() ?? '';
+        bool matchesDate = true;
+        if (_filterOption == 'Today') {
+          matchesDate = date == todayStr;
+        }
+
+        return matchesSearch && matchesDate;
+      }).toList();
+
+      _groupCounts();
+    });
+  }
+
+  void _onSearchChanged() {
+    _applyFilters();
+  }
+
   Future<void> _downloadCounts() async {
     setState(() => _isLoading = true);
     try {
@@ -55,48 +86,22 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Downloaded $count counts from Cloud'),
-            backgroundColor: Colors.green,
-          ),
+          SnackBar(content: Text('Downloaded $count counts'), backgroundColor: Colors.green),
         );
-        // Reload from local storage to display them
         await _loadCounts();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Download failed: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
         );
       }
       setState(() => _isLoading = false);
     }
   }
 
-  void _onSearchChanged() {
-    final query = _searchController.text.toLowerCase();
-    setState(() {
-      if (query.isEmpty) {
-        _filteredCounts = _allCounts;
-      } else {
-        _filteredCounts = _allCounts.where((c) {
-          final prod = c['productName']?.toString().toLowerCase() ?? '';
-          final loc = c['location']?.toString().toLowerCase() ?? '';
-          final cat = c['category']?.toString().toLowerCase() ?? '';
-          return prod.contains(query) || loc.contains(query) || cat.contains(query);
-        }).toList();
-      }
-      _groupCounts();
-    });
-  }
-
   void _groupCounts() {
     _groupedCounts = {};
-
-    // Sort by Date Descending
     _filteredCounts.sort((a, b) {
       final dateA = a['date'] ?? '';
       final dateB = b['date'] ?? '';
@@ -133,7 +138,21 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     if (confirm) {
       await context.read<OfflineStorage>().deleteStockCount(id);
       _loadCounts();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Marked for deletion. Sync to apply.')));
+    }
+  }
+
+  // --- NEW: BACKDATING NAVIGATION ---
+  void _addCountToDate(String dateStr) {
+    try {
+      final date = DateTime.parse(dateStr);
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CountScreen(initialDate: date),
+        ),
+      ).then((_) => _loadCounts());
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Date Format')));
     }
   }
 
@@ -152,7 +171,6 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('View Counts'),
-        // --- ADDED DOWNLOAD BUTTON HERE ---
         actions: [
           IconButton(
             icon: const Icon(Icons.cloud_download),
@@ -161,40 +179,59 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Search product, location...',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+          preferredSize: const Size.fromHeight(110), // Taller for filters
+          child: Column(
+            children: [
+              // Search Bar
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Search product, location...',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(height: 8),
+              // Filter Chips
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    FilterChip(
+                      label: const Text('All Dates'),
+                      selected: _filterOption == 'All',
+                      onSelected: (val) { setState(() { _filterOption = 'All'; _applyFilters(); }); },
+                    ),
+                    const SizedBox(width: 8),
+                    FilterChip(
+                      label: const Text('Today'),
+                      selected: _filterOption == 'Today',
+                      onSelected: (val) { setState(() { _filterOption = 'Today'; _applyFilters(); }); },
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _filteredCounts.isEmpty
-      // --- ADDED EMPTY STATE BUTTON HERE ---
           ? Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.folder_open, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
-            const Text('No counts found locally', style: TextStyle(fontSize: 16, color: Colors.grey)),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _downloadCounts,
-              icon: const Icon(Icons.cloud_download),
-              label: const Text('Download from Cloud'),
-            ),
+            const Text('No counts found', style: TextStyle(fontSize: 16, color: Colors.grey)),
           ],
         ),
       )
@@ -205,58 +242,98 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           final dateKey = _groupedCounts.keys.elementAt(dateIndex);
           final locationMap = _groupedCounts[dateKey]!;
 
-          // Level 1: DATE
+          // Determine Logic for Header Style
+          final todayStr = DateTime.now().toIso8601String().split('T')[0];
+          final isToday = dateKey == todayStr;
+          final headerColor = isToday ? Colors.green.shade100 : Colors.grey.shade200;
+          final headerIcon = isToday ? Icons.today : Icons.history;
+
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
-            color: Colors.grey[100],
+            color: Colors.white,
+            shape: RoundedRectangleBorder(
+              side: BorderSide(color: isToday ? Colors.green : Colors.grey.shade300),
+              borderRadius: BorderRadius.circular(8),
+            ),
             child: ExpansionTile(
               initiallyExpanded: dateIndex == 0,
-              title: Text(dateKey, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              leading: const Icon(Icons.calendar_today, color: Colors.blue),
+              collapsedBackgroundColor: headerColor,
+              backgroundColor: headerColor.withOpacity(0.3),
+              title: Row(
+                children: [
+                  Icon(headerIcon, color: isToday ? Colors.green[800] : Colors.grey[700]),
+                  const SizedBox(width: 8),
+                  Text(
+                    isToday ? 'Today ($dateKey)' : dateKey,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: isToday ? Colors.green[900] : Colors.black87
+                    ),
+                  ),
+                ],
+              ),
+              // --- NEW: Add Button on Header ---
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_outline, color: Colors.blue),
+                    tooltip: 'Add to this date',
+                    onPressed: () => _addCountToDate(dateKey),
+                  ),
+                  const Icon(Icons.expand_more),
+                ],
+              ),
               children: locationMap.keys.map((locationKey) {
                 final items = locationMap[locationKey]!;
-
-                // Level 2: LOCATION
-                return ExpansionTile(
-                  title: Text(locationKey, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  leading: const Icon(Icons.location_on, color: Colors.purple, size: 20),
-                  children: items.map((item) {
-
-                    // Level 3: ITEMS
-                    return Dismissible(
-                      key: Key(item['id']),
-                      background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
-                      direction: DismissDirection.endToStart,
-                      confirmDismiss: (dir) async {
-                        _deleteCount(item['id']);
-                        return false;
-                      },
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.only(left: 32, right: 16),
-                        title: Text(item['productName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w500)),
-                        subtitle: Text('${item['category']} • ${item['pack_size']}'),
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              (item['pack_size'] == 'Open Bottle')
-                                  ? '${item['weight']}g'
-                                  : '${item['count']} units',
-                              style: const TextStyle(fontWeight: FontWeight.bold),
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      color: Colors.white,
+                      child: Text(locationKey, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple)),
+                    ),
+                    ...items.map((item) {
+                      return Container(
+                        color: Colors.white,
+                        child: Dismissible(
+                          key: Key(item['id']),
+                          background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
+                          direction: DismissDirection.endToStart,
+                          confirmDismiss: (dir) async {
+                            _deleteCount(item['id']);
+                            return false;
+                          },
+                          child: ListTile(
+                            contentPadding: const EdgeInsets.only(left: 32, right: 16),
+                            title: Text(item['productName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w500)),
+                            subtitle: Text('${item['pack_size']}'),
+                            trailing: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  '${item['total_bottles']?.toStringAsFixed(2) ?? 0}',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                if (item['syncStatus'] == 'pending')
+                                  const Icon(Icons.cloud_upload, size: 12, color: Colors.orange)
+                                else if (item['syncStatus'] == 'deleted')
+                                  const Icon(Icons.delete_forever, size: 12, color: Colors.red)
+                                else
+                                  const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                              ],
                             ),
-                            if (item['syncStatus'] == 'pending')
-                              const Icon(Icons.cloud_upload, size: 12, color: Colors.orange)
-                            else if (item['syncStatus'] == 'deleted')
-                              const Icon(Icons.delete_forever, size: 12, color: Colors.red)
-                            else
-                              const Icon(Icons.check_circle, size: 12, color: Colors.green),
-                          ],
+                            onTap: () => _editCount(item),
+                          ),
                         ),
-                        onTap: () => _editCount(item),
-                      ),
-                    );
-                  }).toList(),
+                      );
+                    }),
+                    const Divider(height: 1),
+                  ],
                 );
               }).toList(),
             ),

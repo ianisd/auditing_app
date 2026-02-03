@@ -2,6 +2,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'offline_storage.dart';
 import 'google_sheets_service.dart';
+import 'logger_service.dart'; // Import Logger
 
 class SyncResult {
   final bool hasInternet;
@@ -21,6 +22,7 @@ class SyncService with ChangeNotifier {
   final OfflineStorage offlineStorage;
   final GoogleSheetsService googleSheets;
   final Connectivity connectivity;
+  final LoggerService? logger; // Logger field
 
   bool _isSyncing = false;
   String _lastSyncTime = '';
@@ -37,6 +39,7 @@ class SyncService with ChangeNotifier {
   SyncService({
     required this.offlineStorage,
     required this.googleSheets,
+    this.logger, // Constructor
   }) : connectivity = Connectivity() {
     _initConnectivity();
   }
@@ -57,20 +60,26 @@ class SyncService with ChangeNotifier {
     }
   }
 
+  // --- 1. SYNC ALL (UPLOAD) ---
   Future<SyncResult> syncAll() async {
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
+    logger?.info('Sync Started: Checking for pending uploads...');
 
     try {
       final hasInternet = await checkConnectivity();
-      if (!hasInternet) return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+      if (!hasInternet) {
+        logger?.info('Sync Aborted: No Internet Connection');
+        return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+      }
 
       // 1. Sync New Products
       final newProducts = await offlineStorage.getPendingNewProducts();
       if (newProducts.isNotEmpty) {
+        logger?.info('Uploading ${newProducts.length} new products...');
         await googleSheets.syncNewProducts(newProducts);
         final barcodes = newProducts.map((e) => e['Barcode'].toString()).toList();
         await offlineStorage.markNewProductsAsSynced(barcodes);
@@ -81,9 +90,11 @@ class SyncService with ChangeNotifier {
       if (pending.isEmpty) {
         _lastSyncTime = _formatDateTime(DateTime.now());
         notifyListeners();
+        logger?.info('Sync Complete: Nothing to upload');
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Up to date', success: true);
       }
 
+      logger?.info('Uploading ${pending.length} counts...');
       final success = await googleSheets.syncStockCounts(pending);
 
       if (success) {
@@ -97,13 +108,17 @@ class SyncService with ChangeNotifier {
         _lastSyncTime = _formatDateTime(DateTime.now());
         _lastSyncCount = pending.length;
         _lastError = null;
+
+        logger?.info('Sync Success: Uploaded ${pending.length} counts');
         return SyncResult(hasInternet: true, syncedCount: pending.length, message: 'Synced ${pending.length} counts', success: true);
       } else {
         _lastError = 'Sync failed';
+        logger?.error('Sync Failed: Server returned failure status');
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Sync failed', success: false);
       }
     } catch (e) {
       _lastError = e.toString();
+      logger?.error('Sync Exception', e);
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
     } finally {
       _isSyncing = false;
@@ -118,12 +133,16 @@ class SyncService with ChangeNotifier {
     try {
       final hasInternet = await checkConnectivity();
       if (!hasInternet) throw Exception('No internet');
+
+      logger?.info('Downloading existing counts from server...');
       final remoteCounts = await googleSheets.fetchStockCounts();
+
       if (remoteCounts.isNotEmpty) {
         await offlineStorage.saveRemoteStockCounts(remoteCounts);
       }
       return remoteCounts.length;
     } catch (e) {
+      logger?.error('Download Counts Failed', e);
       rethrow;
     } finally {
       _isSyncing = false;
@@ -131,23 +150,26 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  // --- REFRESH MASTER DATA (UPDATED: FORCE MASTER COST) ---
+  // --- 2. REFRESH MASTER DATA (DOWNLOAD) ---
   Future<SyncResult> refreshMasterData() async {
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
+    logger?.info('Master Data Refresh Started...');
 
     try {
       final hasInternet = await checkConnectivity();
-      if (!hasInternet) return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+      if (!hasInternet) {
+        logger?.info('Refresh Aborted: No Internet');
+        return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+      }
 
       print('Refreshing Master Data...');
 
-      // 1. Fetch RAW Store Inventory (Costs here are ignored)
+      // 1. Fetch RAW Store Inventory
       var inventory = await googleSheets.fetchInventory();
-
       final locations = await googleSheets.fetchLocations();
       final audits = await googleSheets.fetchAudits();
 
@@ -164,14 +186,10 @@ class SyncService with ChangeNotifier {
       // 3. FORCE UPDATE: Inject Master Costs into Store Inventory
       final updatedInventory = inventory.map((item) {
         final name = item['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
-
-        // Always create a copy to avoid mutating the original fixed list (if any)
         final newItem = Map<String, dynamic>.from(item);
 
         // Strict Override: If Master has a cost, use it. Else 0.0.
-        // We do NOT trust the 'Cost Price' coming from the inventory sheet.
         newItem['Cost Price'] = costMap[name] ?? 0.0;
-
         return newItem;
       }).toList();
 
@@ -184,13 +202,15 @@ class SyncService with ChangeNotifier {
       await offlineStorage.clearLocations();
       await offlineStorage.clearAudits();
 
-      await offlineStorage.bulkSaveInventory(updatedInventory); // Save list with updated costs
+      await offlineStorage.bulkSaveInventory(updatedInventory);
       await offlineStorage.bulkSaveLocations(locations);
       await offlineStorage.saveMasterCatalog(masterCatalog);
 
       for (final audit in audits) await offlineStorage.saveAudit(audit);
 
       _inventoryLoaded = true;
+      logger?.info('Master Refresh Success: ${updatedInventory.length} store items loaded');
+
       return SyncResult(
           hasInternet: true,
           syncedCount: 0,
@@ -200,6 +220,7 @@ class SyncService with ChangeNotifier {
 
     } catch (e) {
       _lastError = 'Refresh error: $e';
+      logger?.error('Master Refresh Exception', e);
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
     } finally {
       _isSyncing = false;
@@ -208,7 +229,6 @@ class SyncService with ChangeNotifier {
   }
 
   // Helper to fetch and merge master tables
-  // Added optional parameter to reuse cost map if we already fetched it
   Future<List<Map<String, dynamic>>> _fetchAndMergeMasterDB({Map<dynamic, dynamic>? preFetchedCosts}) async {
     final products = await googleSheets.fetchMasterProducts();
     final barcodes = await googleSheets.fetchMasterBarcodes();
@@ -248,7 +268,7 @@ class SyncService with ChangeNotifier {
         'Gradient': b['Gradient'] ?? productInfo['Gradient'],
         'Intercept': b['Intercept'] ?? productInfo['Intercept'],
         'Pack Size': b['Pack Size'] ?? 'Single',
-        'Cost Price': cost, // Ensure Master Catalog items also use the latest cost
+        'Cost Price': cost,
       });
     }
     return flatInventory;
