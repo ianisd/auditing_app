@@ -107,6 +107,9 @@ class GoogleSheetsService {
   // --- ADDED: Fetch Computed Costs (Latest Average Logic) ---
   Future<List<Map<String, dynamic>>> fetchComputedCosts() async => _fetchTable('MasterCostsComputed');
 
+  Future<List<Map<String, dynamic>>> fetchPurchases() async => _fetchTable('Purchases');
+  Future<List<Map<String, dynamic>>> fetchSales() async => _fetchTable('ItemSales');
+
   // Generic Fetch Helper
   Future<List<Map<String, dynamic>>> _fetchTable(String tableName) async {
     try {

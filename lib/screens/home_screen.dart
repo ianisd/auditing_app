@@ -3,13 +3,14 @@ import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
 import '../widgets/sync_status.dart';
-import '../widgets/store_drawer.dart'; // IMPORT THE NEW DRAWER
+import '../widgets/store_drawer.dart';
 import 'count_screen.dart';
 import 'view_counts_screen.dart';
 import 'sync_screen.dart';
 import 'locations_screen.dart';
 import 'inventory_screen.dart';
 import 'offline_screen.dart';
+import 'variance_report_screen.dart'; // --- NEW IMPORT ---
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -17,10 +18,7 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // --- ADD THIS LINE ---
       drawer: const StoreDrawer(),
-      // --------------------
-
       appBar: AppBar(
         title: const Text('Stock Counter'),
         actions: [
@@ -119,6 +117,21 @@ class HomeScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    // --- NEW VARIANCE REPORT CARD ---
+                    _buildFeatureCard(
+                      icon: Icons.analytics,
+                      title: 'Variance Report',
+                      subtitle: 'Compare counts vs sales & purchases',
+                      color: Colors.purple,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const VarianceReportScreen(),
+                        ),
+                      ),
+                    ),
+                    // -------------------------------
+                    const SizedBox(height: 16),
                     _buildFeatureCard(
                       icon: Icons.inventory_2_outlined,
                       title: 'Inventory',
@@ -136,7 +149,7 @@ class HomeScreen extends StatelessWidget {
                       icon: Icons.location_on,
                       title: 'Locations',
                       subtitle: 'View and manage locations',
-                      color: Colors.purple,
+                      color: Colors.teal,
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -217,7 +230,7 @@ class HomeScreen extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.1),
+                  color: color.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: color, size: 28),

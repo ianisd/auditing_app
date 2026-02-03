@@ -7,6 +7,8 @@ class OfflineStorage with ChangeNotifier {
   Box? _locations;
   Box? _audits;
   Box? _masterCatalog;
+  Box? _purchases;
+  Box? _sales;
 
   bool _isReady = false;
   String? _currentStoreId;
@@ -32,6 +34,8 @@ class OfflineStorage with ChangeNotifier {
     _locations = await Hive.openBox('store_${storeId}_locations');
     _audits = await Hive.openBox('store_${storeId}_audits');
     _masterCatalog = await Hive.openBox('store_${storeId}_master_catalog');
+    _purchases = await Hive.openBox('store_${storeId}_purchases');
+    _sales = await Hive.openBox('store_${storeId}_sales');
 
     _currentStoreId = storeId;
     _isReady = true;
@@ -45,6 +49,8 @@ class OfflineStorage with ChangeNotifier {
     if (_locations != null && _locations!.isOpen) await _locations!.close();
     if (_audits != null && _audits!.isOpen) await _audits!.close();
     if (_masterCatalog != null && _masterCatalog!.isOpen) await _masterCatalog!.close();
+    if (_purchases != null && _purchases!.isOpen) await _purchases!.close();
+    if (_sales != null && _sales!.isOpen) await _sales!.close();
   }
 
   Map<String, dynamic> _safeCast(dynamic item) {
@@ -336,7 +342,29 @@ class OfflineStorage with ChangeNotifier {
     final audits = _audits!.values.map((e) => _safeCast(e)).toList();
     return audits.firstWhere((a) => a['Current Audit'] == true || a['currentAudit'] == true, orElse: () => audits.isNotEmpty ? audits.first : {});
   }
+// --- NEW: PURCHASES ---
+  Future<void> savePurchases(List<dynamic> items) async {
+    if (!_isReady) return;
+    await _purchases!.clear();
+    await _purchases!.addAll(items.map((e) => _safeCast(e)));
+  }
 
+  Future<List<Map<String, dynamic>>> getPurchases() async {
+    if (!_isReady) return [];
+    return _purchases!.values.map((e) => _safeCast(e)).toList();
+  }
+
+  // --- NEW: SALES ---
+  Future<void> saveSales(List<dynamic> items) async {
+    if (!_isReady) return;
+    await _sales!.clear();
+    await _sales!.addAll(items.map((e) => _safeCast(e)));
+  }
+
+  Future<List<Map<String, dynamic>>> getSales() async {
+    if (!_isReady) return [];
+    return _sales!.values.map((e) => _safeCast(e)).toList();
+  }
   // --- MAINTENANCE ---
   Future<void> clearAllStockCounts() async { if (_isReady) { await _counts!.clear(); _updatePendingCounts(); notifyListeners(); } }
   Future<void> clearInventory() async { if (_isReady) { await _inventory!.clear(); notifyListeners(); } }
