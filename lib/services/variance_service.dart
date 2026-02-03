@@ -8,9 +8,8 @@ class VarianceItem {
   final double currentCount;
   final double costPrice;
 
-  // CHANGED: Now holds full objects, not just strings
-  final List<Map<String, dynamic>> countEntries;
-  // ADDED: Holds the master inventory details (needed to Add New Count)
+  // CHANGED: Holds ALL counts in the date range, not just start/end
+  final List<Map<String, dynamic>> allEntries;
   final Map<String, dynamic>? inventoryItem;
 
   VarianceItem({
@@ -20,7 +19,7 @@ class VarianceItem {
     required this.sales,
     required this.currentCount,
     required this.costPrice,
-    this.countEntries = const [],
+    this.allEntries = const [],
     this.inventoryItem,
   });
 
@@ -48,12 +47,11 @@ class VarianceService {
     Map<String, double> prodSales = {};
     Map<String, double> prodCosts = {};
 
-    // CHANGED: Store list of actual count objects
-    Map<String, List<Map<String, dynamic>>> prodEntries = {};
-    // CHANGED: Store inventory reference
+    // CHANGED: Map to hold list of ALL relevant counts
+    Map<String, List<Map<String, dynamic>>> prodHistory = {};
     Map<String, Map<String, dynamic>> inventoryRef = {};
 
-    // 2. Build Inventory Reference (for Add Button)
+    // 2. Build Inventory Reference
     for (var item in inventory) {
       final name = _normalize(item['Inventory Product Name']);
       inventoryRef[name] = item;
@@ -62,42 +60,56 @@ class VarianceService {
       prodCosts[name] = cost;
     }
 
-    // 3. Process Stock Counts
+    // 3. Process Stock Counts (Trend Logic)
+    final fromDt = DateTime.parse(dateFromStr);
+    final toDt = DateTime.parse(dateToStr);
+
     for (var row in stocks) {
       final name = _normalize(row['productName']);
       final rawDate = row['date'].toString();
-      final date = rawDate.contains('T') ? rawDate.split('T')[0] : rawDate;
+      final dateStr = rawDate.contains('T') ? rawDate.split('T')[0] : rawDate;
+
+      DateTime? rowDate;
+      try { rowDate = DateTime.parse(dateStr); } catch (e) { continue; }
 
       final qty = double.tryParse(row['total_bottles']?.toString() ?? '0') ?? 0.0;
 
-      if (date == dateFromStr) {
-        prevCounts[name] = (prevCounts[name] ?? 0) + qty;
-      } else if (date == dateToStr) {
-        currCounts[name] = (currCounts[name] ?? 0) + qty;
+      // Filter: Only include counts within the range
+      // We use isBefore/isAfter with loose equality logic or just CompareTo
+      // Simple string compare for YYYY-MM-DD works well too
+      bool inRange = (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0);
 
-        // Store the full row for editing later
-        if (!prodEntries.containsKey(name)) prodEntries[name] = [];
-        prodEntries[name]!.add(row);
+      if (inRange) {
+        if (!prodHistory.containsKey(name)) prodHistory[name] = [];
+        prodHistory[name]!.add(row);
+      }
+
+      // Calculation Logic (Strict Boundaries)
+      if (dateStr == dateFromStr) {
+        prevCounts[name] = (prevCounts[name] ?? 0) + qty;
+      } else if (dateStr == dateToStr) {
+        currCounts[name] = (currCounts[name] ?? 0) + qty;
       }
     }
 
     // 4. Process Purchases
-    final fromDt = DateTime.parse(dateFromStr);
-    final toDt = DateTime.parse(dateToStr);
-
     for (var row in purchases) {
       final name = _normalize(row['Purchased Product Name']);
+      String dateRaw = row['Inv. Date of Purchase'] ?? ''; // CSV Column
 
-      String dateRaw = row['Inv. Date of Purchase'] ?? '';
       DateTime? invDate;
       try {
         if (dateRaw.contains('/')) {
+          // Handle DD/MM/YYYY
           invDate = DateFormat('dd/MM/yyyy').parse(dateRaw);
         } else {
           invDate = DateTime.tryParse(dateRaw);
         }
       } catch (e) { continue; }
 
+      // Logic: Purchase > Start Date AND <= End Date
+      // We don't count purchases made ON the start date (as they are part of that stock count)
+      // We DO count purchases made ON the end date (as they should be in stock)
       if (invDate != null && invDate.isAfter(fromDt) && !invDate.isAfter(toDt)) {
         final qty = double.tryParse(row['Total Stock In Bottles']?.toString() ?? '0') ?? 0.0;
         prodPurchases[name] = (prodPurchases[name] ?? 0) + qty;
@@ -107,6 +119,7 @@ class VarianceService {
     // 5. Process Sales
     for (var row in sales) {
       final name = _normalize(row['Product']);
+      // Assuming 'Current Audit Date' in CSV matches the 'End Date' of the period
       final auditDateRaw = row['Current Audit Date']?.toString() ?? '';
 
       String csvDate = '';
@@ -117,6 +130,7 @@ class VarianceService {
         csvDate = auditDateRaw;
       }
 
+      // If the sale report date matches our End Date, we include it
       if (csvDate == dateToStr) {
         final qty = double.tryParse(row['Total Qty Used']?.toString() ?? '0') ?? 0.0;
         prodSales[name] = (prodSales[name] ?? 0) + qty;
@@ -139,8 +153,8 @@ class VarianceService {
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
         costPrice: prodCosts[name] ?? 0,
-        countEntries: prodEntries[name] ?? [],
-        inventoryItem: inventoryRef[name], // Pass the inventory object
+        allEntries: prodHistory[name] ?? [],
+        inventoryItem: inventoryRef[name],
       ));
     }
 
