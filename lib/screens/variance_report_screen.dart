@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
 import '../services/variance_service.dart';
 import 'count_screen.dart'; // Import CountScreen
+import 'package:flutter/foundation.dart';
 
 class VarianceReportScreen extends StatefulWidget {
   const VarianceReportScreen({super.key});
@@ -50,29 +51,36 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     if (_startDate == null || _endDate == null) return;
 
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(milliseconds: 100));
 
+    // Fetch data from Hive (Main Thread - Fast)
     final storage = context.read<OfflineStorage>();
     final stocks = await storage.getStockCounts();
     final purchases = await storage.getPurchases();
     final sales = await storage.getSales();
     final inventory = await storage.getAllInventory();
 
-    final service = VarianceService();
-    final results = service.calculateReport(
-      stocks: stocks,
-      purchases: purchases,
-      sales: sales,
-      inventory: inventory,
-      dateFromStr: _startDate!,
-      dateToStr: _endDate!,
-    );
-
-    if (mounted) {
-      setState(() {
-        _report = results;
-        _isLoading = false;
+    try {
+      // Run Math in Background (Isolate) - Prevents Black Screen
+      final results = await compute(_calculateVarianceIsolated, {
+        'stocks': stocks,
+        'purchases': purchases,
+        'sales': sales,
+        'inventory': inventory,
+        'dateFrom': _startDate,
+        'dateTo': _endDate,
       });
+
+      if (mounted) {
+        setState(() {
+          _report = results;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error generating report: $e')));
+      }
     }
   }
 
@@ -286,4 +294,16 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       ),
     );
   }
+}
+// Standalone function for background processing
+List<VarianceItem> _calculateVarianceIsolated(Map<String, dynamic> params) {
+  final service = VarianceService();
+  return service.calculateReport(
+    stocks: params['stocks'],
+    purchases: params['purchases'],
+    sales: params['sales'],
+    inventory: params['inventory'],
+    dateFromStr: params['dateFrom'],
+    dateToStr: params['dateTo'],
+  );
 }

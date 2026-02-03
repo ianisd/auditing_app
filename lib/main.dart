@@ -22,16 +22,33 @@ void main() async {
   await Hive.initFlutter();
 
   // 1. Initialize Logger FIRST
+  // 1. Init Logger First
   final logger = LoggerService();
   await logger.init();
-  logger.info("App Started");
+
+  // 2. Set up Global Error Catching
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    logger.error('UI Error', details.exception.toString());
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    logger.error('Platform Error', error.toString());
+    return true;
+  };
+
+  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+
+  await Hive.initFlutter();
+  logger.info("App Started (v1.2.0)"); // Log startup
 
   // Initialize Global Services
   final storeManager = StoreManager();
   await storeManager.init();
 
   final offlineStorage = OfflineStorage();
-  // offlineStorage.init(); // Handled by Hive.initFlutter
 
   runApp(
     MultiProvider(
