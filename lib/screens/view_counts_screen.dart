@@ -18,8 +18,9 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
 
-  // New Filter State
-  String _filterOption = 'All'; // 'All', 'Today'
+  // --- NEW FILTER STATE ---
+  String _filterMode = 'All'; // Options: 'All', 'Today', 'Custom'
+  Set<String> _customSelectedDates = {}; // Stores 'YYYY-MM-DD' strings
 
   Map<String, Map<String, List<Map<String, dynamic>>>> _groupedCounts = {};
 
@@ -48,23 +49,39 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     });
   }
 
-  // --- NEW: APPLY FILTERS ---
+  // --- 1. ROBUST FILTER LOGIC ---
   void _applyFilters() {
     final query = _searchController.text.toLowerCase();
-    final todayStr = DateTime.now().toIso8601String().split('T')[0];
+
+    // Normalize "Today" to YYYY-MM-DD
+    final now = DateTime.now();
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
 
     setState(() {
       _filteredCounts = _allCounts.where((c) {
-        // 1. Search Filter
+        // A. Search Text Filter
         final prod = c['productName']?.toString().toLowerCase() ?? '';
         final loc = c['location']?.toString().toLowerCase() ?? '';
         final matchesSearch = query.isEmpty || prod.contains(query) || loc.contains(query);
 
-        // 2. Date Filter
-        final date = c['date']?.toString() ?? '';
+        // B. Date Filter
+        final rawDate = c['date']?.toString() ?? '';
+        String itemDateKey = '';
+
+        // Parse raw ISO date to YYYY-MM-DD for comparison
+        try {
+          final dt = DateTime.parse(rawDate);
+          itemDateKey = DateFormat('yyyy-MM-dd').format(dt);
+        } catch (e) {
+          // Fallback if date is already simple string
+          itemDateKey = rawDate.split('T')[0];
+        }
+
         bool matchesDate = true;
-        if (_filterOption == 'Today') {
-          matchesDate = date == todayStr;
+        if (_filterMode == 'Today') {
+          matchesDate = itemDateKey == todayStr;
+        } else if (_filterMode == 'Custom') {
+          matchesDate = _customSelectedDates.contains(itemDateKey);
         }
 
         return matchesSearch && matchesDate;
@@ -76,6 +93,94 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
 
   void _onSearchChanged() {
     _applyFilters();
+  }
+
+  // --- 2. MULTI-SELECT DATE DIALOG ---
+  Future<void> _openDateSelector() async {
+    // 1. Extract all unique dates from the actual data
+    final Set<String> availableDates = {};
+    for (var c in _allCounts) {
+      final raw = c['date']?.toString() ?? '';
+      try {
+        final dt = DateTime.parse(raw);
+        availableDates.add(DateFormat('yyyy-MM-dd').format(dt));
+      } catch (e) { /* ignore bad dates */ }
+    }
+
+    // 2. Sort them (Newest first)
+    final sortedDates = availableDates.toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    if (sortedDates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No dates available to filter')));
+      return;
+    }
+
+    // 3. Show Dialog
+    await showDialog(
+      context: context,
+      builder: (context) {
+        // Local state for the dialog
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Select Dates'),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 300,
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: sortedDates.length,
+                  itemBuilder: (ctx, i) {
+                    final dateKey = sortedDates[i];
+                    final isSelected = _customSelectedDates.contains(dateKey);
+
+                    // Pretty format for display
+                    final displayDate = DateFormat('EEE, dd MMM yyyy').format(DateTime.parse(dateKey));
+
+                    return CheckboxListTile(
+                      title: Text(displayDate),
+                      value: isSelected,
+                      onChanged: (bool? value) {
+                        setDialogState(() {
+                          if (value == true) {
+                            _customSelectedDates.add(dateKey);
+                          } else {
+                            _customSelectedDates.remove(dateKey);
+                          }
+                        });
+                      },
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      // Clear all
+                      setDialogState(() {
+                        _customSelectedDates.clear();
+                      });
+                    },
+                    child: const Text('Clear')
+                ),
+                FilledButton(
+                  onPressed: () {
+                    setState(() {
+                      // If user selected dates, switch mode to Custom. If empty, go back to All.
+                      _filterMode = _customSelectedDates.isNotEmpty ? 'Custom' : 'All';
+                      _applyFilters();
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _downloadCounts() async {
@@ -141,7 +246,6 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     }
   }
 
-  // --- NEW: BACKDATING NAVIGATION ---
   void _addCountToDate(String dateStr) {
     try {
       final date = DateTime.parse(dateStr);
@@ -179,10 +283,9 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(110), // Taller for filters
+          preferredSize: const Size.fromHeight(110),
           child: Column(
             children: [
-              // Search Bar
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: TextField(
@@ -198,7 +301,8 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              // Filter Chips
+
+              // --- 3. UPDATED FILTER CHIPS ---
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -206,14 +310,38 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                   children: [
                     FilterChip(
                       label: const Text('All Dates'),
-                      selected: _filterOption == 'All',
-                      onSelected: (val) { setState(() { _filterOption = 'All'; _applyFilters(); }); },
+                      selected: _filterMode == 'All',
+                      onSelected: (val) {
+                        setState(() {
+                          _filterMode = 'All';
+                          _customSelectedDates.clear();
+                          _applyFilters();
+                        });
+                      },
                     ),
                     const SizedBox(width: 8),
                     FilterChip(
                       label: const Text('Today'),
-                      selected: _filterOption == 'Today',
-                      onSelected: (val) { setState(() { _filterOption = 'Today'; _applyFilters(); }); },
+                      selected: _filterMode == 'Today',
+                      onSelected: (val) {
+                        setState(() {
+                          _filterMode = 'Today';
+                          _customSelectedDates.clear();
+                          _applyFilters();
+                        });
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    // Multi-Select Chip
+                    FilterChip(
+                      label: Text(_filterMode == 'Custom'
+                          ? '${_customSelectedDates.length} Selected'
+                          : 'Select Dates...'),
+                      selected: _filterMode == 'Custom',
+                      onSelected: (val) {
+                        _openDateSelector(); // Open Dialog
+                      },
+                      avatar: _filterMode == 'Custom' ? const Icon(Icons.check_circle, size: 18) : const Icon(Icons.calendar_month, size: 18),
                     ),
                   ],
                 ),
@@ -242,9 +370,19 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           final dateKey = _groupedCounts.keys.elementAt(dateIndex);
           final locationMap = _groupedCounts[dateKey]!;
 
-          // Determine Logic for Header Style
-          final todayStr = DateTime.now().toIso8601String().split('T')[0];
-          final isToday = dateKey == todayStr;
+          // Parse date for display
+          String displayDate = dateKey;
+          bool isToday = false;
+          try {
+            final dt = DateTime.parse(dateKey);
+            displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
+
+            final now = DateTime.now();
+            final today = DateTime(now.year, now.month, now.day);
+            final checkDate = DateTime(dt.year, dt.month, dt.day);
+            isToday = checkDate.isAtSameMomentAs(today);
+          } catch (e) {}
+
           final headerColor = isToday ? Colors.green.shade100 : Colors.grey.shade200;
           final headerIcon = isToday ? Icons.today : Icons.history;
 
@@ -264,7 +402,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                   Icon(headerIcon, color: isToday ? Colors.green[800] : Colors.grey[700]),
                   const SizedBox(width: 8),
                   Text(
-                    isToday ? 'Today ($dateKey)' : dateKey,
+                    isToday ? 'Today ($displayDate)' : displayDate,
                     style: TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
@@ -273,7 +411,6 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                   ),
                 ],
               ),
-              // --- NEW: Add Button on Header ---
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -316,7 +453,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(
-                                  '${item['total_bottles']?.toStringAsFixed(2) ?? 0}',
+                                  '${(double.tryParse(item['total_bottles']?.toString() ?? '0') ?? 0).toStringAsFixed(2)}',
                                   style: const TextStyle(fontWeight: FontWeight.bold),
                                 ),
                                 if (item['syncStatus'] == 'pending')

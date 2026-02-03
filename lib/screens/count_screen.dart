@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/store_manager.dart';
-import '../services/logger_service.dart'; // Import Logger
+import '../services/logger_service.dart';
 import '../widgets/barcode_scanner.dart';
 import 'add_product_screen.dart';
 import 'package:intl/intl.dart';
@@ -10,11 +10,15 @@ import 'package:intl/intl.dart';
 class CountScreen extends StatefulWidget {
   final Map<String, dynamic>? existingCount;
   final Map<String, dynamic>? initialProduct;
+  final DateTime? initialDate;
+  final String? initialLocation;
 
   const CountScreen({
     super.key,
     this.existingCount,
     this.initialProduct,
+    this.initialDate,
+    this.initialLocation,
   });
 
   @override
@@ -27,7 +31,9 @@ class _CountScreenState extends State<CountScreen> {
   final _countController = TextEditingController(text: '0');
   final _weightController = TextEditingController(text: '0');
 
-  // Drinks (Use "Case 1" for single units)
+  // --- 1. REFINED LISTS (STRICT RULES) ---
+
+  // Drinks: Case 1 = Single Unit. No "Loose".
   final List<String> _drinkPackSizes = [
     'Open Bottle',
     'Case 1', 'Case 4', 'Case 6', 'Case 12', 'Case 24',
@@ -43,7 +49,7 @@ class _CountScreenState extends State<CountScreen> {
     'Case 1', 'Case 6', 'Case 12', 'Case 24'
   ];
 
-  // Tobacco
+  // Tobacco: Uses "Loose" for singles.
   final List<String> _tobaccoPackSizes = [
     'Loose',    // Single Cigarette/Cigar
     'Pack 10',
@@ -124,8 +130,13 @@ class _CountScreenState extends State<CountScreen> {
       if (_isEditMode) {
         await _loadExistingData(widget.existingCount!, inventory);
       }
-      else if (widget.initialProduct != null) {
-        _selectProductFromList(widget.initialProduct!);
+      else {
+        if (widget.initialProduct != null) {
+          _selectProductFromList(widget.initialProduct!);
+        }
+        if (widget.initialLocation != null) {
+          _selectedLocation = widget.initialLocation;
+        }
       }
 
       setState(() => _isLoading = false);
@@ -151,6 +162,7 @@ class _CountScreenState extends State<CountScreen> {
       _selectedLocation = data['location']?.toString();
       _selectedPackSize = data['pack_size']?.toString();
 
+      // Auto-correct "Loose" -> "Case 1" for Drinks if editing old data
       if (_selectedPackSize == 'Loose' && !_isTobaccoCategory(product) && !_isFoodCategory(product)) {
         _selectedPackSize = 'Case 1';
       }
@@ -161,6 +173,7 @@ class _CountScreenState extends State<CountScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _recalculateTotals());
   }
 
+  // --- CATEGORY CHECK ---
   bool _isFoodCategory(Map<String, dynamic>? product) {
     if (product == null) return false;
     final cat = product['Category']?.toString().toLowerCase() ?? '';
@@ -182,6 +195,7 @@ class _CountScreenState extends State<CountScreen> {
     return ['cigars', 'cigarettes', 'tobacco'].contains(cat) || ['cigars', 'cigarettes', 'tobacco'].contains(mainCat);
   }
 
+  // --- DYNAMIC LIST LOGIC ---
   List<String> _getFilteredPackSizes() {
     if (_selectedProduct == null) return _drinkPackSizes;
 
@@ -335,13 +349,15 @@ class _CountScreenState extends State<CountScreen> {
         case "Box": multiplier = 1; break;
         case "Each": multiplier = 1; break;
         case "Portion": multiplier = 1; break;
-        case "Loose": multiplier = 1; break;
 
+      // Tobacco
+        case "Loose": multiplier = 1; break;
         case "Pack 10": multiplier = 10; break;
         case "Pack 20": multiplier = 20; break;
         case "Carton": multiplier = 200; break;
 
-        case "Case 1": multiplier = 1; break;
+      // Drinks
+        case "Case 1": multiplier = 1; break; // Single Unit
         case "Case 2": multiplier = 2; break;
         case "Case 4": multiplier = 4; break;
         case "Case 6": multiplier = 6; break;
@@ -408,8 +424,12 @@ class _CountScreenState extends State<CountScreen> {
 
   Future<void> _saveCount() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedLocation == null || _selectedPackSize == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Location or Pack Size')));
+    if (_selectedLocation == null && widget.initialLocation == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Location')));
+      return;
+    }
+    if (_selectedPackSize == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Pack Size')));
       return;
     }
     _recalculateTotals();
@@ -417,12 +437,19 @@ class _CountScreenState extends State<CountScreen> {
     final storage = context.read<OfflineStorage>();
     final id = _isEditMode ? widget.existingCount!['id'] : DateTime.now().millisecondsSinceEpoch.toString();
     final stockId = _isEditMode ? widget.existingCount!['stock_id'] : id;
+
+    final dateToUse = _isEditMode
+        ? widget.existingCount!['date']
+        : (widget.initialDate != null
+        ? widget.initialDate!.toIso8601String().split('T')[0]
+        : DateTime.now().toIso8601String().split('T')[0]);
+
     final createdDate = _isEditMode ? widget.existingCount!['createdAt'] : DateTime.now().toIso8601String();
 
     final countData = {
       'id': id,
       'stock_id': stockId,
-      'date': _isEditMode ? widget.existingCount!['date'] : DateTime.now().toIso8601String().split('T')[0],
+      'date': dateToUse,
       'barcode': _selectedBarcode,
       'productName': _selectedProduct?['Inventory Product Name'] ?? _productController.text,
       'mainCategory': _selectedProduct?['Main Category'] ?? '',
@@ -431,7 +458,7 @@ class _CountScreenState extends State<CountScreen> {
       'uom': _selectedProduct?['UoM'] ?? '',
       'gradient': _safeDouble(_selectedProduct?['Gradient']),
       'intercept': _safeDouble(_selectedProduct?['Intercept']),
-      'location': _selectedLocation!,
+      'location': widget.initialLocation ?? _selectedLocation!,
       'pack_size': _selectedPackSize,
       'count': int.tryParse(_countController.text) ?? 0,
       'weight': double.tryParse(_weightController.text) ?? 0.0,
@@ -446,11 +473,9 @@ class _CountScreenState extends State<CountScreen> {
     };
 
     try {
-      // --- LOGGING ---
       if (_isEditMode) {
         await storage.updateStockCount(countData);
         context.read<LoggerService>().info('Updated: ${_productController.text} ($id)');
-
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated'), backgroundColor: Colors.blue));
           Navigator.pop(context);
@@ -458,7 +483,6 @@ class _CountScreenState extends State<CountScreen> {
       } else {
         await storage.saveStockCount(countData);
         context.read<LoggerService>().info('Saved: ${_productController.text} ($id)');
-
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles Bottles'), backgroundColor: Colors.green));
           _clearForm();
@@ -501,11 +525,18 @@ class _CountScreenState extends State<CountScreen> {
     final costPrice = _safeDouble(_selectedProduct?['Cost Price']);
     final currentPackSizes = _getFilteredPackSizes();
 
+    bool isSameDay = false;
+    if (widget.initialDate != null) {
+      final now = DateTime.now();
+      isSameDay = now.year == widget.initialDate!.year &&
+          now.month == widget.initialDate!.month &&
+          now.day == widget.initialDate!.day;
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditMode ? 'Edit Count' : 'New Count'),
         actions: [
-          // SAVE BUTTON IN APPBAR
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: IconButton.filled(
@@ -537,6 +568,39 @@ class _CountScreenState extends State<CountScreen> {
             key: _formKey,
             child: ListView(
               children: [
+                if (widget.initialDate != null && !_isEditMode)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                        color: isSameDay ? Colors.blue.shade50 : Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: isSameDay ? Colors.blue : Colors.orange)
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                            isSameDay ? Icons.calendar_today : Icons.history,
+                            color: isSameDay ? Colors.blue : Colors.orange
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                            isSameDay ? 'Adding Entry for: ' : 'Backdating Entry to: ',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: isSameDay ? Colors.blue[900] : Colors.orange[900]
+                            )
+                        ),
+                        Text(
+                          DateFormat('dd MMM yyyy').format(widget.initialDate!),
+                          style: TextStyle(
+                              color: isSameDay ? Colors.blue[900] : Colors.orange[900]
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
                 Row(
                   children: [
                     Expanded(
@@ -610,13 +674,29 @@ class _CountScreenState extends State<CountScreen> {
                       ),
                     ),
                   ),
-                DropdownButtonFormField<String>(
+
+                // --- LOCKABLE LOCATION FIELD ---
+                widget.initialLocation != null
+                    ? TextFormField(
+                  initialValue: widget.initialLocation,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Location',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.location_on),
+                    suffixIcon: Icon(Icons.lock, color: Colors.grey),
+                    filled: true,
+                    fillColor: Color(0xFFEEEEEE),
+                  ),
+                )
+                    : DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Location', border: OutlineInputBorder()),
                   value: _selectedLocation,
                   isExpanded: true,
                   items: _locations.map((l) => DropdownMenuItem(value: l['Location']?.toString(), child: Text(l['Location']?.toString() ?? ''))).toList(),
                   onChanged: (val) => setState(() => _selectedLocation = val),
                 ),
+
                 const SizedBox(height: 16),
 
                 DropdownButtonFormField<String>(
@@ -680,8 +760,6 @@ class _CountScreenState extends State<CountScreen> {
                       ),
                     ),
                   ),
-
-                // Added space for keyboard visibility
                 const SizedBox(height: 40),
               ],
             ),
