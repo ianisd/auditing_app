@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
 import '../services/variance_service.dart';
+import 'count_screen.dart'; // Import CountScreen
 
 class VarianceReportScreen extends StatefulWidget {
   const VarianceReportScreen({super.key});
@@ -12,8 +13,8 @@ class VarianceReportScreen extends StatefulWidget {
 }
 
 class _VarianceReportScreenState extends State<VarianceReportScreen> {
-  String? _startDate; // YYYY-MM-DD
-  String? _endDate;   // YYYY-MM-DD
+  String? _startDate;
+  String? _endDate;
   List<String> _availableDates = [];
   List<VarianceItem> _report = [];
   bool _isLoading = false;
@@ -29,16 +30,13 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final counts = await storage.getStockCounts();
     final dates = counts.map((e) {
       final raw = e['date'].toString();
-      // Handle T08:00...
       return raw.contains('T') ? raw.split('T')[0] : raw;
     }).toSet().toList();
 
-    // Sort Newest First
     dates.sort((a, b) => b.compareTo(a));
 
     setState(() {
       _availableDates = dates;
-      // Auto-select latest 2 dates if available
       if (dates.isNotEmpty) _endDate = dates[0];
       if (dates.length > 1) _startDate = dates[1];
     });
@@ -52,8 +50,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     if (_startDate == null || _endDate == null) return;
 
     setState(() => _isLoading = true);
-
-    // Slight delay to allow UI to render spinner
     await Future.delayed(const Duration(milliseconds: 100));
 
     final storage = context.read<OfflineStorage>();
@@ -80,13 +76,45 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
   }
 
+  // --- ACTIONS ---
+
+  void _editCount(Map<String, dynamic> count) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CountScreen(existingCount: count),
+      ),
+    );
+    // Refresh report when coming back
+    _runReport();
+  }
+
+  void _addNewCount(VarianceItem item) async {
+    if (item.inventoryItem == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Product details not found in inventory')));
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CountScreen(
+          initialProduct: item.inventoryItem, // Pass product details
+          initialDate: DateTime.parse(_endDate!), // Force date to current report date
+        ),
+      ),
+    );
+    // Refresh report when coming back
+    _runReport();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Variance Report')),
       body: Column(
         children: [
-          // --- DATE SELECTORS ---
+          // Date Selectors
           Card(
             margin: const EdgeInsets.all(8),
             child: Padding(
@@ -114,12 +142,11 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
             ),
           ),
 
-          // --- REPORT BODY ---
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : _report.isEmpty
-                ? const Center(child: Text('No variance data found for these dates.'))
+                ? const Center(child: Text('No variance data found.'))
                 : _buildReportList(),
           ),
         ],
@@ -137,7 +164,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
           value: value,
           hint: const Text('Select Date'),
           items: _availableDates.map((d) {
-            // Pretty Date for Dropdown
             String display = d;
             try { display = DateFormat('dd MMM').format(DateTime.parse(d)); } catch(e){}
             return DropdownMenuItem(value: d, child: Text(display));
@@ -154,9 +180,10 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       separatorBuilder: (c, i) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final item = _report[index];
-        final isLoss = item.variance < 0;
-        final isGain = item.variance > 0;
+        final isLoss = item.variance < -0.05; // Tolerance
+        final isGain = item.variance > 0.05;
         final color = isLoss ? Colors.red : (isGain ? Colors.green : Colors.grey);
+        final productName = item.productName.isEmpty ? 'Unknown Product' : item.productName.toUpperCase();
 
         return ExpansionTile(
           leading: CircleAvatar(
@@ -166,7 +193,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)
             ),
           ),
-          title: Text(item.productName.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          title: Text(productName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
           subtitle: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -182,6 +209,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildDetailRow('Previous Count', item.previousCount),
                   _buildDetailRow('Purchases (+)', item.purchases),
@@ -191,12 +219,52 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                   _buildDetailRow('Actual Count', item.currentCount, isBold: true),
                   const Divider(),
                   _buildDetailRow('Variance', item.variance, color: color, isBold: true),
-                  const SizedBox(height: 10),
-                  const Text('Count Locations:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  if (item.locations.isEmpty)
-                    const Text('No count data found', style: TextStyle(fontStyle: FontStyle.italic))
+
+                  const SizedBox(height: 16),
+                  const Text('Count Locations:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+
+                  // --- INTERACTIVE COUNT LIST ---
+                  if (item.countEntries.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8.0),
+                      child: Text('No counts recorded for this date.', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
+                    )
                   else
-                    ...item.locations.map((l) => Text(l, style: const TextStyle(fontSize: 12))),
+                    ...item.countEntries.map((entry) {
+                      final loc = entry['location'] ?? 'Unknown';
+                      final qty = double.tryParse(entry['total_bottles']?.toString() ?? '0') ?? 0;
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.place, size: 16, color: Colors.grey),
+                        title: Text(loc),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(qty.toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.edit, size: 16, color: Colors.blue),
+                          ],
+                        ),
+                        onTap: () => _editCount(entry),
+                      );
+                    }),
+
+                  // --- ADD BUTTON ---
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _addNewCount(item),
+                      icon: const Icon(Icons.add),
+                      label: Text('Add Count for $productName'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.blue,
+                        side: const BorderSide(color: Colors.blue),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),

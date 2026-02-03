@@ -7,7 +7,11 @@ class VarianceItem {
   final double sales;
   final double currentCount;
   final double costPrice;
-  final List<String> locations; // To show where it was counted
+
+  // CHANGED: Now holds full objects, not just strings
+  final List<Map<String, dynamic>> countEntries;
+  // ADDED: Holds the master inventory details (needed to Add New Count)
+  final Map<String, dynamic>? inventoryItem;
 
   VarianceItem({
     required this.productName,
@@ -16,7 +20,8 @@ class VarianceItem {
     required this.sales,
     required this.currentCount,
     required this.costPrice,
-    this.locations = const [],
+    this.countEntries = const [],
+    this.inventoryItem,
   });
 
   double get theoreticalStock => previousCount + purchases - sales;
@@ -26,7 +31,6 @@ class VarianceItem {
 
 class VarianceService {
 
-  // Normalize strings for matching (Trim + Lowercase)
   String _normalize(String? input) => input?.toString().toLowerCase().trim() ?? '';
 
   List<VarianceItem> calculateReport({
@@ -37,43 +41,53 @@ class VarianceService {
     required String dateFromStr, // YYYY-MM-DD
     required String dateToStr,   // YYYY-MM-DD
   }) {
-    // 1. Dictionaries to hold data
+    // 1. Dictionaries
     Map<String, double> prevCounts = {};
     Map<String, double> currCounts = {};
     Map<String, double> prodPurchases = {};
     Map<String, double> prodSales = {};
     Map<String, double> prodCosts = {};
-    Map<String, Set<String>> prodLocations = {};
 
-    // 2. Process Stock Counts (Previous & Current)
+    // CHANGED: Store list of actual count objects
+    Map<String, List<Map<String, dynamic>>> prodEntries = {};
+    // CHANGED: Store inventory reference
+    Map<String, Map<String, dynamic>> inventoryRef = {};
+
+    // 2. Build Inventory Reference (for Add Button)
+    for (var item in inventory) {
+      final name = _normalize(item['Inventory Product Name']);
+      inventoryRef[name] = item;
+
+      final cost = double.tryParse(item['Cost Price']?.toString() ?? '0') ?? 0.0;
+      prodCosts[name] = cost;
+    }
+
+    // 3. Process Stock Counts
     for (var row in stocks) {
       final name = _normalize(row['productName']);
-      // Handle date format differences (ISO vs Simple)
       final rawDate = row['date'].toString();
       final date = rawDate.contains('T') ? rawDate.split('T')[0] : rawDate;
 
       final qty = double.tryParse(row['total_bottles']?.toString() ?? '0') ?? 0.0;
-      final loc = row['location']?.toString() ?? 'Unknown';
 
       if (date == dateFromStr) {
         prevCounts[name] = (prevCounts[name] ?? 0) + qty;
       } else if (date == dateToStr) {
         currCounts[name] = (currCounts[name] ?? 0) + qty;
 
-        if (!prodLocations.containsKey(name)) prodLocations[name] = {};
-        prodLocations[name]!.add('$loc: $qty');
+        // Store the full row for editing later
+        if (!prodEntries.containsKey(name)) prodEntries[name] = [];
+        prodEntries[name]!.add(row);
       }
     }
 
-    // 3. Process Purchases
-    // Logic: Invoice Date > From AND <= To
+    // 4. Process Purchases
     final fromDt = DateTime.parse(dateFromStr);
     final toDt = DateTime.parse(dateToStr);
 
     for (var row in purchases) {
       final name = _normalize(row['Purchased Product Name']);
 
-      // Parse "DD/MM/YYYY" from CSV
       String dateRaw = row['Inv. Date of Purchase'] ?? '';
       DateTime? invDate;
       try {
@@ -90,13 +104,11 @@ class VarianceService {
       }
     }
 
-    // 4. Process Sales
-    // Logic: Match "Current Audit Date" column to dateToStr
+    // 5. Process Sales
     for (var row in sales) {
       final name = _normalize(row['Product']);
       final auditDateRaw = row['Current Audit Date']?.toString() ?? '';
 
-      // Convert CSV "DD/MM/YYYY" to "YYYY-MM-DD" for comparison
       String csvDate = '';
       try {
         final dt = DateFormat('dd/MM/yyyy').parse(auditDateRaw);
@@ -111,13 +123,6 @@ class VarianceService {
       }
     }
 
-    // 5. Get Costs
-    for (var item in inventory) {
-      final name = _normalize(item['Inventory Product Name']);
-      final cost = double.tryParse(item['Cost Price']?.toString() ?? '0') ?? 0.0;
-      prodCosts[name] = cost;
-    }
-
     // 6. Build List
     final allNames = {...prevCounts.keys, ...currCounts.keys, ...prodPurchases.keys, ...prodSales.keys};
     List<VarianceItem> report = [];
@@ -125,12 +130,7 @@ class VarianceService {
     for (var name in allNames) {
       if (name.isEmpty) continue;
 
-      // Skip if absolutely no activity
       if ((prevCounts[name]??0) == 0 && (currCounts[name]??0) == 0 && (prodPurchases[name]??0) == 0) continue;
-
-      // Re-capitalize name from inventory if possible, else use map key
-      String displayName = name.toUpperCase(); // Placeholder
-      // Try find original casing from inventory keys? (Optimization for later)
 
       report.add(VarianceItem(
         productName: name,
@@ -139,11 +139,11 @@ class VarianceService {
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
         costPrice: prodCosts[name] ?? 0,
-        locations: prodLocations[name]?.toList() ?? [],
+        countEntries: prodEntries[name] ?? [],
+        inventoryItem: inventoryRef[name], // Pass the inventory object
       ));
     }
 
-    // Sort by Variance Value (Big losses at top)
     report.sort((a, b) => a.varianceValue.compareTo(b.varianceValue));
 
     return report;
