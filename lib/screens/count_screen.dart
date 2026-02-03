@@ -31,9 +31,10 @@ class _CountScreenState extends State<CountScreen> {
   final _countController = TextEditingController(text: '0');
   final _weightController = TextEditingController(text: '0');
 
-  // --- 1. REFINED LISTS (STRICT RULES) ---
+  // --- NEW: Measurement Mode State ---
+  // Options: 'Weight' (Scale), 'Shots' (Visual), 'Volume' (Jug)
+  String _measurementType = 'Volume';
 
-  // Drinks: Case 1 = Single Unit. No "Loose".
   final List<String> _drinkPackSizes = [
     'Open Bottle',
     'Case 1', 'Case 4', 'Case 6', 'Case 12', 'Case 24',
@@ -41,7 +42,6 @@ class _CountScreenState extends State<CountScreen> {
     'Keg 1', '5 Ltr Cartons', '10 Ltr Cartons',
   ];
 
-  // Food / Consumables
   final List<String> _foodPackSizes = [
     'Loose (kg)', 'Loose (g)',
     'Each', 'Portion',
@@ -49,13 +49,8 @@ class _CountScreenState extends State<CountScreen> {
     'Case 1', 'Case 6', 'Case 12', 'Case 24'
   ];
 
-  // Tobacco: Uses "Loose" for singles.
   final List<String> _tobaccoPackSizes = [
-    'Loose',    // Single Cigarette/Cigar
-    'Pack 10',
-    'Pack 20',
-    'Carton',
-    'Case 1'
+    'Loose', 'Pack 10', 'Pack 20', 'Carton', 'Case 1'
   ];
 
   String? _selectedLocation;
@@ -162,10 +157,13 @@ class _CountScreenState extends State<CountScreen> {
       _selectedLocation = data['location']?.toString();
       _selectedPackSize = data['pack_size']?.toString();
 
-      // Auto-correct "Loose" -> "Case 1" for Drinks if editing old data
       if (_selectedPackSize == 'Loose' && !_isTobaccoCategory(product) && !_isFoodCategory(product)) {
         _selectedPackSize = 'Case 1';
       }
+
+      // Restore Mode if saved (you might want to add 'counting_method' to DB schema later)
+      // For now, infer: if product has gradient, assume Weight. If Spirit, assume Shots.
+      _determineDefaultMeasurementMode(product);
 
       _countController.text = data['count']?.toString() ?? '0';
       _weightController.text = data['weight']?.toString() ?? '0';
@@ -173,18 +171,11 @@ class _CountScreenState extends State<CountScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _recalculateTotals());
   }
 
-  // --- CATEGORY CHECK ---
   bool _isFoodCategory(Map<String, dynamic>? product) {
     if (product == null) return false;
     final cat = product['Category']?.toString().toLowerCase() ?? '';
     final mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
-
-    const foodTerms = [
-      'meat', 'poultry', 'seafood', 'dairy', 'vegetables', 'fruit',
-      'dry goods', 'spices', 'bakery', 'prepared food', 'perishables',
-      'pantry', 'proteins', 'consumables', 'food'
-    ];
-
+    const foodTerms = ['meat', 'poultry', 'seafood', 'dairy', 'vegetables', 'fruit', 'dry goods', 'spices', 'bakery', 'prepared food', 'perishables', 'pantry', 'proteins', 'consumables', 'food'];
     return foodTerms.contains(cat) || foodTerms.contains(mainCat);
   }
 
@@ -195,16 +186,10 @@ class _CountScreenState extends State<CountScreen> {
     return ['cigars', 'cigarettes', 'tobacco'].contains(cat) || ['cigars', 'cigarettes', 'tobacco'].contains(mainCat);
   }
 
-  // --- DYNAMIC LIST LOGIC ---
   List<String> _getFilteredPackSizes() {
     if (_selectedProduct == null) return _drinkPackSizes;
-
-    if (_isFoodCategory(_selectedProduct)) {
-      return _foodPackSizes;
-    }
-    if (_isTobaccoCategory(_selectedProduct)) {
-      return _tobaccoPackSizes;
-    }
+    if (_isFoodCategory(_selectedProduct)) return _foodPackSizes;
+    if (_isTobaccoCategory(_selectedProduct)) return _tobaccoPackSizes;
     return _drinkPackSizes;
   }
 
@@ -226,6 +211,23 @@ class _CountScreenState extends State<CountScreen> {
       }).toList();
       _showProductSuggestions = _filteredProducts.isNotEmpty;
     });
+  }
+
+  // --- NEW: DETERMINE DEFAULT MODE ---
+  void _determineDefaultMeasurementMode(Map<String, dynamic>? product) {
+    if (product == null) return;
+
+    double gradient = _safeDouble(product['Gradient']);
+    String mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
+    String cat = product['Category']?.toString().toLowerCase() ?? '';
+
+    if (gradient != 0) {
+      _measurementType = 'Weight'; // Has scale data -> Weight
+    } else if (mainCat.contains('spirit') || cat.contains('whiskey') || cat.contains('vodka') || cat.contains('gin') || cat.contains('tequila')) {
+      _measurementType = 'Shots'; // Spirit -> Default to Shots
+    } else {
+      _measurementType = 'Volume'; // Default -> mL
+    }
   }
 
   Future<void> _scanBarcode() async {
@@ -309,55 +311,77 @@ class _CountScreenState extends State<CountScreen> {
     return double.tryParse(value.toString()) ?? 0.0;
   }
 
+  // --- UPDATED RECALCULATE LOGIC FOR SHOTS ---
   void _recalculateTotals() {
     if (_selectedPackSize == null) return;
 
     double count = double.tryParse(_countController.text) ?? 0.0;
-    double weight = double.tryParse(_weightController.text) ?? 0.0;
+    double inputVal = double.tryParse(_weightController.text) ?? 0.0; // Acts as Weight, Shots, or Vol
 
     double singleUnitSize = _safeDouble(_selectedProduct?['Single Unit Volume']);
     double costPrice = _safeDouble(_selectedProduct?['Cost Price']);
     double gradient = _safeDouble(_selectedProduct?['Gradient']);
     double intercept = _safeDouble(_selectedProduct?['Intercept']);
 
+    // Attempt to get Bottle UoM (Sales Unit), default to 30 (Spirits standard)
+    double bottleUoM = _safeDouble(_selectedProduct?['Bottle UoM']);
+    if (bottleUoM == 0) bottleUoM = (singleUnitSize > 0) ? (singleUnitSize / 25.0) : 30.0;
+
     double calculatedWeightOrVol = 0.0;
     double totalUnits = 0.0;
+    double finalOpenTots = 0.0;
 
     if (_selectedPackSize == 'Open Bottle') {
-      if (gradient != 0 || intercept != 0) {
-        calculatedWeightOrVol = (gradient * weight) + intercept;
-      } else {
-        calculatedWeightOrVol = weight;
-      }
-      if (calculatedWeightOrVol < 0) calculatedWeightOrVol = 0;
 
-      double fullUnitSize = (singleUnitSize > 0) ? singleUnitSize : 750.0;
-      totalUnits = calculatedWeightOrVol / fullUnitSize;
+      if (_measurementType == 'Shots') {
+        // --- MANUAL SHOT COUNT ---
+        // Input is "Number of Shots"
+        finalOpenTots = inputVal;
+        calculatedWeightOrVol = inputVal * 25.0; // Total mL
+        totalUnits = finalOpenTots / bottleUoM; // Total Bottles
+
+      } else if (_measurementType == 'Volume') {
+        // --- MEASURE BY ML ---
+        // Input is "mL"
+        calculatedWeightOrVol = inputVal;
+        finalOpenTots = inputVal / 25.0;
+        totalUnits = finalOpenTots / bottleUoM;
+
+      } else {
+        // --- WEIGHT (GRADIENT) ---
+        // Input is "Grams"
+        if (gradient != 0 || intercept != 0) {
+          calculatedWeightOrVol = (gradient * inputVal) + intercept;
+        } else {
+          calculatedWeightOrVol = inputVal;
+        }
+        if (calculatedWeightOrVol < 0) calculatedWeightOrVol = 0;
+
+        finalOpenTots = calculatedWeightOrVol / 25.0;
+        totalUnits = finalOpenTots / bottleUoM;
+      }
 
     } else if (_selectedPackSize == 'Loose (kg)') {
-      calculatedWeightOrVol = weight * 1000;
-      totalUnits = weight;
+      calculatedWeightOrVol = inputVal * 1000;
+      totalUnits = inputVal;
 
     } else if (_selectedPackSize == 'Loose (g)') {
-      calculatedWeightOrVol = weight;
-      totalUnits = weight / 1000;
+      calculatedWeightOrVol = inputVal;
+      totalUnits = inputVal / 1000;
 
     } else {
+      // --- STANDARD PACK LOGIC ---
       double multiplier = 0;
       switch (_selectedPackSize) {
         case "Pack": multiplier = 1; break;
         case "Box": multiplier = 1; break;
         case "Each": multiplier = 1; break;
         case "Portion": multiplier = 1; break;
-
-      // Tobacco
         case "Loose": multiplier = 1; break;
         case "Pack 10": multiplier = 10; break;
         case "Pack 20": multiplier = 20; break;
         case "Carton": multiplier = 200; break;
-
-      // Drinks
-        case "Case 1": multiplier = 1; break; // Single Unit
+        case "Case 1": multiplier = 1; break;
         case "Case 2": multiplier = 2; break;
         case "Case 4": multiplier = 4; break;
         case "Case 6": multiplier = 6; break;
@@ -378,7 +402,7 @@ class _CountScreenState extends State<CountScreen> {
 
     setState(() {
       _calcVolumeMl = calculatedWeightOrVol;
-      _calcOpenTots = (calculatedWeightOrVol / 25.0);
+      _calcOpenTots = finalOpenTots;
       _calcTotalBottles = totalUnits;
       _calcTotalMl = calculatedWeightOrVol;
       _calcCostValue = costValue;
@@ -397,12 +421,17 @@ class _CountScreenState extends State<CountScreen> {
         _selectedPackSize = null;
       }
 
+      // Reset logic
       _countController.text = '0';
       _weightController.text = '0';
+
+      // Determine Measurement Mode Default
+      _determineDefaultMeasurementMode(product);
     });
     _productFocusNode.unfocus();
   }
 
+  // ... (Delete and Save remain the same) ...
   Future<void> _deleteEntry() async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -543,18 +572,11 @@ class _CountScreenState extends State<CountScreen> {
               onPressed: _saveCount,
               icon: const Icon(Icons.check),
               tooltip: 'Save Count',
-              style: IconButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white
-              ),
+              style: IconButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
             ),
           ),
           if (_isEditMode)
-            IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: _deleteEntry,
-                tooltip: 'Delete Entry'
-            ),
+            IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: _deleteEntry, tooltip: 'Delete Entry'),
         ],
       ),
       body: GestureDetector(
@@ -579,24 +601,13 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                            isSameDay ? Icons.calendar_today : Icons.history,
-                            color: isSameDay ? Colors.blue : Colors.orange
-                        ),
+                        Icon(isSameDay ? Icons.calendar_today : Icons.history, color: isSameDay ? Colors.blue : Colors.orange),
                         const SizedBox(width: 8),
                         Text(
                             isSameDay ? 'Adding Entry for: ' : 'Backdating Entry to: ',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isSameDay ? Colors.blue[900] : Colors.orange[900]
-                            )
+                            style: TextStyle(fontWeight: FontWeight.bold, color: isSameDay ? Colors.blue[900] : Colors.orange[900])
                         ),
-                        Text(
-                          DateFormat('dd MMM yyyy').format(widget.initialDate!),
-                          style: TextStyle(
-                              color: isSameDay ? Colors.blue[900] : Colors.orange[900]
-                          ),
-                        ),
+                        Text(DateFormat('dd MMM yyyy').format(widget.initialDate!), style: TextStyle(color: isSameDay ? Colors.blue[900] : Colors.orange[900])),
                       ],
                     ),
                   ),
@@ -625,11 +636,7 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                     if (!_isEditMode && widget.initialProduct == null) ...[
                       const SizedBox(width: 8),
-                      IconButton.filled(
-                        icon: const Icon(Icons.add),
-                        tooltip: 'Manual Entry',
-                        onPressed: _openManualAdd,
-                      ),
+                      IconButton.filled(icon: const Icon(Icons.add), tooltip: 'Manual Entry', onPressed: _openManualAdd),
                     ],
                   ],
                 ),
@@ -653,6 +660,7 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
                 const SizedBox(height: 16),
+
                 if (_selectedProduct != null)
                   Card(
                     color: Colors.blue.shade50,
@@ -666,7 +674,6 @@ class _CountScreenState extends State<CountScreen> {
                           const Text('Product Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
                           const Divider(color: Colors.blue),
                           _buildDetailRow('Name', _selectedProduct!['Inventory Product Name']),
-                          _buildDetailRow('Barcode', _selectedBarcode),
                           _buildDetailRow('Category', _selectedProduct!['Category']),
                           _buildDetailRow('Volume', '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}'),
                           _buildDetailRow('Unit Cost', NumberFormat.simpleCurrency().format(costPrice)),
@@ -675,19 +682,12 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
-                // --- LOCKABLE LOCATION FIELD ---
+                // --- LOCKABLE LOCATION ---
                 widget.initialLocation != null
                     ? TextFormField(
                   initialValue: widget.initialLocation,
                   readOnly: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Location',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.location_on),
-                    suffixIcon: Icon(Icons.lock, color: Colors.grey),
-                    filled: true,
-                    fillColor: Color(0xFFEEEEEE),
-                  ),
+                  decoration: const InputDecoration(labelText: 'Location', border: OutlineInputBorder(), prefixIcon: Icon(Icons.location_on), suffixIcon: Icon(Icons.lock, color: Colors.grey), filled: true, fillColor: Color(0xFFEEEEEE)),
                 )
                     : DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Location', border: OutlineInputBorder()),
@@ -699,6 +699,7 @@ class _CountScreenState extends State<CountScreen> {
 
                 const SizedBox(height: 16),
 
+                // --- PACK SIZE ---
                 DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Pack Size', border: OutlineInputBorder()),
                   value: _selectedPackSize,
@@ -713,6 +714,31 @@ class _CountScreenState extends State<CountScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
+
+                // --- NEW: MODE SELECTOR FOR OPEN BOTTLE ---
+                if (_selectedPackSize == 'Open Bottle')
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: SegmentedButton<String>(
+                      segments: [
+                        const ButtonSegment(value: 'Shots', label: Text('Shots'), icon: Icon(Icons.local_bar)),
+                        const ButtonSegment(value: 'Volume', label: Text('mL'), icon: Icon(Icons.water_drop)),
+                        // Only show Weight if gradient exists
+                        if (_safeDouble(_selectedProduct?['Gradient']) != 0)
+                          const ButtonSegment(value: 'Weight', label: Text('Grams'), icon: Icon(Icons.scale)),
+                      ],
+                      selected: {_measurementType},
+                      onSelectionChanged: (Set<String> newSelection) {
+                        setState(() {
+                          _measurementType = newSelection.first;
+                          _weightController.clear();
+                        });
+                        _recalculateTotals();
+                      },
+                    ),
+                  ),
+
+                // --- DYNAMIC INPUT ROW ---
                 Row(
                   children: [
                     if (!_isWeightBased(_selectedPackSize))
@@ -731,7 +757,10 @@ class _CountScreenState extends State<CountScreen> {
                           child: TextFormField(
                               controller: _weightController,
                               decoration: InputDecoration(
-                                  labelText: _selectedPackSize == 'Open Bottle' ? 'Weight (g) + Bottle' : 'Net Weight',
+                                // Update label based on Mode
+                                  labelText: _selectedPackSize == 'Open Bottle'
+                                      ? (_measurementType == 'Shots' ? 'Number of Shots' : (_measurementType == 'Volume' ? 'Volume (mL)' : 'Weight (g)'))
+                                      : 'Net Weight',
                                   border: const OutlineInputBorder()
                               ),
                               keyboardType: TextInputType.number
@@ -769,6 +798,7 @@ class _CountScreenState extends State<CountScreen> {
     );
   }
 
+  // Helpers...
   Widget _buildDetailRow(String label, dynamic value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2.0),
