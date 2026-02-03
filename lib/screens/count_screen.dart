@@ -1,3 +1,4 @@
+// git: Updated CountScreen UI - Moved Save Button to AppBar
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
@@ -152,7 +153,6 @@ class _CountScreenState extends State<CountScreen> {
       _selectedLocation = data['location']?.toString();
       _selectedPackSize = data['pack_size']?.toString();
 
-      // Auto-correct old "Loose" entries for drinks to "Case 1" if editing legacy data
       if (_selectedPackSize == 'Loose' && !_isTobaccoCategory(product) && !_isFoodCategory(product)) {
         _selectedPackSize = 'Case 1';
       }
@@ -340,7 +340,7 @@ class _CountScreenState extends State<CountScreen> {
         case "Box": multiplier = 1; break;
         case "Each": multiplier = 1; break;
         case "Portion": multiplier = 1; break;
-        case "Loose": multiplier = 1; break; // Tobacco Loose
+        case "Loose": multiplier = 1; break;
 
       // Tobacco
         case "Pack 10": multiplier = 10; break;
@@ -348,7 +348,7 @@ class _CountScreenState extends State<CountScreen> {
         case "Carton": multiplier = 200; break;
 
       // Drinks / General
-        case "Case 1": multiplier = 1; break; // Single Unit
+        case "Case 1": multiplier = 1; break;
         case "Case 2": multiplier = 2; break;
         case "Case 4": multiplier = 4; break;
         case "Case 6": multiplier = 6; break;
@@ -393,9 +393,6 @@ class _CountScreenState extends State<CountScreen> {
     });
     _productFocusNode.unfocus();
   }
-
-  // ... (Delete, Save, Clear Form, Build Method remain exactly the same) ...
-  // [Truncated for brevity - no logic changes below this point]
 
   Future<void> _deleteEntry() async {
     final confirm = await showDialog<bool>(
@@ -508,9 +505,27 @@ class _CountScreenState extends State<CountScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditMode ? 'Edit Count' : 'New Count'),
-        actions: _isEditMode ? [
-          IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: _deleteEntry, tooltip: 'Delete Entry')
-        ] : null,
+        actions: [
+          // --- MOVED SAVE BUTTON HERE ---
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: IconButton.filled(
+              onPressed: _saveCount,
+              icon: const Icon(Icons.check),
+              tooltip: 'Save Count',
+              style: IconButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white
+              ),
+            ),
+          ),
+          if (_isEditMode)
+            IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                onPressed: _deleteEntry,
+                tooltip: 'Delete Entry'
+            ),
+        ],
       ),
       body: GestureDetector(
         onTap: () {
@@ -666,13 +681,9 @@ class _CountScreenState extends State<CountScreen> {
                       ),
                     ),
                   ),
-                const SizedBox(height: 24),
-                ElevatedButton.icon(
-                  onPressed: _saveCount,
-                  icon: Icon(_isEditMode ? Icons.update : Icons.save),
-                  label: Text(_isEditMode ? 'UPDATE ENTRY' : 'SAVE COUNT'),
-                  style: ElevatedButton.styleFrom(backgroundColor: _isEditMode ? Colors.blue : Colors.green, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
-                ),
+
+                // Added space for keyboard visibility
+                const SizedBox(height: 40),
               ],
             ),
           ),
