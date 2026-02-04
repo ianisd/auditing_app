@@ -21,19 +21,26 @@ class _DebugDataScreenState extends State<DebugDataScreen> {
 
   Future<void> _loadData() async {
     final storage = context.read<OfflineStorage>();
+
+    // 1. Get Purchases
     final p = await storage.getPurchases();
-    final s = await storage.getSales();
+
+    // 2. Get Sales (FIXED METHOD NAME)
+    final s = await storage.getStoreSalesData();
 
     setState(() {
-      purchaseDates = p.take(50).map((e) => "Inv Date: ${e['Inv. Date of Purchase']}").toList();
-      salesDates = s.take(50).map((e) => "Audit Date: ${e['Current Audit Date']}").toList();
+      // Map 'Inv. Date of Purchase' from Purchases
+      purchaseDates = p.take(50).map((e) => "Inv: ${e['Inv. Date of Purchase']}").toList();
+
+      // Map 'Date' from Store Sales Data
+      salesDates = s.take(50).map((e) => "Sale: ${e['Date']}").toList();
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Data Debugger (Sales/Purchases)')),
+      appBar: AppBar(title: const Text('Data Debugger')),
       body: Row(
         children: [
           Expanded(child: _buildList("Purchases (Raw)", purchaseDates)),

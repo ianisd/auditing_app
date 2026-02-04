@@ -36,40 +36,39 @@ class VarianceService {
   List<VarianceItem> calculateReport({
     required List<Map<String, dynamic>> stocks,
     required List<Map<String, dynamic>> purchases,
-    // New parameters for Sales Calculation
-    required List<Map<String, dynamic>> storeSalesData, // Raw POS
-    required List<Map<String, dynamic>> itemSalesMap,   // Recipes
+    required List<Map<String, dynamic>> storeSalesData,
+    required List<Map<String, dynamic>> itemSalesMap,
     required List<Map<String, dynamic>> inventory,
-
-    required String dateFromStr, // YYYY-MM-DD
-    required String dateToStr,   // YYYY-MM-DD
+    required String dateFromStr,
+    required String dateToStr,
   }) {
-    Map<String, double> prevCounts = {};
-    Map<String, double> currCounts = {};
-    Map<String, double> prodPurchases = {};
-    Map<String, double> prodSales = {}; // Calculated Sales
+    // 1. Optimization: Pre-calculate Dates
+    final fromDt = DateTime.parse(dateFromStr);
+    final toDt = DateTime.parse(dateToStr);
+
+    // 2. Optimization: Pre-map Inventory for O(1) lookup
     Map<String, double> prodCosts = {};
-
-    Map<String, List<Map<String, dynamic>>> prodHistory = {};
     Map<String, Map<String, dynamic>> inventoryRef = {};
-
-    // 1. Inventory & Costs
+    // New: Map "Normalized Name" -> "Inventory Item"
     for (var item in inventory) {
       final name = _normalize(item['Inventory Product Name']);
       inventoryRef[name] = item;
-      final cost = double.tryParse(item['Cost Price']?.toString() ?? '0') ?? 0.0;
-      prodCosts[name] = cost;
+      prodCosts[name] = double.tryParse(item['Cost Price']?.toString() ?? '0') ?? 0.0;
     }
 
-    // 2. Stock Counts (Previous vs Current)
+    // 3. Process Counts
+    Map<String, double> prevCounts = {};
+    Map<String, double> currCounts = {};
+    Map<String, List<Map<String, dynamic>>> prodHistory = {};
+
     for (var row in stocks) {
       final name = _normalize(row['productName']);
       final rawDate = row['date'].toString();
       final dateStr = rawDate.contains('T') ? rawDate.split('T')[0] : rawDate;
       final qty = double.tryParse(row['total_bottles']?.toString() ?? '0') ?? 0.0;
 
-      bool inRange = (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0);
-      if (inRange) {
+      // History
+      if (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0) {
         if (!prodHistory.containsKey(name)) prodHistory[name] = [];
         prodHistory[name]!.add(row);
       }
@@ -81,91 +80,62 @@ class VarianceService {
       }
     }
 
-    // 3. Purchases Logic
-    final fromDt = DateTime.parse(dateFromStr);
-    final toDt = DateTime.parse(dateToStr);
-
+    // 4. Process Purchases (Optimized Date Parsing)
+    Map<String, double> prodPurchases = {};
     for (var row in purchases) {
-      final name = _normalize(row['Purchased Product Name']);
       String dateRaw = row['Inv. Date of Purchase'] ?? '';
+      if (dateRaw.isEmpty) continue;
 
+      // Fast check before parsing
       DateTime? invDate = _parseDate(dateRaw);
 
-      if (invDate != null) {
-        // Purchases: After Start Date, Up to End Date
-        if (invDate.isAfter(fromDt) && !invDate.isAfter(toDt)) {
-          final qty = double.tryParse(row['Total Stock In Bottles']?.toString() ?? '0') ?? 0.0;
-          prodPurchases[name] = (prodPurchases[name] ?? 0) + qty;
-        }
+      if (invDate != null && invDate.isAfter(fromDt) && !invDate.isAfter(toDt)) {
+        final name = _normalize(row['Purchased Product Name']);
+        final qty = double.tryParse(row['Total Stock In Bottles']?.toString() ?? '0') ?? 0.0;
+        prodPurchases[name] = (prodPurchases[name] ?? 0) + qty;
       }
     }
 
-    // 4. COMPLEX SALES CALCULATION
-    // First, map PLUs to Inventory Items for speed
-    Map<String, Map<String, dynamic>> pluToRecipe = {};
-    for (var mapItem in itemSalesMap) {
-      final plu = mapItem['PLU']?.toString().trim();
-      if (plu != null && plu.isNotEmpty) {
-        pluToRecipe[plu] = mapItem;
-      }
+    // 5. Process Sales (Optimized Recipe Lookup)
+    Map<String, double> prodSales = {};
+
+    // Pre-process Item Sales Map into a Dictionary
+    Map<String, Map<String, dynamic>> pluDict = {};
+    for (var m in itemSalesMap) {
+      final code = m['PLU']?.toString().trim();
+      if (code != null && code.isNotEmpty) pluDict[code] = m;
     }
 
     for (var sale in storeSalesData) {
-      // A. Check Date Range
+      // 1. Date Check
       String dateRaw = sale['Date'] ?? '';
       DateTime? saleDate = _parseDate(dateRaw);
 
-      // Sales: After Start Date, Up to End Date
       if (saleDate != null && saleDate.isAfter(fromDt) && !saleDate.isAfter(toDt)) {
 
-        // B. Get PLU and Qty
-        final plu = sale['No.']?.toString().trim(); // Ensure this matches CSV column for PLU
-        final qtySold = double.tryParse(sale['Qty']?.toString() ?? '0') ?? 0.0;
-
-        if (plu != null && pluToRecipe.containsKey(plu)) {
-          final recipe = pluToRecipe[plu]!;
+        // 2. PLU Lookup
+        final plu = sale['No.']?.toString().trim();
+        if (plu != null && pluDict.containsKey(plu)) {
+          final recipe = pluDict[plu]!;
           final productName = _normalize(recipe['Product']);
+          final qtySold = double.tryParse(sale['Qty']?.toString() ?? '0') ?? 0.0;
 
-          // C. Calculate Deduction Amount
-          // Formula: Qty Sold * (Quantity in Recipe)
+          // 3. Conversion Logic
           double qtyUsed = qtySold * (double.tryParse(recipe['Quantity']?.toString() ?? '1') ?? 1.0);
-
-          // D. Apply Unit of Measure Conversion
-          // Matches your "Bottle Price" formula logic
           final measure = recipe['Measure']?.toString().toLowerCase() ?? '';
 
           double finalDeduction = 0.0;
-
           if (measure.contains('bottle') || measure.contains('can')) {
-            // 1 sold = 1 bottle deducted
             finalDeduction = qtyUsed;
-          }
-          else if (measure == 'shots' || measure.contains('tot')) {
-            // Need Bottle UoM (e.g., 30 shots per bottle)
-            // Look up UoM from Inventory
-            final inventoryItem = inventoryRef[productName];
-            double bottleUoM = 30.0; // Default fallback
-            if (inventoryItem != null) {
-              bottleUoM = double.tryParse(inventoryItem['Bottle UoM']?.toString() ?? '0') ?? 0;
+          } else if (measure == 'shots' || measure.contains('tot')) {
+            double bottleUoM = 30.0;
+            if (inventoryRef.containsKey(productName)) {
+              bottleUoM = double.tryParse(inventoryRef[productName]!['Bottle UoM']?.toString() ?? '0') ?? 0;
               if (bottleUoM == 0) bottleUoM = 30.0;
             }
             finalDeduction = qtyUsed / bottleUoM;
-          }
-          else if (measure == 'glass') {
-            // Similar to shots, usually 4 or 5 glasses per bottle
-            // You need a specific column for Glass UoM, or use Single UoM
-            final inventoryItem = inventoryRef[productName];
-            double glassUoM = 5.0;
-            if (inventoryItem != null) {
-              // If you have a specific Glass column, use it. Otherwise guess.
-              double uom = double.tryParse(inventoryItem['Single UoM']?.toString() ?? '0') ?? 0;
-              if (uom > 0) glassUoM = uom;
-            }
-            finalDeduction = qtyUsed / glassUoM;
-          }
-          else {
-            // Fallback: Assume 1:1
-            finalDeduction = qtyUsed;
+          } else {
+            finalDeduction = qtyUsed; // Default
           }
 
           prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
@@ -173,12 +143,13 @@ class VarianceService {
       }
     }
 
-    // 5. Compile Report
+    // 6. Compile
     final allNames = {...prevCounts.keys, ...currCounts.keys, ...prodPurchases.keys, ...prodSales.keys};
     List<VarianceItem> report = [];
 
     for (var name in allNames) {
       if (name.isEmpty) continue;
+      // Skip dead items
       if ((prevCounts[name]??0) == 0 && (currCounts[name]??0) == 0 && (prodPurchases[name]??0) == 0 && (prodSales[name]??0) == 0) continue;
 
       report.add(VarianceItem(

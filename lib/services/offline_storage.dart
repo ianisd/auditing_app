@@ -289,25 +289,36 @@ class OfflineStorage with ChangeNotifier {
     notifyListeners();
   }
 
+  // --- DOWNLOAD EXISTING (SMART MERGE & PURGE) ---
   Future<void> saveRemoteStockCounts(List<Map<String, dynamic>> remoteCounts) async {
     if (!_isReady) return;
 
     int added = 0;
     int skipped = 0;
+    int deleted = 0;
 
+    // 1. Track IDs present on the Server
+    Set<String> serverIds = {};
+
+    // 2. Process Remote Data (Update/Add)
     for (var row in remoteCounts) {
       final id = row['stockTake_ID']?.toString() ?? '';
       if (id.isEmpty) continue;
 
+      serverIds.add(id);
+
+      // Check Local Status
       final localData = _counts!.get(id);
       if (localData != null) {
         final localMap = _safeCast(localData);
+        // Protect pending changes
         if (localMap['syncStatus'] == 'pending' || localMap['syncStatus'] == 'deleted') {
           skipped++;
           continue;
         }
       }
 
+      // Overwrite local with server data
       final count = {
         'id': id,
         'stock_id': id,
@@ -329,10 +340,23 @@ class OfflineStorage with ChangeNotifier {
       added++;
     }
 
+    // 3. PURGE: Remove items that exist locally but NOT on Server
+    // (Only if they were previously marked as 'synced'. Don't delete pending work!)
+    final allKeys = _counts!.keys.toList();
+    for (var key in allKeys) {
+      if (!serverIds.contains(key)) {
+        final localItem = _safeCast(_counts!.get(key));
+        if (localItem['syncStatus'] == 'synced') {
+          await _counts!.delete(key);
+          deleted++;
+        }
+      }
+    }
+
     _updatePendingCounts();
     notifyListeners();
     if (kDebugMode) {
-      print("Download merged: $added added/updated, $skipped preserved locally.");
+      print("Sync Result: $added updated, $skipped kept local, $deleted removed (zombies).");
     }
   }
 

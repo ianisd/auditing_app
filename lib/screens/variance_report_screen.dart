@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // For compute
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
@@ -17,17 +17,27 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   String? _startDate;
   String? _endDate;
   List<String> _availableDates = [];
-  List<VarianceItem> _report = [];
+
+  // --- FILTERS ---
+  List<String> _allLocations = [];
+  Set<String> _selectedLocations = {};
+  bool _showBalanced = false;
+
+  List<VarianceItem> _fullReport = [];
+  List<VarianceItem> _filteredReport = [];
+
   bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
-    _loadAvailableDates();
+    _loadInitialData();
   }
 
-  Future<void> _loadAvailableDates() async {
+  Future<void> _loadInitialData() async {
     final storage = context.read<OfflineStorage>();
+
+    // 1. Load Dates
     final counts = await storage.getStockCounts();
     final dates = counts.map((e) {
       final raw = e['date'].toString();
@@ -36,8 +46,15 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
     dates.sort((a, b) => b.compareTo(a));
 
+    // 2. Load Locations
+    final locations = await storage.getLocations();
+    final locNames = locations.map((e) => e['Location'].toString()).toList();
+    locNames.sort();
+
     setState(() {
       _availableDates = dates;
+      _allLocations = locNames;
+
       if (dates.isNotEmpty) _endDate = dates[0];
       if (dates.length > 1) _startDate = dates[1];
     });
@@ -55,18 +72,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final storage = context.read<OfflineStorage>();
     final stocks = await storage.getStockCounts();
     final purchases = await storage.getPurchases();
-    // NEW: Get Raw Sales Data
-    final storeSales = await storage.getStoreSalesData();
-    final itemMap = await storage.getItemSalesMap();
+    // CHANGED: Use specific methods, removed getSales()
+    final storeSalesData = await storage.getStoreSalesData();
+    final itemSalesMap = await storage.getItemSalesMap();
     final inventory = await storage.getAllInventory();
 
     try {
       final results = await compute(_calculateVarianceIsolated, {
         'stocks': stocks,
         'purchases': purchases,
-        // PASS NEW DATA
-        'storeSalesData': storeSales,
-        'itemSalesMap': itemMap,
+        'storeSalesData': storeSalesData,
+        'itemSalesMap': itemSalesMap,
         'inventory': inventory,
         'dateFrom': _startDate,
         'dateTo': _endDate,
@@ -74,16 +90,96 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
       if (mounted) {
         setState(() {
-          _report = results;
+          _fullReport = results;
+          _applyLocalFilters();
           _isLoading = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
     }
   }
 
+  void _applyLocalFilters() {
+    setState(() {
+      _filteredReport = _fullReport.where((item) {
+        // 1. Zero Variance Filter
+        if (!_showBalanced) {
+          if (item.variance.abs() < 0.001) return false;
+        }
+
+        // 2. Location Filter
+        if (_selectedLocations.isNotEmpty) {
+          bool foundInLocation = item.allEntries.any((entry) {
+            final loc = entry['location']?.toString() ?? '';
+            return _selectedLocations.contains(loc);
+          });
+
+          if (!foundInLocation) return false;
+        }
+
+        return true;
+      }).toList();
+    });
+  }
+
   // --- ACTIONS ---
+  void _openLocationFilter() async {
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Filter by Location'),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 300,
+                child: ListView(
+                  children: _allLocations.map((loc) {
+                    return CheckboxListTile(
+                      title: Text(loc),
+                      value: _selectedLocations.contains(loc),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          if (val == true) {
+                            _selectedLocations.add(loc);
+                          } else {
+                            _selectedLocations.remove(loc);
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      _selectedLocations.clear();
+                      Navigator.pop(context);
+                      _applyLocalFilters();
+                    },
+                    child: const Text('Clear All')
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _applyLocalFilters();
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _editCount(Map<String, dynamic> count) async {
     await Navigator.push(
       context,
@@ -93,10 +189,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   }
 
   void _addNewCount(VarianceItem item) async {
-    if (item.inventoryItem == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Product details not found')));
-      return;
-    }
+    if (item.inventoryItem == null) return;
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -111,11 +204,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Logic: Only show dates older than Current Date for "Previous" dropdown
+    final previousDates = _availableDates.where((d) {
+      if (_endDate == null) return true;
+      return d.compareTo(_endDate!) < 0;
+    }).toList();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Variance Report')),
       body: Column(
         children: [
-          // Date Selectors
+          // 1. DATE SELECTORS
           Card(
             margin: const EdgeInsets.all(8),
             child: Padding(
@@ -123,30 +222,72 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
               child: Row(
                 children: [
                   Expanded(
-                    child: _buildDateDropdown('Previous', _startDate, (val) {
-                      setState(() => _startDate = val);
-                      _runReport();
-                    }),
+                    child: _buildDateDropdown(
+                        'Previous',
+                        _startDate,
+                        previousDates,
+                            (val) {
+                          setState(() => _startDate = val);
+                          _runReport();
+                        }
+                    ),
                   ),
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 8.0),
                     child: Icon(Icons.arrow_forward, color: Colors.grey),
                   ),
                   Expanded(
-                    child: _buildDateDropdown('Current', _endDate, (val) {
-                      setState(() => _endDate = val);
-                      _runReport();
-                    }),
+                    child: _buildDateDropdown(
+                        'Current',
+                        _endDate,
+                        _availableDates,
+                            (val) {
+                          setState(() {
+                            _endDate = val;
+                            if (_startDate != null && _startDate!.compareTo(val!) >= 0) {
+                              if (previousDates.isNotEmpty) _startDate = previousDates[0];
+                              else _startDate = null;
+                            }
+                          });
+                          _runReport();
+                        }
+                    ),
                   ),
                 ],
               ),
             ),
           ),
 
+          // 2. FILTERS ROW
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Row(
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.filter_alt, size: 16),
+                  label: Text(_selectedLocations.isEmpty
+                      ? 'All Locations'
+                      : '${_selectedLocations.length} Locations'),
+                  onPressed: _openLocationFilter,
+                ),
+                const Spacer(),
+                const Text("Show Balanced", style: TextStyle(fontSize: 12)),
+                Switch(
+                  value: _showBalanced,
+                  onChanged: (val) {
+                    setState(() => _showBalanced = val);
+                    _applyLocalFilters();
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          // 3. REPORT LIST
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _report.isEmpty
+                : _filteredReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : _buildReportList(),
           ),
@@ -155,19 +296,19 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     );
   }
 
-  Widget _buildDateDropdown(String label, String? value, Function(String?) onChanged) {
+  Widget _buildDateDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
         DropdownButton<String>(
           isExpanded: true,
-          value: value,
-          hint: const Text('Select Date'),
-          items: _availableDates.map((d) {
+          value: items.contains(value) ? value : null,
+          hint: const Text('Select'),
+          items: items.map((d) {
             String display = d;
-            try { display = DateFormat('dd MMM').format(DateTime.parse(d)); } catch(e){}
-            return DropdownMenuItem(value: d, child: Text(display));
+            try { display = DateFormat('dd MMM yyyy').format(DateTime.parse(d)); } catch(e){}
+            return DropdownMenuItem(value: d, child: Text(display, overflow: TextOverflow.ellipsis));
           }).toList(),
           onChanged: onChanged,
         ),
@@ -177,27 +318,22 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
   Widget _buildReportList() {
     return ListView.separated(
-      itemCount: _report.length,
+      itemCount: _filteredReport.length,
       separatorBuilder: (c, i) => const Divider(height: 1),
       itemBuilder: (context, index) {
-        final item = _report[index];
+        final item = _filteredReport[index];
         final isLoss = item.variance < -0.05;
         final isGain = item.variance > 0.05;
         final color = isLoss ? Colors.red : (isGain ? Colors.green : Colors.grey);
         final productName = item.productName.isEmpty ? 'Unknown Product' : item.productName.toUpperCase();
 
-        // 1. Group Counts by Date for display
         final Map<String, List<Map<String, dynamic>>> groupedCounts = {};
         for (var entry in item.allEntries) {
           final d = entry['date'].toString().split('T')[0];
           if (!groupedCounts.containsKey(d)) groupedCounts[d] = [];
           groupedCounts[d]!.add(entry);
         }
-
-        // Sort dates descending
         final sortedDates = groupedCounts.keys.toList()..sort((a, b) => b.compareTo(a));
-
-        // 2. Check if Count Exists for End Date
         bool hasCountToday = groupedCounts.containsKey(_endDate);
 
         return ExpansionTile(
@@ -239,7 +375,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                   const Text('Count History:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
 
-                  // --- GROUPED HISTORY LIST ---
                   if (sortedDates.isEmpty)
                     const Text('No count history in range.', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
 
@@ -285,7 +420,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                     );
                   }),
 
-                  // --- ADD BUTTON (Only if missing) ---
                   if (!hasCountToday) ...[
                     const SizedBox(height: 12),
                     SizedBox(
@@ -324,14 +458,14 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   }
 }
 
-// TOP LEVEL FUNCTION (Must be outside class)
+// TOP LEVEL FUNCTION
 List<VarianceItem> _calculateVarianceIsolated(Map<String, dynamic> params) {
   final service = VarianceService();
   return service.calculateReport(
     stocks: params['stocks'],
     purchases: params['purchases'],
-    storeSalesData: params['storeSalesData'], // New
-    itemSalesMap: params['itemSalesMap'],     // New
+    storeSalesData: params['storeSalesData'],
+    itemSalesMap: params['itemSalesMap'],
     inventory: params['inventory'],
     dateFromStr: params['dateFrom'],
     dateToStr: params['dateTo'],

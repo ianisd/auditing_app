@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
-import 'location_history_screen.dart'; // Import the new screen
+import 'location_history_screen.dart';
 
 class LocationsScreen extends StatefulWidget {
   const LocationsScreen({super.key});
@@ -32,17 +32,29 @@ class _LocationsScreenState extends State<LocationsScreen> {
   }
 
   Future<void> _loadLocations() async {
+    // Safety check before starting
+    if (!mounted) return;
     setState(() => _isLoading = true);
+
     try {
       final storage = context.read<OfflineStorage>();
       final locations = await storage.getLocations();
+
+      // --- CRITICAL FIX: Check mounted after async gap ---
+      if (!mounted) return;
+
       setState(() {
         _locations = locations;
-        _filteredLocations = locations;
+        // Re-apply filter if text exists
+        if (_searchController.text.isNotEmpty) {
+          _filterLocations();
+        } else {
+          _filteredLocations = locations;
+        }
         _isLoading = false;
       });
     } catch (e) {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -65,12 +77,18 @@ class _LocationsScreenState extends State<LocationsScreen> {
     try {
       final syncService = context.read<SyncService>();
       await syncService.refreshMasterData();
+
+      if (!mounted) return;
       await _loadLocations();
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Locations refreshed from server'), backgroundColor: Colors.green));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red));
+      }
     } finally {
-      setState(() => _isRefreshing = false);
+      if (mounted) setState(() => _isRefreshing = false);
     }
   }
 
@@ -99,13 +117,17 @@ class _LocationsScreenState extends State<LocationsScreen> {
               final locData = {
                 'locationID': isEditing ? existingLocation['locationID'] : DateTime.now().millisecondsSinceEpoch.toString(),
                 'Location': nameController.text.trim(),
-                'Image': isEditing ? existingLocation['Image'] : '', // Preserve image if exists
+                'Image': isEditing ? existingLocation['Image'] : '',
               };
 
               await storage.saveLocation(locData);
+              if (!context.mounted) return; // Safety check
               Navigator.pop(ctx);
               _loadLocations();
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isEditing ? 'Updated' : 'Added')));
+
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isEditing ? 'Updated' : 'Added')));
+              }
             },
             child: const Text('Save'),
           ),
@@ -128,6 +150,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
     );
 
     if (confirm == true) {
+      if (!mounted) return;
       await context.read<OfflineStorage>().deleteLocation(id);
       _loadLocations();
     }
