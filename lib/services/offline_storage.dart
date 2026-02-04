@@ -7,8 +7,11 @@ class OfflineStorage with ChangeNotifier {
   Box? _locations;
   Box? _audits;
   Box? _masterCatalog;
+
+  // --- NEW BOXES FOR VARIANCE REPORT ---
   Box? _purchases;
-  Box? _sales;
+  Box? _storeSalesData; // Raw POS Logs
+  Box? _itemSalesMap;   // PLU Definitions
 
   bool _isReady = false;
   String? _currentStoreId;
@@ -29,13 +32,17 @@ class OfflineStorage with ChangeNotifier {
 
     await _closeBoxes();
 
+    // Open Core Boxes
     _counts = await Hive.openBox('store_${storeId}_stock_counts');
     _inventory = await Hive.openBox('store_${storeId}_inventory_items');
     _locations = await Hive.openBox('store_${storeId}_locations');
     _audits = await Hive.openBox('store_${storeId}_audits');
     _masterCatalog = await Hive.openBox('store_${storeId}_master_catalog');
+
+    // Open Variance Report Boxes
     _purchases = await Hive.openBox('store_${storeId}_purchases');
-    _sales = await Hive.openBox('store_${storeId}_sales');
+    _storeSalesData = await Hive.openBox('store_${storeId}_store_sales_data');
+    _itemSalesMap = await Hive.openBox('store_${storeId}_item_sales_map');
 
     _currentStoreId = storeId;
     _isReady = true;
@@ -49,8 +56,10 @@ class OfflineStorage with ChangeNotifier {
     if (_locations != null && _locations!.isOpen) await _locations!.close();
     if (_audits != null && _audits!.isOpen) await _audits!.close();
     if (_masterCatalog != null && _masterCatalog!.isOpen) await _masterCatalog!.close();
+
     if (_purchases != null && _purchases!.isOpen) await _purchases!.close();
-    if (_sales != null && _sales!.isOpen) await _sales!.close();
+    if (_storeSalesData != null && _storeSalesData!.isOpen) await _storeSalesData!.close();
+    if (_itemSalesMap != null && _itemSalesMap!.isOpen) await _itemSalesMap!.close();
   }
 
   Map<String, dynamic> _safeCast(dynamic item) {
@@ -280,7 +289,6 @@ class OfflineStorage with ChangeNotifier {
     notifyListeners();
   }
 
-  // --- DOWNLOAD EXISTING (SAFE MERGE) ---
   Future<void> saveRemoteStockCounts(List<Map<String, dynamic>> remoteCounts) async {
     if (!_isReady) return;
 
@@ -291,18 +299,15 @@ class OfflineStorage with ChangeNotifier {
       final id = row['stockTake_ID']?.toString() ?? '';
       if (id.isEmpty) continue;
 
-      // 1. CHECK LOCAL STATUS FIRST
       final localData = _counts!.get(id);
       if (localData != null) {
         final localMap = _safeCast(localData);
-        // CRITICAL: If local item is PENDING or DELETED, DO NOT overwrite it.
         if (localMap['syncStatus'] == 'pending' || localMap['syncStatus'] == 'deleted') {
           skipped++;
           continue;
         }
       }
 
-      // 2. Safe to overwrite/add
       final count = {
         'id': id,
         'stock_id': id,
@@ -342,7 +347,8 @@ class OfflineStorage with ChangeNotifier {
     final audits = _audits!.values.map((e) => _safeCast(e)).toList();
     return audits.firstWhere((a) => a['Current Audit'] == true || a['currentAudit'] == true, orElse: () => audits.isNotEmpty ? audits.first : {});
   }
-// --- NEW: PURCHASES ---
+
+  // --- NEW: PURCHASES ---
   Future<void> savePurchases(List<dynamic> items) async {
     if (!_isReady) return;
     await _purchases!.clear();
@@ -354,17 +360,30 @@ class OfflineStorage with ChangeNotifier {
     return _purchases!.values.map((e) => _safeCast(e)).toList();
   }
 
-  // --- NEW: SALES ---
-  Future<void> saveSales(List<dynamic> items) async {
+  // --- NEW: STORE SALES DATA (RAW POS LOGS) ---
+  Future<void> saveStoreSalesData(List<dynamic> items) async {
     if (!_isReady) return;
-    await _sales!.clear();
-    await _sales!.addAll(items.map((e) => _safeCast(e)));
+    await _storeSalesData!.clear();
+    await _storeSalesData!.addAll(items.map((e) => _safeCast(e)));
   }
 
-  Future<List<Map<String, dynamic>>> getSales() async {
+  Future<List<Map<String, dynamic>>> getStoreSalesData() async {
     if (!_isReady) return [];
-    return _sales!.values.map((e) => _safeCast(e)).toList();
+    return _storeSalesData!.values.map((e) => _safeCast(e)).toList();
   }
+
+  // --- NEW: ITEM SALES MAP (PLU -> INVENTORY LINK) ---
+  Future<void> saveItemSalesMap(List<dynamic> items) async {
+    if (!_isReady) return;
+    await _itemSalesMap!.clear();
+    await _itemSalesMap!.addAll(items.map((e) => _safeCast(e)));
+  }
+
+  Future<List<Map<String, dynamic>>> getItemSalesMap() async {
+    if (!_isReady) return [];
+    return _itemSalesMap!.values.map((e) => _safeCast(e)).toList();
+  }
+
   // --- MAINTENANCE ---
   Future<void> clearAllStockCounts() async { if (_isReady) { await _counts!.clear(); _updatePendingCounts(); notifyListeners(); } }
   Future<void> clearInventory() async { if (_isReady) { await _inventory!.clear(); notifyListeners(); } }
@@ -377,6 +396,9 @@ class OfflineStorage with ChangeNotifier {
     await _inventory!.clear();
     await _locations!.clear();
     await _audits!.clear();
+    await _purchases!.clear();
+    await _storeSalesData!.clear();
+    await _itemSalesMap!.clear();
     _updatePendingCounts();
     notifyListeners();
   }
@@ -389,6 +411,8 @@ class OfflineStorage with ChangeNotifier {
       'locations': _locations!.length,
       'audits': _audits!.length,
       'pendingSync': _pendingCounts.length,
+      'purchases': _purchases!.length,
+      'sales': _storeSalesData!.length,
     };
   }
 }

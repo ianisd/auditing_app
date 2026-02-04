@@ -108,7 +108,15 @@ class GoogleSheetsService {
   Future<List<Map<String, dynamic>>> fetchComputedCosts() async => _fetchTable('MasterCostsComputed');
 
   Future<List<Map<String, dynamic>>> fetchPurchases() async => _fetchTable('Purchases');
-  Future<List<Map<String, dynamic>>> fetchSales() async => _fetchTable('ItemSales');
+  Future<List<Map<String, dynamic>>> fetchStoreSalesData() async {
+    // This matches the 'StoreSalesData' key we added to the App Script Config
+    return _fetchTable('StoreSalesData');
+  }
+
+  Future<List<Map<String, dynamic>>> fetchItemSales() async {
+    // This matches the 'ItemSales' key we added to the App Script Config
+    return _fetchTable('ItemSales');
+  }
 
   // Generic Fetch Helper
   Future<List<Map<String, dynamic>>> _fetchTable(String tableName) async {
@@ -162,4 +170,5 @@ class GoogleSheetsService {
       return [];
     }
   }
+
 }

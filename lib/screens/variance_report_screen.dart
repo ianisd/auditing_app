@@ -55,14 +55,18 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final storage = context.read<OfflineStorage>();
     final stocks = await storage.getStockCounts();
     final purchases = await storage.getPurchases();
-    final sales = await storage.getSales();
+    // NEW: Get Raw Sales Data
+    final storeSales = await storage.getStoreSalesData();
+    final itemMap = await storage.getItemSalesMap();
     final inventory = await storage.getAllInventory();
 
     try {
       final results = await compute(_calculateVarianceIsolated, {
         'stocks': stocks,
         'purchases': purchases,
-        'sales': sales,
+        // PASS NEW DATA
+        'storeSalesData': storeSales,
+        'itemSalesMap': itemMap,
         'inventory': inventory,
         'dateFrom': _startDate,
         'dateTo': _endDate,
@@ -326,7 +330,8 @@ List<VarianceItem> _calculateVarianceIsolated(Map<String, dynamic> params) {
   return service.calculateReport(
     stocks: params['stocks'],
     purchases: params['purchases'],
-    sales: params['sales'],
+    storeSalesData: params['storeSalesData'], // New
+    itemSalesMap: params['itemSalesMap'],     // New
     inventory: params['inventory'],
     dateFromStr: params['dateFrom'],
     dateToStr: params['dateTo'],

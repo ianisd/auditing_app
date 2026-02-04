@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import 'debug_log_screen.dart'; // Import the new screen
+import 'debug_log_screen.dart';
+import 'debug_data_screen.dart';
 
 class OfflineScreen extends StatefulWidget {
   const OfflineScreen({super.key});
@@ -71,6 +72,7 @@ class _OfflineScreenState extends State<OfflineScreen> {
           _buildStatCard('Pending Sync', _stats['pendingSync'] ?? 0, Colors.orange, null),
           _buildStatCard('Stock Counts', _stats['stockCounts'] ?? 0, Colors.blue, () => _clearData('Counts')),
           const Divider(height: 32),
+
           const Padding(
             padding: EdgeInsets.only(bottom: 8.0),
             child: Text('Master Data', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
@@ -78,6 +80,7 @@ class _OfflineScreenState extends State<OfflineScreen> {
           _buildStatCard('Inventory Items', _stats['inventoryItems'] ?? 0, Colors.green, () => _clearData('Inventory')),
           _buildStatCard('Locations', _stats['locations'] ?? 0, Colors.purple, () => _clearData('Locations')),
           _buildStatCard('Audits', _stats['audits'] ?? 0, Colors.teal, () => _clearData('Audits')),
+
           const SizedBox(height: 20),
           OutlinedButton.icon(
             onPressed: () => _clearData('All'),
@@ -88,12 +91,26 @@ class _OfflineScreenState extends State<OfflineScreen> {
               padding: const EdgeInsets.all(16),
             ),
           ),
+
           const SizedBox(height: 20),
-          // --- NEW BUTTON FOR LOGS ---
-          OutlinedButton.icon(
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugLogScreen())),
-            icon: const Icon(Icons.bug_report, color: Colors.grey),
-            label: const Text('VIEW DEBUG LOGS', style: TextStyle(color: Colors.grey)),
+          const Divider(),
+          const Text("Diagnostics", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+
+          // Button 1: System Logs (Errors/Sync status)
+          ListTile(
+            leading: const Icon(Icons.terminal, color: Colors.grey),
+            title: const Text('View System Logs'),
+            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugLogScreen())),
+          ),
+
+          // Button 2: Data Debugger (Check Sales/Purchase Dates)
+          ListTile(
+            leading: const Icon(Icons.table_chart, color: Colors.blue),
+            title: const Text('Check Sales & Purchases Data'),
+            subtitle: const Text('Verify dates for variance report'),
+            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugDataScreen())),
           ),
         ],
       ),

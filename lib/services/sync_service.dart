@@ -173,7 +173,8 @@ class SyncService with ChangeNotifier {
       final locations = await googleSheets.fetchLocations();
       final audits = await googleSheets.fetchAudits();
       final purchases = await googleSheets.fetchPurchases();
-      final sales = await googleSheets.fetchSales();
+      final storeSales = await googleSheets.fetchStoreSalesData();
+      final itemSalesMap = await googleSheets.fetchItemSales();
 
       // 2. Fetch LATEST COSTS from Master DB
       print('Fetching Computed Costs...');
@@ -208,7 +209,8 @@ class SyncService with ChangeNotifier {
       await offlineStorage.bulkSaveLocations(locations);
       await offlineStorage.saveMasterCatalog(masterCatalog);
       await offlineStorage.savePurchases(purchases);
-      await offlineStorage.saveSales(sales);
+      await offlineStorage.saveStoreSalesData(storeSales); // New
+      await offlineStorage.saveItemSalesMap(itemSalesMap); // New
 
       for (final audit in audits) await offlineStorage.saveAudit(audit);
 
