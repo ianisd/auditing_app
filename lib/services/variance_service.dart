@@ -11,7 +11,7 @@ class VarianceItem {
   final double currentCount;
 
   final double costPrice;
-  final double retailPrice; // NEW
+  final double retailPrice;
 
   final List<Map<String, dynamic>> allEntries;
   final Map<String, dynamic>? inventoryItem;
@@ -39,6 +39,7 @@ class VarianceItem {
 
 class VarianceService {
 
+  // Normalize: Lowercase and Trim whitespace to handle small differences
   String _normalize(String? input) => input?.toString().toLowerCase().trim() ?? '';
 
   DateTime _stripTime(DateTime dt) {
@@ -61,7 +62,7 @@ class VarianceService {
     final toDate = _stripTime(toDtRaw);
 
     Map<String, double> prodCosts = {};
-    Map<String, double> prodRetail = {}; // NEW: Store calculated retail prices
+    Map<String, double> prodRetail = {};
     Map<String, String> prodMainCat = {};
     Map<String, String> prodCat = {};
     Map<String, Map<String, dynamic>> inventoryRef = {};
@@ -75,51 +76,54 @@ class VarianceService {
       prodCat[name] = item['Category']?.toString() ?? 'General';
     }
 
-    // --- NEW: CALCULATE RETAIL PRICE (PER BOTTLE) ---
-    // Logic: Look at Item Sales definitions.
-    // If Bottle/Can -> Price = Sell
-    // If Shots -> Price = Sell * BottleUoM (from Inventory)
-    // If Glass -> Price = Sell / SingleUoM (from Inventory)
+    // 2. Build Robust Recipe Map (Handle Same PLU, Different Names)
+    // Map<PLU, List<Recipe>>
+    Map<String, List<Map<String, dynamic>>> pluToRecipes = {};
+
     for (var row in itemSalesMap) {
+      final plu = row['PLU']?.toString().trim();
+      if (plu == null || plu.isEmpty) continue;
+
+      if (!pluToRecipes.containsKey(plu)) {
+        pluToRecipes[plu] = [];
+      }
+      pluToRecipes[plu]!.add(row);
+
+      // -- CALCULATE RETAIL PRICE --
       final name = _normalize(row['Product']);
       final measure = row['Measure']?.toString().toLowerCase() ?? '';
       final sellPrice = double.tryParse(row['Sell']?.toString() ?? '0') ?? 0.0;
 
-      if (sellPrice == 0) continue;
+      if (sellPrice > 0) {
+        double calculatedBottlePrice = 0.0;
+        final invItem = inventoryRef[name];
+        double bottleUoM = 30.0;
+        double singleUoM = 1.0;
 
-      double calculatedBottlePrice = 0.0;
+        if (invItem != null) {
+          bottleUoM = double.tryParse(invItem['Bottle UoM']?.toString() ?? '0') ?? 0;
+          singleUoM = double.tryParse(invItem['Single UoM']?.toString() ?? '0') ?? 0;
+          if (bottleUoM == 0) bottleUoM = 30.0;
+          if (singleUoM == 0) singleUoM = 1.0;
+        }
 
-      // Get UoM info from Inventory
-      final invItem = inventoryRef[name];
-      double bottleUoM = 30.0; // Default
-      double singleUoM = 1.0;  // Default
+        if (measure.contains('bottle') || measure.contains('can')) {
+          calculatedBottlePrice = sellPrice;
+        } else if (measure == 'shots' || measure.contains('tot')) {
+          calculatedBottlePrice = sellPrice * bottleUoM;
+        } else if (measure == 'glass') {
+          calculatedBottlePrice = sellPrice / singleUoM;
+        } else {
+          calculatedBottlePrice = sellPrice;
+        }
 
-      if (invItem != null) {
-        bottleUoM = double.tryParse(invItem['Bottle UoM']?.toString() ?? '0') ?? 0;
-        singleUoM = double.tryParse(invItem['Single UoM']?.toString() ?? '0') ?? 0;
-        if (bottleUoM == 0) bottleUoM = 30.0;
-        if (singleUoM == 0) singleUoM = 1.0;
-      }
-
-      if (measure.contains('bottle') || measure.contains('can')) {
-        calculatedBottlePrice = sellPrice;
-      } else if (measure == 'shots' || measure.contains('tot')) {
-        calculatedBottlePrice = sellPrice * bottleUoM;
-      } else if (measure == 'glass') {
-        // As per your formula: M2:M / VLOOKUP(SingleUoM)
-        calculatedBottlePrice = sellPrice / singleUoM;
-      } else {
-        // Fallback
-        calculatedBottlePrice = sellPrice;
-      }
-
-      // Store the highest calculated price (in case multiple PLUs exist for same product)
-      if (calculatedBottlePrice > (prodRetail[name] ?? 0)) {
-        prodRetail[name] = calculatedBottlePrice;
+        if (calculatedBottlePrice > (prodRetail[name] ?? 0)) {
+          prodRetail[name] = calculatedBottlePrice;
+        }
       }
     }
 
-    // 2. Stock Counts
+    // 3. Stock Counts
     Map<String, double> prevCounts = {};
     Map<String, double> currCounts = {};
     Map<String, List<Map<String, dynamic>>> prodHistory = {};
@@ -147,7 +151,7 @@ class VarianceService {
       }
     }
 
-    // 3. Purchases
+    // 4. Purchases
     Map<String, double> prodPurchases = {};
     for (var row in purchases) {
       String dateRaw = row['Stock Delivery Date'] ?? '';
@@ -168,14 +172,8 @@ class VarianceService {
       }
     }
 
-    // 4. Sales
+    // 5. Sales (STRICT MATCHING ONLY)
     Map<String, double> prodSales = {};
-    Map<String, Map<String, dynamic>> pluDict = {};
-
-    for (var m in itemSalesMap) {
-      final code = m['PLU']?.toString().trim();
-      if (code != null && code.isNotEmpty) pluDict[code] = m;
-    }
 
     for (var sale in storeSalesData) {
       String dateRaw = sale['Date'] ?? '';
@@ -188,40 +186,59 @@ class VarianceService {
 
         if (isStrictlyAfterStart && isBeforeOrOnEnd) {
           final plu = sale['No.']?.toString().trim();
-          if (plu != null && pluDict.containsKey(plu)) {
-            final recipe = pluDict[plu]!;
-            final productName = _normalize(recipe['Product']);
-            final qtySold = double.tryParse(sale['Qty']?.toString() ?? '0') ?? 0.0;
+          final menuItemName = _normalize(sale['Item']);
 
-            double qtyUsed = qtySold * (double.tryParse(recipe['Quantity']?.toString() ?? '1') ?? 1.0);
-            final measure = recipe['Measure']?.toString().toLowerCase() ?? '';
+          if (plu != null && pluToRecipes.containsKey(plu)) {
+            final possibleRecipes = pluToRecipes[plu]!;
 
-            double finalDeduction = 0.0;
-            if (measure.contains('bottle') || measure.contains('can')) {
-              finalDeduction = qtyUsed;
-            } else if (measure == 'shots' || measure.contains('tot')) {
-              double bottleUoM = 30.0;
-              if (inventoryRef.containsKey(productName)) {
-                bottleUoM = double.tryParse(inventoryRef[productName]!['Bottle UoM']?.toString() ?? '0') ?? 0;
-                if (bottleUoM == 0) bottleUoM = 30.0;
+            // --- STRICT MODE ---
+            // Try Exact Name Match. If not found, SKIP this sale.
+            // This prevents "Burger" being deducted when the sale was actually "Coke"
+            // just because they share a PLU.
+            try {
+              final selectedRecipe = possibleRecipes.firstWhere(
+                      (r) => _normalize(r['Menu Item']) == menuItemName
+              );
+
+              final productName = _normalize(selectedRecipe['Product']);
+              final qtySold = double.tryParse(sale['Qty']?.toString() ?? '0') ?? 0.0;
+
+              double qtyUsed = qtySold * (double.tryParse(selectedRecipe['Quantity']?.toString() ?? '1') ?? 1.0);
+              final measure = selectedRecipe['Measure']?.toString().toLowerCase() ?? '';
+
+              double finalDeduction = 0.0;
+              if (measure.contains('bottle') || measure.contains('can')) {
+                finalDeduction = qtyUsed;
+              } else if (measure == 'shots' || measure.contains('tot')) {
+                double bottleUoM = 30.0;
+                if (inventoryRef.containsKey(productName)) {
+                  bottleUoM = double.tryParse(inventoryRef[productName]!['Bottle UoM']?.toString() ?? '0') ?? 0;
+                  if (bottleUoM == 0) bottleUoM = 30.0;
+                }
+                finalDeduction = qtyUsed / bottleUoM;
+              } else {
+                finalDeduction = qtyUsed;
               }
-              finalDeduction = qtyUsed / bottleUoM;
-            } else {
-              finalDeduction = qtyUsed;
-            }
 
-            prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+              prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+
+            } catch (e) {
+              // No exact match found for PLU + Name.
+              // We intentionally do NOTHING here.
+              // Better to report 0 sales than wrong sales.
+            }
           }
         }
       }
     }
 
-    // 5. Compile
+    // 6. Compile Report
     final allNames = {...prevCounts.keys, ...currCounts.keys, ...prodPurchases.keys, ...prodSales.keys};
     List<VarianceItem> report = [];
 
     for (var name in allNames) {
       if (name.isEmpty) continue;
+      // Filter out items with absolutely zero activity
       if ((prevCounts[name]??0) == 0 && (currCounts[name]??0) == 0 && (prodPurchases[name]??0) == 0 && (prodSales[name]??0) == 0) continue;
 
       report.add(VarianceItem(
@@ -233,7 +250,7 @@ class VarianceService {
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
         costPrice: prodCosts[name] ?? 0,
-        retailPrice: prodRetail[name] ?? 0, // USE CALCULATED RETAIL PRICE
+        retailPrice: prodRetail[name] ?? 0,
         allEntries: prodHistory[name] ?? [],
         inventoryItem: inventoryRef[name],
       ));
@@ -247,6 +264,7 @@ class VarianceService {
     try {
       if (dateStr.contains('/')) {
         final parts = dateStr.split('/');
+        // Assuming dd/MM/yyyy
         if (parts.length == 3) {
           return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
         }
