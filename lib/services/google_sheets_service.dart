@@ -44,6 +44,20 @@ class GoogleSheetsService {
     }
   }
 
+  // 3. Sync New Locations
+  Future<bool> syncNewLocations(List<Map<String, dynamic>> locations) async {
+    try {
+      final body = json.encode({
+        'endpoint': 'syncNewLocations', // We will add this to the script next
+        'data': locations
+      });
+      return _sendPostRequest(body);
+    } catch (e) {
+      print('Sync New Locations exception: $e');
+      return false;
+    }
+  }
+
   // Helper for POST requests
   Future<bool> _sendPostRequest(String body) async {
     final client = http.Client();

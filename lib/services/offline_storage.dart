@@ -165,26 +165,22 @@ class OfflineStorage with ChangeNotifier {
     notifyListeners();
   }
 
-  // --- LOCATIONS ---
-  Future<void> bulkSaveLocations(List<dynamic> locations) async {
-    if (!_isReady) return;
-    final Map<String, Map<String, dynamic>> batch = {};
-    for (final rawLoc in locations) {
-      if (rawLoc is Map) {
-        final loc = Map<String, dynamic>.from(rawLoc);
-        final id = loc['locationID']?.toString() ?? '';
-        if (id.isNotEmpty) batch[id] = loc;
-      }
-    }
-    await _locations!.putAll(batch);
-  }
+  // =========================================================
+  // --- LOCATIONS (UPDATED FOR SYNC) ---
+  // =========================================================
+
 
   Future<void> saveLocation(Map<String, dynamic> location) async {
     if (!_isReady) return;
     final locationId = location['locationID']?.toString() ??
         location['id']?.toString() ??
         DateTime.now().millisecondsSinceEpoch.toString();
+
     location['locationID'] = locationId;
+
+    // MARK AS PENDING so SyncService picks it up
+    location['syncStatus'] = 'pending';
+
     await _locations!.put(locationId, location);
     notifyListeners();
   }
@@ -199,6 +195,55 @@ class OfflineStorage with ChangeNotifier {
     if (!_isReady) return [];
     return _locations!.values.map((e) => _safeCast(e)).toList();
   }
+
+  // --- NEW: Methods for SyncService to use ---
+
+  // Get locations that haven't been uploaded yet
+  Future<void> bulkSaveLocations(List<dynamic> locations) async {
+    if (!_isReady) return;
+    final Map<String, Map<String, dynamic>> batch = {};
+
+    for (final rawLoc in locations) {
+      if (rawLoc is Map) {
+        final loc = Map<String, dynamic>.from(rawLoc);
+        // Ensure we have a valid ID
+        final id = loc['locationID']?.toString() ??
+            loc['id']?.toString() ??
+            '';
+
+        if (id.isNotEmpty) {
+          batch[id] = loc;
+        }
+      }
+    }
+
+    // Save all locations at once (much faster)
+    await _locations!.putAll(batch);
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingLocations() async {
+    if (!_isReady) return [];
+    return _locations!.values
+        .map((e) => _safeCast(e))
+        .where((item) => item['syncStatus'] == 'pending')
+        .toList();
+  }
+
+  // Mark them as synced after upload
+  Future<void> markLocationsAsSynced(List<String> ids) async {
+    if (!_isReady) return;
+    for (var id in ids) {
+      final data = _locations!.get(id);
+      if (data != null) {
+        final item = _safeCast(data);
+        item['syncStatus'] = 'synced';
+        await _locations!.put(id, item);
+      }
+    }
+    notifyListeners();
+  }
+  // =========================================================
 
   // --- STOCK COUNTS ---
   Future<void> saveStockCount(Map<String, dynamic> count) async {

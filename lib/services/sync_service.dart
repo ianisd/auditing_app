@@ -75,7 +75,16 @@ class SyncService with ChangeNotifier {
         logger?.info('Sync Aborted: No Internet Connection');
         return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
       }
-
+      // 0. Sync New Locations (ADD THIS BLOCK)
+      final newLocations = await offlineStorage.getPendingLocations();
+      if (newLocations.isNotEmpty) {
+        logger?.info('Uploading ${newLocations.length} new locations...');
+        final success = await googleSheets.syncNewLocations(newLocations);
+        if (success) {
+          final ids = newLocations.map((e) => e['locationID'].toString()).toList();
+          await offlineStorage.markLocationsAsSynced(ids);
+        }
+      }
       // 1. Sync New Products
       final newProducts = await offlineStorage.getPendingNewProducts();
       if (newProducts.isNotEmpty) {
@@ -150,7 +159,6 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  // --- 2. REFRESH MASTER DATA (DOWNLOAD) ---
   Future<SyncResult> refreshMasterData() async {
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
@@ -168,7 +176,7 @@ class SyncService with ChangeNotifier {
 
       print('Refreshing Master Data...');
 
-      // 1. Fetch RAW Store Inventory
+      // 1. Fetch RAW Store Inventory & Data
       var inventory = await googleSheets.fetchInventory();
       final locations = await googleSheets.fetchLocations();
       final audits = await googleSheets.fetchAudits();
@@ -180,37 +188,56 @@ class SyncService with ChangeNotifier {
       print('Fetching Computed Costs...');
       final masterCosts = await googleSheets.fetchComputedCosts();
 
-      // Indexing: "glenfiddich 18yr" -> 1800.57
+      // Create Index: "glenfiddich 18yr" -> 1800.57
       final costMap = {
         for (var c in masterCosts)
           c['productName']?.toString().toLowerCase().trim() : c['avgCost']
       };
 
-      // 3. FORCE UPDATE: Inject Master Costs into Store Inventory
+      logger?.info('Loaded ${costMap.length} costs from Master DB');
+
+      // 3. SMART UPDATE: Inject Master Costs into Store Inventory
+      int costsUpdated = 0;
       final updatedInventory = inventory.map((item) {
         final name = item['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
         final newItem = Map<String, dynamic>.from(item);
 
-        // Strict Override: If Master has a cost, use it. Else 0.0.
-        newItem['Cost Price'] = costMap[name] ?? 0.0;
+        // CHECK 1: Try Master Cost
+        dynamic finalCost = costMap[name];
+
+        // CHECK 2: If Master missing, try Existing Inventory Cost
+        if (finalCost == null || finalCost == 0) {
+          finalCost = item['Cost Price'];
+        }
+
+        // CHECK 3: Ensure double
+        double parsedCost = 0.0;
+        if (finalCost != null) {
+          parsedCost = double.tryParse(finalCost.toString()) ?? 0.0;
+        }
+
+        if (costMap.containsKey(name)) costsUpdated++;
+
+        newItem['Cost Price'] = parsedCost;
         return newItem;
       }).toList();
 
-      // 4. Fetch Master Catalog (Tier 2) - Passing the same cost map
-      print('Fetching Full Master Catalog...');
+      logger?.info('Matched costs for $costsUpdated out of ${updatedInventory.length} items');
+
+      // 4. Fetch Master Catalog
       final masterCatalog = await _fetchAndMergeMasterDB(preFetchedCosts: costMap);
 
       // 5. Save to Local Storage
       await offlineStorage.clearInventory();
-      await offlineStorage.clearLocations();
+      // await offlineStorage.clearLocations(); // KEEP THIS COMMENTED OUT!
       await offlineStorage.clearAudits();
 
       await offlineStorage.bulkSaveInventory(updatedInventory);
       await offlineStorage.bulkSaveLocations(locations);
       await offlineStorage.saveMasterCatalog(masterCatalog);
       await offlineStorage.savePurchases(purchases);
-      await offlineStorage.saveStoreSalesData(storeSales); // New
-      await offlineStorage.saveItemSalesMap(itemSalesMap); // New
+      await offlineStorage.saveStoreSalesData(storeSales);
+      await offlineStorage.saveItemSalesMap(itemSalesMap);
 
       for (final audit in audits) await offlineStorage.saveAudit(audit);
 
@@ -220,7 +247,7 @@ class SyncService with ChangeNotifier {
       return SyncResult(
           hasInternet: true,
           syncedCount: 0,
-          message: 'Synced ${updatedInventory.length} items. Costs updated from Master.',
+          message: 'Synced ${updatedInventory.length} items. Updated $costsUpdated costs.',
           success: true
       );
 

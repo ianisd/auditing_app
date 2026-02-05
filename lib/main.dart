@@ -8,25 +8,36 @@ import 'services/offline_storage.dart';
 import 'services/google_sheets_service.dart';
 import 'services/sync_service.dart';
 import 'services/store_manager.dart';
-import 'services/logger_service.dart'; // Import Logger
+import 'services/logger_service.dart';
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
+
+// Import your generated adapters if you have run 'flutter pub run build_runner build'
+// import 'models/inventory_item.dart';
+// import 'models/store_config.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 1. Device Orientation
   if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   }
 
+  // 2. Initialize Hive
   await Hive.initFlutter();
 
-  // 1. Initialize Logger FIRST
-  // 1. Init Logger First
+  // --- OPTIONAL: Register Adapters ---
+  // If you generated the .g.dart files, register them here to avoid crashes later.
+  // Hive.registerAdapter(InventoryItemAdapter());
+  // Hive.registerAdapter(StoreConfigAdapter());
+
+  // 3. Init Logger
   final logger = LoggerService();
   await logger.init();
+  logger.info("App Started (v1.4.0)");
 
-  // 2. Set up Global Error Catching
+  // 4. Set up Global Error Catching
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
     logger.error('UI Error', details.exception.toString());
@@ -37,43 +48,39 @@ void main() async {
     return true;
   };
 
-  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  }
-
-  await Hive.initFlutter();
-  logger.info("App Started (v1.2.0)"); // Log startup
-
-  // Initialize Global Services
+  // 5. Initialize Global Services
   final storeManager = StoreManager();
-  await storeManager.init();
+  await storeManager.init(); // Load active store info before app starts
 
   final offlineStorage = OfflineStorage();
+  // We do NOT init offlineStorage here; RootSwitcher handles that based on active store.
 
   runApp(
     MultiProvider(
       providers: [
-        // 2. Add Logger Provider
         Provider<LoggerService>.value(value: logger),
-
         ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: offlineStorage),
 
+        // SyncService depends on the URL in StoreManager
         ChangeNotifierProxyProvider<StoreManager, SyncService>(
           create: (context) => SyncService(
             offlineStorage: offlineStorage,
             googleSheets: GoogleSheetsService(scriptUrl: ''),
-            logger: logger, // <--- PASS LOGGER HERE
+            logger: logger,
           ),
           update: (context, storeMgr, previousSyncService) {
             final url = storeMgr.activeStore?['url'] ?? '';
+
+            // Avoid recreating service if URL hasn't changed
             if (previousSyncService != null && previousSyncService.googleSheets.scriptUrl == url) {
               return previousSyncService;
             }
+
             return SyncService(
               offlineStorage: offlineStorage,
               googleSheets: GoogleSheetsService(scriptUrl: url),
-              logger: logger, // <--- AND HERE
+              logger: logger,
             );
           },
         ),
@@ -112,7 +119,9 @@ class _RootSwitcherState extends State<RootSwitcher> {
   @override
   void initState() {
     super.initState();
+    // Check initial state
     WidgetsBinding.instance.addPostFrameCallback((_) => _handleStoreChange());
+    // Listen for future changes
     context.read<StoreManager>().addListener(_handleStoreChange);
   }
 
@@ -127,8 +136,11 @@ class _RootSwitcherState extends State<RootSwitcher> {
     final storeManager = context.read<StoreManager>();
     final offlineStorage = context.read<OfflineStorage>();
 
+    // If we have an active store, make sure OfflineStorage is pointing to the right box
     if (storeManager.activeStore != null) {
       final activeId = storeManager.activeStore!['id'];
+
+      // If storage isn't ready OR we switched stores, initialize the specific store box
       if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
         offlineStorage.switchStore(activeId);
       }
@@ -140,14 +152,17 @@ class _RootSwitcherState extends State<RootSwitcher> {
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
 
+    // 1. No store selected -> Go to Setup
     if (storeManager.activeStore == null) {
       return const SetupStoreScreen();
     }
 
+    // 2. Store selected, but Hive boxes loading -> Show Spinner
     if (!offlineStorage.isReady) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    // 3. Ready -> Go Home
     return const HomeScreen();
   }
 }
