@@ -2,7 +2,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'offline_storage.dart';
 import 'google_sheets_service.dart';
-import 'logger_service.dart'; // Import Logger
+import 'logger_service.dart';
 
 class SyncResult {
   final bool hasInternet;
@@ -22,7 +22,7 @@ class SyncService with ChangeNotifier {
   final OfflineStorage offlineStorage;
   final GoogleSheetsService googleSheets;
   final Connectivity connectivity;
-  final LoggerService? logger; // Logger field
+  final LoggerService? logger;
 
   bool _isSyncing = false;
   String _lastSyncTime = '';
@@ -39,7 +39,7 @@ class SyncService with ChangeNotifier {
   SyncService({
     required this.offlineStorage,
     required this.googleSheets,
-    this.logger, // Constructor
+    this.logger,
   }) : connectivity = Connectivity() {
     _initConnectivity();
   }
@@ -60,22 +60,30 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  // --- 1. SYNC ALL (UPLOAD) ---
+  double _safeDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is int) return value.toDouble();
+    if (value is double) return value;
+    return double.tryParse(value.toString()) ?? 0.0;
+  }
+
+  // --- SYNC ALL (UPLOAD) ---
   Future<SyncResult> syncAll() async {
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
-    logger?.info('Sync Started: Checking for pending uploads...');
+    logger?.info('Sync Started...');
 
     try {
       final hasInternet = await checkConnectivity();
       if (!hasInternet) {
-        logger?.info('Sync Aborted: No Internet Connection');
+        logger?.info('Sync Aborted: No Internet');
         return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
       }
-      // 0. Sync New Locations (ADD THIS BLOCK)
+
+      // 0. Sync Locations
       final newLocations = await offlineStorage.getPendingLocations();
       if (newLocations.isNotEmpty) {
         logger?.info('Uploading ${newLocations.length} new locations...');
@@ -85,7 +93,8 @@ class SyncService with ChangeNotifier {
           await offlineStorage.markLocationsAsSynced(ids);
         }
       }
-      // 1. Sync New Products
+
+      // 1. Sync Products
       final newProducts = await offlineStorage.getPendingNewProducts();
       if (newProducts.isNotEmpty) {
         logger?.info('Uploading ${newProducts.length} new products...');
@@ -99,7 +108,7 @@ class SyncService with ChangeNotifier {
       if (pending.isEmpty) {
         _lastSyncTime = _formatDateTime(DateTime.now());
         notifyListeners();
-        logger?.info('Sync Complete: Nothing to upload');
+        logger?.info('Sync Complete: Up to date');
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Up to date', success: true);
       }
 
@@ -107,22 +116,12 @@ class SyncService with ChangeNotifier {
       final success = await googleSheets.syncStockCounts(pending);
 
       if (success) {
-        final ids = pending
-            .where((count) => count['id'] != null)
-            .map((count) => count['id'].toString())
-            .toList();
-
+        final ids = pending.where((c) => c['id'] != null).map((c) => c['id'].toString()).toList();
         await offlineStorage.markMultipleAsSynced(ids);
-
         _lastSyncTime = _formatDateTime(DateTime.now());
         _lastSyncCount = pending.length;
-        _lastError = null;
-
-        logger?.info('Sync Success: Uploaded ${pending.length} counts');
-        return SyncResult(hasInternet: true, syncedCount: pending.length, message: 'Synced ${pending.length} counts', success: true);
+        return SyncResult(hasInternet: true, syncedCount: pending.length, message: 'Synced', success: true);
       } else {
-        _lastError = 'Sync failed';
-        logger?.error('Sync Failed: Server returned failure status');
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Sync failed', success: false);
       }
     } catch (e) {
@@ -142,16 +141,12 @@ class SyncService with ChangeNotifier {
     try {
       final hasInternet = await checkConnectivity();
       if (!hasInternet) throw Exception('No internet');
-
-      logger?.info('Downloading existing counts from server...');
+      logger?.info('Downloading existing counts...');
       final remoteCounts = await googleSheets.fetchStockCounts();
-
-      if (remoteCounts.isNotEmpty) {
-        await offlineStorage.saveRemoteStockCounts(remoteCounts);
-      }
+      if (remoteCounts.isNotEmpty) await offlineStorage.saveRemoteStockCounts(remoteCounts);
       return remoteCounts.length;
     } catch (e) {
-      logger?.error('Download Counts Failed', e);
+      logger?.error('Download Failed', e);
       rethrow;
     } finally {
       _isSyncing = false;
@@ -159,82 +154,103 @@ class SyncService with ChangeNotifier {
     }
   }
 
+  // --- REFRESH MASTER DATA (DEBUGGING ENHANCED) ---
   Future<SyncResult> refreshMasterData() async {
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
-    logger?.info('Master Data Refresh Started...');
+    logger?.info('Master Refresh: Starting...');
 
     try {
       final hasInternet = await checkConnectivity();
-      if (!hasInternet) {
-        logger?.info('Refresh Aborted: No Internet');
-        return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+      if (!hasInternet) return SyncResult(hasInternet: false, syncedCount: 0, message: 'No internet', success: false);
+
+      logger?.info('Fetching Store Data & Costs...');
+
+      // Fetch all in parallel
+      final results = await Future.wait([
+        googleSheets.fetchInventory(),
+        googleSheets.fetchLocations(),
+        googleSheets.fetchAudits(),
+        googleSheets.fetchPurchases(),
+        googleSheets.fetchStoreSalesData(),
+        googleSheets.fetchItemSales(),
+        googleSheets.fetchComputedCosts()
+      ]);
+
+      var inventory = results[0];
+      final locations = results[1];
+      final audits = results[2];
+      final purchases = results[3];
+      final storeSales = results[4];
+      final itemSalesMap = results[5];
+      final masterCosts = results[6];
+
+      // --- DEBUGGING LOGIC ---
+      if (masterCosts.isEmpty) {
+        logger?.error('WARNING: MasterCosts returned 0 items.');
+      } else {
+        logger?.info('MasterCosts: Loaded ${masterCosts.length} items.');
+        logger?.info('MasterCosts Keys (Sample): ${masterCosts.first.keys.toList()}');
       }
 
-      print('Refreshing Master Data...');
+      if (inventory.isEmpty) {
+        logger?.error('WARNING: Store Inventory returned 0 items.');
+      } else {
+        logger?.info('Inventory Keys (Sample): ${inventory.first.keys.toList()}');
+      }
 
-      // 1. Fetch RAW Store Inventory & Data
-      var inventory = await googleSheets.fetchInventory();
-      final locations = await googleSheets.fetchLocations();
-      final audits = await googleSheets.fetchAudits();
-      final purchases = await googleSheets.fetchPurchases();
-      final storeSales = await googleSheets.fetchStoreSalesData();
-      final itemSalesMap = await googleSheets.fetchItemSales();
+      // Build Cost Map
+      final costMap = <String, double>{};
+      for (var c in masterCosts) {
+        // Handle variations in casing
+        final name = (c['productName'] ?? c['Product Name'])?.toString().toLowerCase().trim();
+        final cost = _safeDouble(c['avgCost'] ?? c['avgcost'] ?? c['Cost'] ?? c['Unit Cost']);
 
-      // 2. Fetch LATEST COSTS from Master DB
-      print('Fetching Computed Costs...');
-      final masterCosts = await googleSheets.fetchComputedCosts();
+        if (name != null && name.isNotEmpty && cost > 0) {
+          costMap[name] = cost;
+        }
+      }
 
-      // Create Index: "glenfiddich 18yr" -> 1800.57
-      final costMap = {
-        for (var c in masterCosts)
-          c['productName']?.toString().toLowerCase().trim() : c['avgCost']
-      };
+      logger?.info('Built Cost Map with ${costMap.length} valid entries.');
 
-      logger?.info('Loaded ${costMap.length} costs from Master DB');
-
-      // 3. SMART UPDATE: Inject Master Costs into Store Inventory
+      // Inject Costs
       int costsUpdated = 0;
       final updatedInventory = inventory.map((item) {
-        final name = item['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
+        // Try multiple keys for Name
+        final rawName = item['Inventory Product Name'] ?? item['Product Name'] ?? item['productName'];
+        final name = rawName?.toString().toLowerCase().trim() ?? '';
+
         final newItem = Map<String, dynamic>.from(item);
 
-        // CHECK 1: Try Master Cost
-        dynamic finalCost = costMap[name];
-
-        // CHECK 2: If Master missing, try Existing Inventory Cost
-        if (finalCost == null || finalCost == 0) {
-          finalCost = item['Cost Price'];
+        if (costMap.containsKey(name)) {
+          newItem['Cost Price'] = costMap[name];
+          costsUpdated++;
+        } else {
+          newItem['Cost Price'] = _safeDouble(newItem['Cost Price']);
         }
-
-        // CHECK 3: Ensure double
-        double parsedCost = 0.0;
-        if (finalCost != null) {
-          parsedCost = double.tryParse(finalCost.toString()) ?? 0.0;
-        }
-
-        if (costMap.containsKey(name)) costsUpdated++;
-
-        newItem['Cost Price'] = parsedCost;
         return newItem;
       }).toList();
 
-      logger?.info('Matched costs for $costsUpdated out of ${updatedInventory.length} items');
+      if (updatedInventory.isNotEmpty && costsUpdated == 0) {
+        logger?.error('CRITICAL: No costs matched! Name mismatch suspected.');
+        if (costMap.isNotEmpty) {
+          logger?.info('Example Cost Key: "${costMap.keys.first}"');
+          logger?.info('Example Inv Key:  "${updatedInventory.first['Inventory Product Name']?.toString().toLowerCase().trim()}"');
+        }
+      } else {
+        logger?.info('Merged costs into $costsUpdated inventory items.');
+      }
 
-      // 4. Fetch Master Catalog
-      final masterCatalog = await _fetchAndMergeMasterDB(preFetchedCosts: costMap);
-
-      // 5. Save to Local Storage
+      // Save Data
       await offlineStorage.clearInventory();
-      // await offlineStorage.clearLocations(); // KEEP THIS COMMENTED OUT!
+      await offlineStorage.clearLocations();
       await offlineStorage.clearAudits();
 
       await offlineStorage.bulkSaveInventory(updatedInventory);
       await offlineStorage.bulkSaveLocations(locations);
-      await offlineStorage.saveMasterCatalog(masterCatalog);
       await offlineStorage.savePurchases(purchases);
       await offlineStorage.saveStoreSalesData(storeSales);
       await offlineStorage.saveItemSalesMap(itemSalesMap);
@@ -242,18 +258,11 @@ class SyncService with ChangeNotifier {
       for (final audit in audits) await offlineStorage.saveAudit(audit);
 
       _inventoryLoaded = true;
-      logger?.info('Master Refresh Success: ${updatedInventory.length} store items loaded');
-
-      return SyncResult(
-          hasInternet: true,
-          syncedCount: 0,
-          message: 'Synced ${updatedInventory.length} items. Updated $costsUpdated costs.',
-          success: true
-      );
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Updated $costsUpdated costs', success: true);
 
     } catch (e) {
       _lastError = 'Refresh error: $e';
-      logger?.error('Master Refresh Exception', e);
+      logger?.error('Master Refresh Failed', e);
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
     } finally {
       _isSyncing = false;
@@ -261,55 +270,8 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  // Helper to fetch and merge master tables
-  Future<List<Map<String, dynamic>>> _fetchAndMergeMasterDB({Map<dynamic, dynamic>? preFetchedCosts}) async {
-    final products = await googleSheets.fetchMasterProducts();
-    final barcodes = await googleSheets.fetchMasterBarcodes();
-
-    // Use the passed costs, or fetch if not provided
-    var costMap = preFetchedCosts;
-    if (costMap == null) {
-      final costs = await googleSheets.fetchComputedCosts();
-      costMap = {
-        for (var c in costs)
-          c['productName']?.toString().toLowerCase().trim() : c['avgCost']
-      };
-    }
-
-    final productMap = { for (var p in products) p['bottleID']?.toString() : p };
-
-    List<Map<String, dynamic>> flatInventory = [];
-
-    for (var b in barcodes) {
-      final bottleID = b['bottleID']?.toString();
-      final barcode = b['Barcode']?.toString();
-      if (barcode == null || barcode.isEmpty) continue;
-
-      final productInfo = productMap[bottleID] ?? {};
-      final name = b['Product Name'] ?? productInfo['Product Name'] ?? 'Unknown';
-
-      // LOOKUP COST
-      final cost = costMap[name.toString().toLowerCase().trim()] ?? 0.0;
-
-      flatInventory.add({
-        'Barcode': barcode,
-        'Inventory Product Name': name,
-        'Main Category': productInfo['Category'] ?? b['Category'] ?? '',
-        'Category': productInfo['Category'] ?? b['Category'] ?? '',
-        'Single Unit Volume': b['Single Unit Volume'] ?? productInfo['Single Unit Volume'],
-        'UoM': b['UoM'] ?? productInfo['UoM'],
-        'Gradient': b['Gradient'] ?? productInfo['Gradient'],
-        'Intercept': b['Intercept'] ?? productInfo['Intercept'],
-        'Pack Size': b['Pack Size'] ?? 'Single',
-        'Cost Price': cost,
-      });
-    }
-    return flatInventory;
-  }
-
   Future<void> loadInventory() async { await refreshMasterData(); }
 
-  // Stats & Status
   Future<Map<String, int>> getDatabaseStats() async {
     try {
       return await offlineStorage.getDatabaseStats();
@@ -320,7 +282,7 @@ class SyncService with ChangeNotifier {
 
   Future<bool> hasData() async {
     final stats = await getDatabaseStats();
-    return stats['inventoryItems']! > 0 || stats['locations']! > 0;
+    return stats['inventoryItems']! > 0;
   }
 
   String _formatDateTime(DateTime dateTime) {

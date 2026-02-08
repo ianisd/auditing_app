@@ -66,20 +66,21 @@ void main() async {
         ChangeNotifierProxyProvider<StoreManager, SyncService>(
           create: (context) => SyncService(
             offlineStorage: offlineStorage,
-            googleSheets: GoogleSheetsService(scriptUrl: ''),
+            // PASS LOGGER HERE
+            googleSheets: GoogleSheetsService(scriptUrl: '', logger: logger),
             logger: logger,
           ),
           update: (context, storeMgr, previousSyncService) {
             final url = storeMgr.activeStore?['url'] ?? '';
 
-            // Avoid recreating service if URL hasn't changed
             if (previousSyncService != null && previousSyncService.googleSheets.scriptUrl == url) {
               return previousSyncService;
             }
 
             return SyncService(
               offlineStorage: offlineStorage,
-              googleSheets: GoogleSheetsService(scriptUrl: url),
+              // AND HERE
+              googleSheets: GoogleSheetsService(scriptUrl: url, logger: logger),
               logger: logger,
             );
           },

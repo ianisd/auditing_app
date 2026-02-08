@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
-import '../widgets/sync_status.dart';
+import '../widgets/sync_status.dart'; // <--- THIS IMPORT IS CRITICAL
 import '../widgets/store_drawer.dart';
 import 'count_screen.dart';
 import 'view_counts_screen.dart';
@@ -10,7 +10,7 @@ import 'sync_screen.dart';
 import 'locations_screen.dart';
 import 'inventory_screen.dart';
 import 'offline_screen.dart';
-import 'variance_report_screen.dart'; // --- NEW IMPORT ---
+import 'variance_report_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -86,7 +86,7 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SyncStatusWidget(),
+              const SyncStatusWidget(), // This should now work
               const SizedBox(height: 16),
               Expanded(
                 child: ListView(
@@ -117,7 +117,6 @@ class HomeScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    // --- NEW VARIANCE REPORT CARD ---
                     _buildFeatureCard(
                       icon: Icons.analytics,
                       title: 'Variance Report',
@@ -130,7 +129,6 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                     ),
-                    // -------------------------------
                     const SizedBox(height: 16),
                     _buildFeatureCard(
                       icon: Icons.inventory_2_outlined,
@@ -230,7 +228,7 @@ class HomeScreen extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
+                  color: color.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: color, size: 28),

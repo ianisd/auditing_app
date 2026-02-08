@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-// Keep for kDebugMode if needed
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
 import '../services/variance_service.dart';
-import '../services/logger_service.dart'; // <--- ADD THIS IMPORT
 import 'count_screen.dart';
 
 class VarianceReportScreen extends StatefulWidget {
@@ -24,9 +23,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   Set<String> _selectedLocations = {};
   bool _showBalanced = false;
 
-  // View State
-  bool _areCategoriesExpanded = true;
-  Key _listKey = UniqueKey();
+  // --- NEW: View State ---
+  bool _areCategoriesExpanded = true; // Default to open
+  Key _listKey = UniqueKey(); // Used to force-refresh list state
 
   final TextEditingController _searchController = TextEditingController();
 
@@ -82,15 +81,12 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
   }
 
-  // --- UPDATED REPORT RUNNER (DEBUG MODE) ---
   Future<void> _runReport() async {
     if (_startDate == null || _endDate == null) return;
 
     setState(() => _isLoading = true);
 
     final storage = context.read<OfflineStorage>();
-    final logger = context.read<LoggerService>(); // <--- Now works because of import
-
     final results = await Future.wait([
       storage.getStockCounts(),
       storage.getPurchases(),
@@ -100,18 +96,15 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     ]);
 
     try {
-      // Run directly on Main Thread to see logs
-      final service = VarianceService(logger: logger);
-
-      final reportItems = service.calculateReport(
-        stocks: results[0],
-        purchases: results[1],
-        storeSalesData: results[2],
-        itemSalesMap: results[3],
-        inventory: results[4],
-        dateFromStr: _startDate!,
-        dateToStr: _endDate!,
-      );
+      final reportItems = await compute(_calculateVarianceIsolated, {
+        'stocks': results[0],
+        'purchases': results[1],
+        'storeSalesData': results[2],
+        'itemSalesMap': results[3],
+        'inventory': results[4],
+        'dateFrom': _startDate,
+        'dateTo': _endDate,
+      });
 
       if (mounted) {
         setState(() {
@@ -123,7 +116,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        logger.error('Report Error', e);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
@@ -184,16 +176,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       _groupedReport = sortedGroup;
       _totalVarianceCost = tempTotalCost;
       _totalVarianceRetail = tempTotalRetail;
+      // Re-key the list to force UI refresh if filters change
       _listKey = UniqueKey();
     });
   }
 
-  // ... (Rest of UI code remains exactly the same as before)
+  // --- ACTIONS ---
 
   void _toggleViewMode() {
     setState(() {
       _areCategoriesExpanded = !_areCategoriesExpanded;
-      _listKey = UniqueKey();
+      _listKey = UniqueKey(); // Forces list to rebuild with new expansion state
     });
   }
 
@@ -307,6 +300,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       visualDensity: VisualDensity.compact,
                     ),
                     const SizedBox(width: 8),
+                    // --- NEW TOGGLE BUTTON ---
                     IconButton.filledTonal(
                       onPressed: _toggleViewMode,
                       icon: Icon(_areCategoriesExpanded ? Icons.unfold_less : Icons.unfold_more),
@@ -350,7 +344,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 : _groupedReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : ListView.builder(
-              key: _listKey,
+              key: _listKey, // Forces rebuild when view mode toggles
               padding: const EdgeInsets.only(bottom: 40),
               itemCount: _groupedReport.keys.length,
               itemBuilder: (context, i) {
@@ -395,7 +389,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                           ],
                         ),
                         subtitle: Text('${items.length} Items', style: const TextStyle(fontSize: 11)),
-                        initiallyExpanded: _areCategoriesExpanded,
+                        initiallyExpanded: _areCategoriesExpanded, // Controlled by toggle
                         shape: const Border(),
                         children: items.map((item) => _buildVarianceCard(item)).toList(),
                       );
@@ -591,4 +585,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       ),
     );
   }
+}
+
+List<VarianceItem> _calculateVarianceIsolated(Map<String, dynamic> params) {
+  final service = VarianceService();
+  return service.calculateReport(
+    stocks: params['stocks'],
+    purchases: params['purchases'],
+    storeSalesData: params['storeSalesData'],
+    itemSalesMap: params['itemSalesMap'],
+    inventory: params['inventory'],
+    dateFromStr: params['dateFrom'],
+    dateToStr: params['dateTo'],
+  );
 }

@@ -31,8 +31,6 @@ class _CountScreenState extends State<CountScreen> {
   final _countController = TextEditingController(text: '0');
   final _weightController = TextEditingController(text: '0');
 
-  // --- NEW: Measurement Mode State ---
-  // Options: 'Weight' (Scale), 'Shots' (Visual), 'Volume' (Jug)
   String _measurementType = 'Volume';
 
   final List<String> _drinkPackSizes = [
@@ -59,6 +57,7 @@ class _CountScreenState extends State<CountScreen> {
 
   List<Map<String, dynamic>> _locations = [];
   List<Map<String, dynamic>> _inventory = [];
+  List<Map<String, dynamic>> _itemSalesData = []; // NEW: Store Recipes
   bool _isLoading = true;
   bool _isEditMode = false;
 
@@ -74,6 +73,13 @@ class _CountScreenState extends State<CountScreen> {
   double _calcTotalBottles = 0.0;
   double _calcTotalMl = 0.0;
   double _calcCostValue = 0.0;
+  double _calcRetailValue = 0.0; // NEW
+
+  // Regex for Exclusions (Matches Sheet Formula)
+  final RegExp _exclusionRegex = RegExp(
+    r'Special Shooter|Special Beverage|Cocktail Ingredient|Special Tot|Special Spirit Bottle|Special Alcoholic Beverage',
+    caseSensitive: false,
+  );
 
   @override
   void initState() {
@@ -114,10 +120,12 @@ class _CountScreenState extends State<CountScreen> {
       final locations = await storage.getLocations();
       final inventory = await storage.getAllInventory();
       final currentAudit = await storage.getCurrentAudit();
+      final itemSales = await storage.getItemSalesMap(); // NEW: Load Recipes
 
       setState(() {
         _locations = locations;
         _inventory = inventory;
+        _itemSalesData = itemSales; // NEW
         _filteredProducts = inventory;
         _selectedAudit = currentAudit?['Audit ID']?.toString();
       });
@@ -161,8 +169,6 @@ class _CountScreenState extends State<CountScreen> {
         _selectedPackSize = 'Case 1';
       }
 
-      // Restore Mode if saved (you might want to add 'counting_method' to DB schema later)
-      // For now, infer: if product has gradient, assume Weight. If Spirit, assume Shots.
       _determineDefaultMeasurementMode(product);
 
       _countController.text = data['count']?.toString() ?? '0';
@@ -213,7 +219,6 @@ class _CountScreenState extends State<CountScreen> {
     });
   }
 
-  // --- NEW: DETERMINE DEFAULT MODE ---
   void _determineDefaultMeasurementMode(Map<String, dynamic>? product) {
     if (product == null) return;
 
@@ -222,11 +227,11 @@ class _CountScreenState extends State<CountScreen> {
     String cat = product['Category']?.toString().toLowerCase() ?? '';
 
     if (gradient != 0) {
-      _measurementType = 'Weight'; // Has scale data -> Weight
+      _measurementType = 'Weight';
     } else if (mainCat.contains('spirit') || cat.contains('whiskey') || cat.contains('vodka') || cat.contains('gin') || cat.contains('tequila')) {
-      _measurementType = 'Shots'; // Spirit -> Default to Shots
+      _measurementType = 'Shots';
     } else {
-      _measurementType = 'Volume'; // Default -> mL
+      _measurementType = 'Volume';
     }
   }
 
@@ -311,19 +316,68 @@ class _CountScreenState extends State<CountScreen> {
     return double.tryParse(value.toString()) ?? 0.0;
   }
 
-  // --- UPDATED RECALCULATE LOGIC FOR SHOTS ---
+  // --- NEW: RETAIL PRICE CALCULATOR ---
+  double _calculateBestRetailPrice() {
+    if (_selectedProduct == null) return 0.0;
+
+    final productName = _selectedProduct!['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
+    double maxPrice = 0.0;
+
+    // Filter recipes for this product
+    final recipes = _itemSalesData.where((r) =>
+    (r['Product']?.toString().toLowerCase().trim() ?? '') == productName
+    );
+
+    for (var row in recipes) {
+      final mainCat = row['Main Category']?.toString() ?? '';
+
+      // 1. EXCLUSION LOGIC (Regex from Sheet)
+      if (_exclusionRegex.hasMatch(mainCat)) continue;
+
+      // 2. GET SELL PRICE
+      final sellPrice = _safeDouble(row['Sell']);
+      if (sellPrice <= 0) continue;
+
+      // 3. GET UOM INFO
+      double bottleUoM = _safeDouble(_selectedProduct!['Bottle UoM']);
+      double singleUoM = _safeDouble(_selectedProduct!['Single UoM']);
+      if (bottleUoM == 0) bottleUoM = 30.0;
+      if (singleUoM == 0) singleUoM = 1.0;
+
+      // 4. CALCULATE IMPLIED BOTTLE PRICE
+      final measure = row['Measure']?.toString().toLowerCase() ?? '';
+      double impliedPrice = 0.0;
+
+      if (measure.contains('bottle') || measure.contains('can')) {
+        impliedPrice = sellPrice;
+      } else if (measure == 'shots' || measure.contains('tot')) {
+        impliedPrice = sellPrice * bottleUoM;
+      } else if (measure == 'glass') {
+        impliedPrice = sellPrice / singleUoM;
+      } else {
+        impliedPrice = sellPrice; // Fallback
+      }
+
+      // 5. MAX CHECK
+      if (impliedPrice > maxPrice) {
+        maxPrice = impliedPrice;
+      }
+    }
+
+    return maxPrice;
+  }
+
   void _recalculateTotals() {
     if (_selectedPackSize == null) return;
 
     double count = double.tryParse(_countController.text) ?? 0.0;
-    double inputVal = double.tryParse(_weightController.text) ?? 0.0; // Acts as Weight, Shots, or Vol
+    double inputVal = double.tryParse(_weightController.text) ?? 0.0;
 
     double singleUnitSize = _safeDouble(_selectedProduct?['Single Unit Volume']);
     double costPrice = _safeDouble(_selectedProduct?['Cost Price']);
     double gradient = _safeDouble(_selectedProduct?['Gradient']);
     double intercept = _safeDouble(_selectedProduct?['Intercept']);
 
-    // Attempt to get Bottle UoM (Sales Unit), default to 30 (Spirits standard)
     double bottleUoM = _safeDouble(_selectedProduct?['Bottle UoM']);
     if (bottleUoM == 0) bottleUoM = (singleUnitSize > 0) ? (singleUnitSize / 25.0) : 30.0;
 
@@ -332,45 +386,31 @@ class _CountScreenState extends State<CountScreen> {
     double finalOpenTots = 0.0;
 
     if (_selectedPackSize == 'Open Bottle') {
-
       if (_measurementType == 'Shots') {
-        // --- MANUAL SHOT COUNT ---
-        // Input is "Number of Shots"
         finalOpenTots = inputVal;
-        calculatedWeightOrVol = inputVal * 25.0; // Total mL
-        totalUnits = finalOpenTots / bottleUoM; // Total Bottles
-
+        calculatedWeightOrVol = inputVal * 25.0;
+        totalUnits = finalOpenTots / bottleUoM;
       } else if (_measurementType == 'Volume') {
-        // --- MEASURE BY ML ---
-        // Input is "mL"
         calculatedWeightOrVol = inputVal;
         finalOpenTots = inputVal / 25.0;
         totalUnits = finalOpenTots / bottleUoM;
-
       } else {
-        // --- WEIGHT (GRADIENT) ---
-        // Input is "Grams"
         if (gradient != 0 || intercept != 0) {
           calculatedWeightOrVol = (gradient * inputVal) + intercept;
         } else {
           calculatedWeightOrVol = inputVal;
         }
         if (calculatedWeightOrVol < 0) calculatedWeightOrVol = 0;
-
         finalOpenTots = calculatedWeightOrVol / 25.0;
         totalUnits = finalOpenTots / bottleUoM;
       }
-
     } else if (_selectedPackSize == 'Loose (kg)') {
       calculatedWeightOrVol = inputVal * 1000;
       totalUnits = inputVal;
-
     } else if (_selectedPackSize == 'Loose (g)') {
       calculatedWeightOrVol = inputVal;
       totalUnits = inputVal / 1000;
-
     } else {
-      // --- STANDARD PACK LOGIC ---
       double multiplier = 0;
       switch (_selectedPackSize) {
         case "Pack": multiplier = 1; break;
@@ -400,12 +440,17 @@ class _CountScreenState extends State<CountScreen> {
 
     double costValue = totalUnits * costPrice;
 
+    // --- CALCULATE RETAIL VALUE ---
+    double unitRetailPrice = _calculateBestRetailPrice();
+    double retailValue = totalUnits * unitRetailPrice;
+
     setState(() {
       _calcVolumeMl = calculatedWeightOrVol;
       _calcOpenTots = finalOpenTots;
       _calcTotalBottles = totalUnits;
       _calcTotalMl = calculatedWeightOrVol;
       _calcCostValue = costValue;
+      _calcRetailValue = retailValue; // Update State
     });
   }
 
@@ -421,17 +466,14 @@ class _CountScreenState extends State<CountScreen> {
         _selectedPackSize = null;
       }
 
-      // Reset logic
       _countController.text = '0';
       _weightController.text = '0';
 
-      // Determine Measurement Mode Default
       _determineDefaultMeasurementMode(product);
     });
     _productFocusNode.unfocus();
   }
 
-  // ... (Delete and Save remain the same) ...
   Future<void> _deleteEntry() async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -496,6 +538,7 @@ class _CountScreenState extends State<CountScreen> {
       'total_bottles': _calcTotalBottles,
       'total_ml': _calcTotalMl,
       'cost_value': _calcCostValue,
+      'retail_value': _calcRetailValue, // NEW: Saved to DB
       'createdAt': createdDate,
       'updatedAt': DateTime.now().toIso8601String(),
       'auditId': _selectedAudit,
@@ -531,6 +574,7 @@ class _CountScreenState extends State<CountScreen> {
         _calcVolumeMl = 0;
         _calcTotalBottles = 0;
         _calcCostValue = 0;
+        _calcRetailValue = 0;
       });
     } else {
       _productController.clear();
@@ -543,6 +587,7 @@ class _CountScreenState extends State<CountScreen> {
         _calcVolumeMl = 0;
         _calcTotalBottles = 0;
         _calcCostValue = 0;
+        _calcRetailValue = 0;
       });
     }
   }
@@ -682,7 +727,6 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
-                // --- LOCKABLE LOCATION ---
                 widget.initialLocation != null
                     ? TextFormField(
                   initialValue: widget.initialLocation,
@@ -699,7 +743,6 @@ class _CountScreenState extends State<CountScreen> {
 
                 const SizedBox(height: 16),
 
-                // --- PACK SIZE ---
                 DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Pack Size', border: OutlineInputBorder()),
                   value: _selectedPackSize,
@@ -715,7 +758,6 @@ class _CountScreenState extends State<CountScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // --- NEW: MODE SELECTOR FOR OPEN BOTTLE ---
                 if (_selectedPackSize == 'Open Bottle')
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
@@ -723,7 +765,6 @@ class _CountScreenState extends State<CountScreen> {
                       segments: [
                         const ButtonSegment(value: 'Shots', label: Text('Shots'), icon: Icon(Icons.local_bar)),
                         const ButtonSegment(value: 'Volume', label: Text('mL'), icon: Icon(Icons.water_drop)),
-                        // Only show Weight if gradient exists
                         if (_safeDouble(_selectedProduct?['Gradient']) != 0)
                           const ButtonSegment(value: 'Weight', label: Text('Grams'), icon: Icon(Icons.scale)),
                       ],
@@ -738,7 +779,6 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
-                // --- DYNAMIC INPUT ROW ---
                 Row(
                   children: [
                     if (!_isWeightBased(_selectedPackSize))
@@ -757,7 +797,6 @@ class _CountScreenState extends State<CountScreen> {
                           child: TextFormField(
                               controller: _weightController,
                               decoration: InputDecoration(
-                                // Update label based on Mode
                                   labelText: _selectedPackSize == 'Open Bottle'
                                       ? (_measurementType == 'Shots' ? 'Number of Shots' : (_measurementType == 'Volume' ? 'Volume (mL)' : 'Weight (g)'))
                                       : 'Net Weight',
@@ -784,7 +823,9 @@ class _CountScreenState extends State<CountScreen> {
                             _buildSummaryRow('Open Tots:', _calcOpenTots.toStringAsFixed(2)),
                           ],
                           _buildSummaryRow('Total Bottles/Units:', _calcTotalBottles.toStringAsFixed(2)),
-                          _buildSummaryRow('Total Value:', NumberFormat.simpleCurrency().format(_calcCostValue), isTotal: true),
+                          _buildSummaryRow('Total Cost Value:', NumberFormat.simpleCurrency().format(_calcCostValue)),
+                          // --- NEW RETAIL VALUE ROW ---
+                          _buildSummaryRow('Total Retail Value:', NumberFormat.simpleCurrency().format(_calcRetailValue), isTotal: true),
                         ],
                       ),
                     ),
@@ -798,7 +839,6 @@ class _CountScreenState extends State<CountScreen> {
     );
   }
 
-  // Helpers...
   Widget _buildDetailRow(String label, dynamic value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2.0),

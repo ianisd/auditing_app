@@ -67,7 +67,7 @@ class SyncStatusWidget extends StatelessWidget {
                     ),
                     if (hasError)
                       Text(
-                        syncService.lastError!,
+                        syncService.lastError ?? 'Unknown Error',
                         style: TextStyle(color: iconColor, fontSize: 12),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
