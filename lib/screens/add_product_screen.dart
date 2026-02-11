@@ -205,7 +205,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                         labelText: 'UoM',
                         border: OutlineInputBorder(),
                       ),
-                      value: _uom,
+                      initialValue: _uom,
                       // Updated UoM List
                       items: ['ml', 'Ltr', 'cl', 'kg', 'g', 'lb', 'oz', 'each']
                           .map((e) => DropdownMenuItem(value: e, child: Text(e)))
