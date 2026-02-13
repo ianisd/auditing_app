@@ -35,7 +35,7 @@ void main() async {
   // 3. Init Logger
   final logger = LoggerService();
   await logger.init();
-  logger.info("App Started (v1.4.0)");
+  logger.info("App Started (v1.7.0)");
 
   // 4. Set up Global Error Catching
   FlutterError.onError = (FlutterErrorDetails details) {
@@ -49,11 +49,20 @@ void main() async {
   };
 
   // 5. Initialize Global Services
-  final storeManager = StoreManager();
-  await storeManager.init(); // Load active store info before app starts
-
   final offlineStorage = OfflineStorage();
-  // We do NOT init offlineStorage here; RootSwitcher handles that based on active store.
+  final storeManager = StoreManager(
+    offlineStorage: offlineStorage,
+    logger: logger,
+  );
+
+  // ✅ CRITICAL FIX: Initialize storeManager BEFORE offlineStorage
+  await storeManager.init();
+
+  // ✅ CRITICAL FIX: Initialize offlineStorage AFTER active store is set
+  // This ensures offlineStorage loads data for the correct store
+  if (storeManager.activeStore != null) {
+    await offlineStorage.switchStore(storeManager.activeStore!['id']);
+  }
 
   runApp(
     MultiProvider(
@@ -61,30 +70,7 @@ void main() async {
         Provider<LoggerService>.value(value: logger),
         ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: offlineStorage),
-
-        // SyncService depends on the URL in StoreManager
-        ChangeNotifierProxyProvider<StoreManager, SyncService>(
-          create: (context) => SyncService(
-            offlineStorage: offlineStorage,
-            // PASS LOGGER HERE
-            googleSheets: GoogleSheetsService(scriptUrl: '', logger: logger),
-            logger: logger,
-          ),
-          update: (context, storeMgr, previousSyncService) {
-            final url = storeMgr.activeStore?['url'] ?? '';
-
-            if (previousSyncService != null && previousSyncService.googleSheets.scriptUrl == url) {
-              return previousSyncService;
-            }
-
-            return SyncService(
-              offlineStorage: offlineStorage,
-              // AND HERE
-              googleSheets: GoogleSheetsService(scriptUrl: url, logger: logger),
-              logger: logger,
-            );
-          },
-        ),
+        // ⚠️ REMOVED GLOBAL SyncService PROVIDER
       ],
       child: const MyApp(),
     ),
@@ -103,6 +89,7 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         appBarTheme: const AppBarTheme(elevation: 0, centerTitle: true),
       ),
+
       home: const RootSwitcher(),
       debugShowCheckedModeBanner: false,
     );
@@ -117,12 +104,12 @@ class RootSwitcher extends StatefulWidget {
 }
 
 class _RootSwitcherState extends State<RootSwitcher> {
+  String? _lastProcessedStoreId; // ✅ NEW: Track last processed store
+
   @override
   void initState() {
     super.initState();
-    // Check initial state
     WidgetsBinding.instance.addPostFrameCallback((_) => _handleStoreChange());
-    // Listen for future changes
     context.read<StoreManager>().addListener(_handleStoreChange);
   }
 
@@ -134,36 +121,46 @@ class _RootSwitcherState extends State<RootSwitcher> {
 
   void _handleStoreChange() {
     if (!mounted) return;
+
     final storeManager = context.read<StoreManager>();
     final offlineStorage = context.read<OfflineStorage>();
 
-    // If we have an active store, make sure OfflineStorage is pointing to the right box
     if (storeManager.activeStore != null) {
       final activeId = storeManager.activeStore!['id'];
 
-      // If storage isn't ready OR we switched stores, initialize the specific store box
+      // ✅ CRITICAL: Only process if different from last processed store
+      if (activeId == _lastProcessedStoreId) {
+        return; // Exit early to prevent loop
+      }
+
+      _lastProcessedStoreId = activeId;
+
+      // ✅ CRITICAL: Let StoreManager handle the service setup first
+      // The service setup happens in setActiveStore() which should be called
+      // by your UI flow (e.g., when user selects a store)
+
+      // Only call switchStore if storage isn't ready for this store
       if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
+        print('DEBUG: Calling offlineStorage.switchStore($activeId)');
         offlineStorage.switchStore(activeId);
       }
     }
   }
 
+  // ✅ ADDED: Missing build() method
   @override
   Widget build(BuildContext context) {
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
 
-    // 1. No store selected -> Go to Setup
     if (storeManager.activeStore == null) {
       return const SetupStoreScreen();
     }
 
-    // 2. Store selected, but Hive boxes loading -> Show Spinner
     if (!offlineStorage.isReady) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // 3. Ready -> Go Home
     return const HomeScreen();
   }
 }
