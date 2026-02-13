@@ -27,11 +27,6 @@ void main() async {
   // 2. Initialize Hive
   await Hive.initFlutter();
 
-  // --- OPTIONAL: Register Adapters ---
-  // If you generated the .g.dart files, register them here to avoid crashes later.
-  // Hive.registerAdapter(InventoryItemAdapter());
-  // Hive.registerAdapter(StoreConfigAdapter());
-
   // 3. Init Logger
   final logger = LoggerService();
   await logger.init();
@@ -58,10 +53,9 @@ void main() async {
   // ✅ CRITICAL FIX: Initialize storeManager BEFORE offlineStorage
   await storeManager.init();
 
-  // ✅ CRITICAL FIX: Initialize offlineStorage AFTER active store is set
-  // This ensures offlineStorage loads data for the correct store
+  // ✅ CRITICAL FIX: If active store exists, call setActiveStore() to set up GoogleSheetsService
   if (storeManager.activeStore != null) {
-    await offlineStorage.switchStore(storeManager.activeStore!['id']);
+    await storeManager.setActiveStore(storeManager.activeStore!['id']);
   }
 
   runApp(
