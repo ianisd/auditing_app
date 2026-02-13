@@ -1,7 +1,7 @@
 name: counting_app
 description: "Offline Stock Counting App"
 publish_to: 'none'
-version: 1.0.1+6
+version: 1.0.1+8
 
 environment:
   sdk: ">=3.10.4 <4.0.0"
@@ -9,6 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # For CSV upload
+  file_picker: ^8.0.0
+
+  # ✅ ADD THIS FOR firstOrNull EXTENSION (optional but clean)
+  collection: ^1.18.0
 
   # State Management
   provider: ^6.1.1
@@ -26,9 +32,11 @@ dependencies:
   # Utilities
   uuid: ^4.5.0
   intl: ^0.20.2
+  csv: ^6.0.0
 
   # UI Components
   table_calendar: ^3.0.13
+
 
   # Barcode Scanning (UPDATED VERSION)
   mobile_scanner: ^7.1.4  # Updated: Better than barcode_scan2
@@ -40,6 +48,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  mockito: ^5.4.0
 
   # Code Generation
   hive_generator: ^2.0.1
@@ -49,3 +58,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  assets:
+   - assets/csv/
