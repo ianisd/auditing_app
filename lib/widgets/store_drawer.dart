@@ -81,7 +81,7 @@ class StoreDrawer extends StatelessWidget {
                           Navigator.pop(context); // Close drawer
                         },
                       );
-                    }).toList(),
+                    }),
                   ],
                 ),
               ),
