@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-// Keep for kDebugMode if needed
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
 import '../services/variance_service.dart';
-import '../services/logger_service.dart'; // <--- ADD THIS IMPORT
+import '../services/logger_service.dart';
 import 'count_screen.dart';
 
 class VarianceReportScreen extends StatefulWidget {
@@ -19,14 +19,19 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   String? _endDate;
   List<String> _availableDates = [];
 
-  // Filters
+  // --- FILTERS ---
   List<String> _allLocations = [];
-  Set<String> _selectedLocations = {};
+  final Set<String> _selectedLocations = {};
+
+  // Category Filters
+  Set<String> _availableMainCategories = {};
+  Set<String> _selectedMainCategories = {};
+
   bool _showBalanced = false;
 
   // View State
   bool _areCategoriesExpanded = true;
-  Key _listKey = UniqueKey();
+  Key _listKey = UniqueKey(); // Used to force-refresh list state
 
   final TextEditingController _searchController = TextEditingController();
 
@@ -82,14 +87,13 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
   }
 
-  // --- UPDATED REPORT RUNNER (DEBUG MODE) ---
   Future<void> _runReport() async {
     if (_startDate == null || _endDate == null) return;
 
     setState(() => _isLoading = true);
 
     final storage = context.read<OfflineStorage>();
-    final logger = context.read<LoggerService>(); // <--- Now works because of import
+    final logger = context.read<LoggerService>();
 
     final results = await Future.wait([
       storage.getStockCounts(),
@@ -100,7 +104,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     ]);
 
     try {
-      // Run directly on Main Thread to see logs
       final service = VarianceService(logger: logger);
 
       final reportItems = service.calculateReport(
@@ -116,6 +119,20 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       if (mounted) {
         setState(() {
           _fullReport = reportItems;
+
+          // Extract Categories
+          _availableMainCategories = reportItems.map((e) => e.mainCategory).toSet();
+
+          // Handle selection logic
+          if (_selectedMainCategories.isEmpty) {
+            _selectedMainCategories = Set.from(_availableMainCategories);
+          } else {
+            _selectedMainCategories = _selectedMainCategories.intersection(_availableMainCategories);
+            if (_selectedMainCategories.isEmpty && _availableMainCategories.isNotEmpty) {
+              _selectedMainCategories = Set.from(_availableMainCategories);
+            }
+          }
+
           _applyLocalFilters();
           _isLoading = false;
         });
@@ -136,15 +153,21 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     double tempTotalRetail = 0;
 
     final filteredList = _fullReport.where((item) {
-      // 10% Tolerance Filter
+      // 1. Balanced Filter
       if (!_showBalanced && item.variance.abs() <= 0.1) return false;
 
+      // 2. Search Filter
       if (query.isNotEmpty && !item.productName.toLowerCase().contains(query)) return false;
 
+      // 3. Location Filter
       if (_selectedLocations.isNotEmpty) {
         bool hasHistoryInLoc = item.allEntries.any((e) => _selectedLocations.contains(e['location']));
         if (!hasHistoryInLoc) return false;
       }
+
+      // 4. Category Filter
+      if (!_selectedMainCategories.contains(item.mainCategory)) return false;
+
       return true;
     }).toList();
 
@@ -174,7 +197,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     for (var mainKey in sortedGroup.keys) {
       for (var subKey in sortedGroup[mainKey]!.keys) {
         sortedGroup[mainKey]![subKey]!.sort((a, b) {
-          // Sort largest variance first (absolute value)
           return b.variance.abs().compareTo(a.variance.abs());
         });
       }
@@ -184,15 +206,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       _groupedReport = sortedGroup;
       _totalVarianceCost = tempTotalCost;
       _totalVarianceRetail = tempTotalRetail;
+      // Force rebuild of list when filters change
       _listKey = UniqueKey();
     });
   }
 
-  // ... (Rest of UI code remains exactly the same as before)
+  // --- ACTIONS ---
 
   void _toggleViewMode() {
     setState(() {
       _areCategoriesExpanded = !_areCategoriesExpanded;
+      // Force rebuild of list when toggle is pressed
       _listKey = UniqueKey();
     });
   }
@@ -237,19 +261,72 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     );
   }
 
+  void _openCategoryFilter() async {
+    final sortedCats = _availableMainCategories.toList()..sort();
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Filter Categories'),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 300,
+                child: ListView(
+                  children: sortedCats.map((cat) {
+                    return CheckboxListTile(
+                      title: Text(cat),
+                      value: _selectedMainCategories.contains(cat),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          if (val == true) {
+                            _selectedMainCategories.add(cat);
+                          } else {
+                            _selectedMainCategories.remove(cat);
+                          }
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      setDialogState(() => _selectedMainCategories.clear());
+                    },
+                    child: const Text('None')
+                ),
+                TextButton(
+                    onPressed: () {
+                      setDialogState(() => _selectedMainCategories = Set.from(_availableMainCategories));
+                    },
+                    child: const Text('All')
+                ),
+                FilledButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _applyLocalFilters();
+                    },
+                    child: const Text('Apply')
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _editCount(Map<String, dynamic> count) async {
     await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(existingCount: count)));
     _runReport();
   }
-
   void _addNewCount(VarianceItem item) async {
     if (item.inventoryItem == null) return;
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (c) => CountScreen(initialProduct: item.inventoryItem, initialDate: DateTime.parse(_endDate!)),
-      ),
-    );
+    await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(initialProduct: item.inventoryItem, initialDate: DateTime.parse(_endDate!))));
     _runReport();
   }
 
@@ -301,9 +378,18 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 Row(
                   children: [
                     ActionChip(
-                      avatar: const Icon(Icons.filter_alt, size: 16),
+                      avatar: const Icon(Icons.place, size: 16),
                       label: Text(_selectedLocations.isEmpty ? 'All Locs' : 'Locs (${_selectedLocations.length})'),
                       onPressed: _openLocationFilter,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    const SizedBox(width: 8),
+                    ActionChip(
+                      avatar: const Icon(Icons.category, size: 16),
+                      label: Text(_selectedMainCategories.length == _availableMainCategories.length
+                          ? 'All Cats'
+                          : 'Cats (${_selectedMainCategories.length})'),
+                      onPressed: _openCategoryFilter,
                       visualDensity: VisualDensity.compact,
                     ),
                     const SizedBox(width: 8),
@@ -350,13 +436,12 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 : _groupedReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : ListView.builder(
-              key: _listKey,
+              key: _listKey, // Forces rebuild when toggled
               padding: const EdgeInsets.only(bottom: 40),
               itemCount: _groupedReport.keys.length,
               itemBuilder: (context, i) {
                 final mainCat = _groupedReport.keys.elementAt(i);
                 final subCats = _groupedReport[mainCat]!;
-
                 double mainCatRetail = 0;
                 for(var list in subCats.values) { for(var item in list) mainCatRetail += item.varianceRetail; }
 
@@ -370,11 +455,8 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(mainCat.toUpperCase(), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Colors.black87)),
-                          Text(
-                            NumberFormat.simpleCurrency(name: 'R').format(mainCatRetail),
-                            style: TextStyle(fontWeight: FontWeight.bold, color: mainCatRetail < 0 ? Colors.red : Colors.green[800]),
-                          )
+                          Flexible(child: Text(mainCat.toUpperCase(), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Colors.black87))),
+                          Text(NumberFormat.simpleCurrency(name: 'R').format(mainCatRetail), style: TextStyle(fontWeight: FontWeight.bold, color: mainCatRetail < 0 ? Colors.red : Colors.green[800])),
                         ],
                       ),
                     ),
@@ -385,18 +467,14 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       for(var item in items) subRetail += item.varianceRetail;
 
                       return ExpansionTile(
+                        initiallyExpanded: _areCategoriesExpanded,
                         title: Row(
                           children: [
                             Expanded(child: Text(catName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blueAccent))),
-                            Text(
-                              NumberFormat.simpleCurrency(name: 'R').format(subRetail),
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: subRetail < 0 ? Colors.red : Colors.green),
-                            ),
+                            Text(NumberFormat.simpleCurrency(name: 'R').format(subRetail), style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: subRetail < 0 ? Colors.red : Colors.green)),
                           ],
                         ),
                         subtitle: Text('${items.length} Items', style: const TextStyle(fontSize: 11)),
-                        initiallyExpanded: _areCategoriesExpanded,
-                        shape: const Border(),
                         children: items.map((item) => _buildVarianceCard(item)).toList(),
                       );
                     }),
@@ -423,8 +501,8 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   }
 
   Widget _buildVarianceCard(VarianceItem item) {
-    final isLoss = item.variance < -0.05;
-    final isGain = item.variance > 0.05;
+    final isLoss = item.variance < -0.1;
+    final isGain = item.variance > 0.1;
     final color = isLoss ? Colors.red : (isGain ? Colors.green : Colors.grey);
     final productName = item.productName.isEmpty ? 'Unknown Product' : item.productName.toUpperCase();
 
@@ -558,27 +636,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     );
   }
 
-  Widget _buildDateDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
-        DropdownButton<String>(
-          isExpanded: true,
-          isDense: true,
-          value: items.contains(value) ? value : null,
-          hint: const Text('Select'),
-          items: items.map((d) {
-            String display = d;
-            try { display = DateFormat('dd MMM yy').format(DateTime.parse(d)); } catch(e){}
-            return DropdownMenuItem(value: d, child: Text(display, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)));
-          }).toList(),
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-
   Widget _buildDetailRow(String label, double value, {bool isBold = false, Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
@@ -591,4 +648,37 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       ),
     );
   }
+}
+Widget _buildDetailRow(String label, double value, {bool isBold = false, Color? color}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 1),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
+        Text(value.toStringAsFixed(2), style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
+      ],
+    ),
+  );
+}
+
+Widget _buildDateDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
+      DropdownButton<String>(
+        isExpanded: true,
+        isDense: true,
+        value: items.contains(value) ? value : null,
+        hint: const Text('Select'),
+        items: items.map((d) {
+          String display = d;
+          try { display = DateFormat('dd MMM yy').format(DateTime.parse(d)); } catch(e){}
+          return DropdownMenuItem(value: d, child: Text(display, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)));
+        }).toList(),
+        onChanged: onChanged,
+      ),
+    ],
+  );
 }

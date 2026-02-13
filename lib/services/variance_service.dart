@@ -1,4 +1,3 @@
-import 'package:intl/intl.dart';
 import '../services/logger_service.dart';
 
 class VarianceItem {
@@ -12,7 +11,7 @@ class VarianceItem {
   final double currentCount;
 
   final double costPrice;
-  final double retailPrice; // Calculated "Highest Valid" Bottle Price
+  final double retailPrice;
 
   final List<Map<String, dynamic>> allEntries;
   final Map<String, dynamic>? inventoryItem;
@@ -36,8 +35,6 @@ class VarianceItem {
 
   double get varianceCost => variance * costPrice;
   double get varianceRetail => variance * retailPrice;
-
-  // This is the "Retail Value for Stock Count"
   double get totalStockValueRetail => currentCount * retailPrice;
 }
 
@@ -46,12 +43,14 @@ class VarianceService {
 
   VarianceService({this.logger});
 
-  // --- REGEX FOR EXCLUSIONS ---
-  // Matches the Sheet Formula: REGEXMATCH(J2:J, "Special Shooter|...")
   final RegExp _exclusionRegex = RegExp(
     r'Special Shooter|Special Beverage|Cocktail Ingredient|Special Tot|Special Spirit Bottle|Special Alcoholic Beverage',
     caseSensitive: false,
   );
+
+  // Standard Hospitality Markup (300% or Cost * 3)
+  // Used to estimate missing prices so reports correlate
+  static const double _estimatedMarkup = 3.0;
 
   String _normalize(dynamic input) {
     if (input == null) return '';
@@ -104,7 +103,7 @@ class VarianceService {
       prodCat[name] = item['Category']?.toString() ?? 'General';
     }
 
-    // 2. Build Recipe Map & Calculate Highest Valid Retail Price
+    // 2. Build Recipe Map
     Map<String, List<Map<String, dynamic>>> pluToRecipes = {};
 
     for (var row in itemSalesMap) {
@@ -120,43 +119,39 @@ class VarianceService {
       final sellPrice = _safeDouble(row['Sell']);
 
       if (sellPrice > 0) {
-        // --- 2a. APPLY EXCLUSION LOGIC ---
         final mainCat = row['Main Category']?.toString() ?? '';
+        if (_exclusionRegex.hasMatch(mainCat)) continue;
 
-        // If it matches the "Special/Cocktail" regex, SKIP IT.
-        if (_exclusionRegex.hasMatch(mainCat)) {
-          continue;
-        }
-
-        // --- 2b. CALCULATE IMPLIED BOTTLE PRICE ---
         final measure = row['Measure']?.toString().toLowerCase() ?? '';
         double impliedBottlePrice = 0.0;
-
-        // Get UoM info
         final invItem = inventoryRef[name];
+
         double bottleUoM = 30.0;
         double singleUoM = 1.0;
+        double volumeMl = 750.0;
 
         if (invItem != null) {
           bottleUoM = _safeDouble(invItem['Bottle UoM']);
           singleUoM = _safeDouble(invItem['Single UoM']);
+          volumeMl = _safeDouble(invItem['Single Unit Volume']);
+
           if (bottleUoM == 0) bottleUoM = 30.0;
           if (singleUoM == 0) singleUoM = 1.0;
+          if (volumeMl == 0) volumeMl = 750.0;
         }
 
-        // Apply Formula: IFS(Bottle|Can, Price, Shots, Price*UoM, Glass, Price/UoM)
         if (measure.contains('bottle') || measure.contains('can')) {
           impliedBottlePrice = sellPrice;
         } else if (measure == 'shots' || measure.contains('tot')) {
           impliedBottlePrice = sellPrice * bottleUoM;
         } else if (measure == 'glass') {
-          impliedBottlePrice = sellPrice / singleUoM;
+          impliedBottlePrice = sellPrice * singleUoM;
+        } else if (measure == 'ml') {
+          impliedBottlePrice = sellPrice * 30.0; // Fallback estimate if ML logic fails
         } else {
           impliedBottlePrice = sellPrice;
         }
 
-        // --- 2c. KEEP HIGHEST PRICE ---
-        // If this valid recipe yields a higher bottle price, store it.
         if (impliedBottlePrice > (prodRetail[name] ?? 0)) {
           prodRetail[name] = impliedBottlePrice;
         }
@@ -212,7 +207,7 @@ class VarianceService {
       }
     }
 
-    // 5. Sales (SMART MATCHING)
+    // 5. Sales
     Map<String, double> prodSales = {};
 
     for (var sale in storeSalesData) {
@@ -227,46 +222,74 @@ class VarianceService {
 
       if (isStrictlyAfterStart && isBeforeOrOnEnd) {
         final plu = sale['No.']?.toString().trim();
-        final menuItemName = _normalize(sale['Item']);
+        final menuItemName = _normalize(sale['MenuItem'] ?? sale['Menu Item'] ?? sale['Item']);
 
         if (plu != null && pluToRecipes.containsKey(plu)) {
           final possibleRecipes = pluToRecipes[plu]!;
-          Map<String, dynamic>? selectedRecipe;
+          List<Map<String, dynamic>> recipesToProcess = [];
 
-          // Smart Match
-          if (possibleRecipes.length == 1) {
-            selectedRecipe = possibleRecipes.first;
-          } else {
-            try {
-              selectedRecipe = possibleRecipes.firstWhere(
-                      (r) => _normalize(r['Menu Item']) == menuItemName
-              );
-            } catch (e) {
-              selectedRecipe = null;
-            }
-          }
+          try {
+            final matchingRecipes = possibleRecipes.where(
+                    (r) => _normalize(r['Menu Item']) == menuItemName
+            ).toList();
 
-          if (selectedRecipe != null) {
-            final productName = _normalize(selectedRecipe['Product']);
-            final qtySold = _safeDouble(sale['Qty']);
-            double qtyUsed = qtySold * (_safeDouble(selectedRecipe['Quantity']));
-            final measure = selectedRecipe['Measure']?.toString().toLowerCase() ?? '';
+            if (matchingRecipes.isNotEmpty) {
+              final firstCat = (matchingRecipes.first['Main Category'] ?? '').toString().toLowerCase();
+              final isMultiIngredient = firstCat.contains('special') || firstCat.contains('cocktail');
 
-            double finalDeduction = 0.0;
-            if (measure.contains('bottle') || measure.contains('can')) {
-              finalDeduction = qtyUsed;
-            } else if (measure == 'shots' || measure.contains('tot')) {
-              double bottleUoM = 30.0;
-              if (inventoryRef.containsKey(productName)) {
-                bottleUoM = _safeDouble(inventoryRef[productName]!['Bottle UoM']);
-                if (bottleUoM == 0) bottleUoM = 30.0;
+              if (isMultiIngredient) {
+                recipesToProcess = matchingRecipes;
+              } else {
+                final distinctProducts = matchingRecipes.map((r) => r['Product']).toSet();
+                if (distinctProducts.length > 1) {
+                  logger?.error('AMBIGUITY: PLU $plu "$menuItemName" collision. Using first.');
+                }
+                recipesToProcess = [matchingRecipes.first];
               }
-              finalDeduction = qtyUsed / bottleUoM;
-            } else {
-              finalDeduction = qtyUsed;
-            }
 
-            prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+              for (var selectedRecipe in recipesToProcess) {
+                final productName = _normalize(selectedRecipe['Product']);
+                final qtySold = _safeDouble(sale['Qty']);
+                double qtyUsed = qtySold * (_safeDouble(selectedRecipe['Quantity']));
+                final measure = selectedRecipe['Measure']?.toString().toLowerCase() ?? '';
+
+                double finalDeduction = 0.0;
+                double bottleUoM = 30.0;
+                double singleUoM = 1.0;
+                double volumeMl = 750.0;
+
+                if (inventoryRef.containsKey(productName)) {
+                  bottleUoM = _safeDouble(inventoryRef[productName]!['Bottle UoM']);
+                  singleUoM = _safeDouble(inventoryRef[productName]!['Single UoM']);
+                  volumeMl = _safeDouble(inventoryRef[productName]!['Single Unit Volume']);
+                  if (bottleUoM == 0) bottleUoM = 30.0;
+                  if (singleUoM == 0) singleUoM = 1.0;
+                  if (volumeMl == 0) volumeMl = 750.0;
+                }
+
+                if (measure.contains('bottle') || measure.contains('can')) {
+                  finalDeduction = qtyUsed;
+                }
+                else if (measure == 'shots' || measure.contains('tot')) {
+                  finalDeduction = qtyUsed / bottleUoM;
+                }
+                else if (measure == 'glass') {
+                  // e.g. Sold 1 glass. 4 glasses per bottle. Deduct 0.25 bottles.
+                  finalDeduction = qtyUsed * singleUoM;
+                }
+                else if (measure == 'ml') {
+                  // e.g. Sold 25ml. Bottle is 750ml. Deduct 0.033 bottles.
+                  // Note: qtyUsed here is the Total ML sold (Qty * RecipeQuantity)
+                  finalDeduction = qtyUsed / volumeMl;
+                } else {
+                  finalDeduction = qtyUsed;
+                }
+
+                prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+              }
+            }
+          } catch (e) {
+            // Ignore
           }
         }
       }
@@ -280,6 +303,17 @@ class VarianceService {
       if (name.isEmpty) continue;
       if ((prevCounts[name]??0) == 0 && (currCounts[name]??0) == 0 && (prodPurchases[name]??0) == 0 && (prodSales[name]??0) == 0) continue;
 
+      double cp = prodCosts[name] ?? 0.0;
+      double rp = prodRetail[name] ?? 0.0;
+
+      // --- SMART ESTIMATION ---
+      // If one price is missing, estimate it from the other to ensure correlation in report
+      if (rp == 0 && cp > 0) {
+        rp = cp * _estimatedMarkup; // Estimate Retail = Cost * 3
+      } else if (cp == 0 && rp > 0) {
+        cp = rp / _estimatedMarkup; // Estimate Cost = Retail / 3
+      }
+
       report.add(VarianceItem(
         productName: name,
         mainCategory: prodMainCat[name] ?? 'Uncategorized',
@@ -288,8 +322,8 @@ class VarianceService {
         purchases: prodPurchases[name] ?? 0,
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
-        costPrice: prodCosts[name] ?? 0,
-        retailPrice: prodRetail[name] ?? 0,
+        costPrice: cp,
+        retailPrice: rp,
         allEntries: prodHistory[name] ?? [],
         inventoryItem: inventoryRef[name],
       ));
