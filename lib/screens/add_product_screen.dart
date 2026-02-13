@@ -176,7 +176,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                   labelText: 'Category *',
                   border: OutlineInputBorder(),
                 ),
-                value: _selectedCategory,
+                initialValue: _selectedCategory,
                 items: _categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
                 onChanged: (val) => setState(() => _selectedCategory = val),
                 validator: (v) => v == null ? 'Required' : null,
