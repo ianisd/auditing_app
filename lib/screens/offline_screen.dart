@@ -69,23 +69,32 @@ class _OfflineScreenState extends State<OfflineScreen> {
           : ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _buildStatCard('Pending Sync', _stats['pendingSync'] ?? 0, Colors.orange, null),
-          _buildStatCard('Stock Counts', _stats['stockCounts'] ?? 0, Colors.blue, () => _clearData('Counts')),
+          _buildStatCard(
+              'Pending Sync', _stats['pendingSync'] ?? 0, Colors.orange, null),
+          _buildStatCard(
+              'Stock Counts', _stats['stockCounts'] ?? 0, Colors.blue, () =>
+              _clearData('Counts')),
           const Divider(height: 32),
 
           const Padding(
             padding: EdgeInsets.only(bottom: 8.0),
-            child: Text('Master Data', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            child: Text('Master Data',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           ),
-          _buildStatCard('Inventory Items', _stats['inventoryItems'] ?? 0, Colors.green, () => _clearData('Inventory')),
-          _buildStatCard('Locations', _stats['locations'] ?? 0, Colors.purple, () => _clearData('Locations')),
-          _buildStatCard('Audits', _stats['audits'] ?? 0, Colors.teal, () => _clearData('Audits')),
+          _buildStatCard('Inventory Items', _stats['inventoryItems'] ?? 0,
+              Colors.green, () => _clearData('Inventory')),
+          _buildStatCard(
+              'Locations', _stats['locations'] ?? 0, Colors.purple, () =>
+              _clearData('Locations')),
+          _buildStatCard('Audits', _stats['audits'] ?? 0, Colors.teal, () =>
+              _clearData('Audits')),
 
           const SizedBox(height: 20),
           OutlinedButton.icon(
             onPressed: () => _clearData('All'),
             icon: const Icon(Icons.delete_forever, color: Colors.red),
-            label: const Text('WIPE ALL DATA', style: TextStyle(color: Colors.red)),
+            label: const Text(
+                'WIPE ALL DATA', style: TextStyle(color: Colors.red)),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.red),
               padding: const EdgeInsets.all(16),
@@ -94,14 +103,17 @@ class _OfflineScreenState extends State<OfflineScreen> {
 
           const SizedBox(height: 20),
           const Divider(),
-          const Text("Diagnostics", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+          const Text("Diagnostics", style: TextStyle(
+              fontWeight: FontWeight.bold, color: Colors.grey)),
 
           // Button 1: System Logs (Errors/Sync status)
           ListTile(
             leading: const Icon(Icons.terminal, color: Colors.grey),
             title: const Text('View System Logs'),
             trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugLogScreen())),
+            onTap: () =>
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (c) => const DebugLogScreen())),
           ),
 
           // Button 2: Data Debugger (Check Sales/Purchase Dates)
@@ -110,7 +122,9 @@ class _OfflineScreenState extends State<OfflineScreen> {
             title: const Text('Check Sales & Purchases Data'),
             subtitle: const Text('Verify dates for variance report'),
             trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const DebugDataScreen())),
+            onTap: () =>
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (c) => const DebugDataScreen())),
           ),
         ],
       ),
