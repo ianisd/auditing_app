@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
+import '../services/store_manager.dart';
 import 'location_history_screen.dart';
 
 class LocationsScreen extends StatefulWidget {
@@ -75,7 +76,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
   Future<void> _refreshLocations() async {
     setState(() => _isRefreshing = true);
     try {
-      final syncService = context.read<SyncService>();
+      final syncService = context.read<StoreManager>().syncService;
       await syncService.refreshMasterData();
 
       if (!mounted) return;

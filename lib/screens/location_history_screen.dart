@@ -23,7 +23,7 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
 
   // --- FILTER STATE ---
   String _filterMode = 'All'; // 'All', 'Today', 'Custom'
-  Set<String> _customSelectedDates = {}; // Stores 'YYYY-MM-DD'
+  final Set<String> _customSelectedDates = {}; // Stores 'YYYY-MM-DD'
 
   @override
   void initState() {
@@ -150,8 +150,11 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
                       value: isSelected,
                       onChanged: (bool? value) {
                         setDialogState(() {
-                          if (value == true) _customSelectedDates.add(dateKey);
-                          else _customSelectedDates.remove(dateKey);
+                          if (value == true) {
+                            _customSelectedDates.add(dateKey);
+                          } else {
+                            _customSelectedDates.remove(dateKey);
+                          }
                         });
                       },
                     );
