@@ -57,7 +57,7 @@ class _CountScreenState extends State<CountScreen> {
 
   List<Map<String, dynamic>> _locations = [];
   List<Map<String, dynamic>> _inventory = [];
-  List<Map<String, dynamic>> _itemSalesData = []; // NEW: Store Recipes
+  List<Map<String, dynamic>> _itemSalesData = []; // Recipes for Retail Calc
   bool _isLoading = true;
   bool _isEditMode = false;
 
@@ -73,7 +73,11 @@ class _CountScreenState extends State<CountScreen> {
   double _calcTotalBottles = 0.0;
   double _calcTotalMl = 0.0;
   double _calcCostValue = 0.0;
-  double _calcRetailValue = 0.0; // NEW
+  double _calcRetailValue = 0.0; // RESTORED
+
+  // Context Data
+  double _todayTotalAcrossAllLocs = 0.0;
+  List<Map<String, dynamic>> _historyStats = [];
 
   // Regex for Exclusions (Matches Sheet Formula)
   final RegExp _exclusionRegex = RegExp(
@@ -120,20 +124,19 @@ class _CountScreenState extends State<CountScreen> {
       final locations = await storage.getLocations();
       final inventory = await storage.getAllInventory();
       final currentAudit = await storage.getCurrentAudit();
-      final itemSales = await storage.getItemSalesMap(); // NEW: Load Recipes
+      final itemSales = await storage.getItemSalesMap(); // Load Recipes
 
       setState(() {
         _locations = locations;
         _inventory = inventory;
-        _itemSalesData = itemSales; // NEW
+        _itemSalesData = itemSales;
         _filteredProducts = inventory;
         _selectedAudit = currentAudit?['Audit ID']?.toString();
       });
 
       if (_isEditMode) {
         await _loadExistingData(widget.existingCount!, inventory);
-      }
-      else {
+      } else {
         if (widget.initialProduct != null) {
           _selectProductFromList(widget.initialProduct!);
         }
@@ -141,7 +144,6 @@ class _CountScreenState extends State<CountScreen> {
           _selectedLocation = widget.initialLocation;
         }
       }
-
       setState(() => _isLoading = false);
     } catch (e) {
       setState(() => _isLoading = false);
@@ -174,7 +176,53 @@ class _CountScreenState extends State<CountScreen> {
       _countController.text = data['count']?.toString() ?? '0';
       _weightController.text = data['weight']?.toString() ?? '0';
     });
+
+    _loadContextData();
     WidgetsBinding.instance.addPostFrameCallback((_) => _recalculateTotals());
+  }
+
+  Future<void> _loadContextData() async {
+    if (_selectedProduct == null) return;
+
+    final storage = context.read<OfflineStorage>();
+    final productName = _selectedProduct!['Inventory Product Name']?.toString() ?? '';
+
+    final allCounts = await storage.getStockCounts();
+    final productCounts = allCounts.where((c) =>
+    c['productName'] == productName && c['syncStatus'] != 'deleted'
+    ).toList();
+
+    final dateToUse = widget.initialDate ?? DateTime.now();
+    final dateStr = dateToUse.toIso8601String().split('T')[0];
+
+    double todaySum = 0.0;
+    for (var c in productCounts) {
+      if (c['date'].toString().startsWith(dateStr)) {
+        todaySum += _safeDouble(c['total_bottles']);
+      }
+    }
+
+    final Map<String, double> historyMap = {};
+    for (var c in productCounts) {
+      final d = c['date'].toString().split('T')[0];
+      if (d == dateStr) continue;
+
+      if (!historyMap.containsKey(d)) historyMap[d] = 0.0;
+      historyMap[d] = historyMap[d]! + _safeDouble(c['total_bottles']);
+    }
+
+    final sortedKeys = historyMap.keys.toList()..sort((a, b) => b.compareTo(a));
+    final historyList = sortedKeys.take(3).map((k) => {
+      'date': k,
+      'total': historyMap[k]
+    }).toList();
+
+    if (mounted) {
+      setState(() {
+        _todayTotalAcrossAllLocs = todaySum;
+        _historyStats = historyList;
+      });
+    }
   }
 
   bool _isFoodCategory(Map<String, dynamic>? product) {
@@ -221,7 +269,6 @@ class _CountScreenState extends State<CountScreen> {
 
   void _determineDefaultMeasurementMode(Map<String, dynamic>? product) {
     if (product == null) return;
-
     double gradient = _safeDouble(product['Gradient']);
     String mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
     String cat = product['Category']?.toString().toLowerCase() ?? '';
@@ -316,35 +363,29 @@ class _CountScreenState extends State<CountScreen> {
     return double.tryParse(value.toString()) ?? 0.0;
   }
 
-  // --- NEW: RETAIL PRICE CALCULATOR ---
+  // --- RESTORED: RETAIL PRICE CALCULATOR ---
   double _calculateBestRetailPrice() {
     if (_selectedProduct == null) return 0.0;
 
     final productName = _selectedProduct!['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
     double maxPrice = 0.0;
 
-    // Filter recipes for this product
     final recipes = _itemSalesData.where((r) =>
     (r['Product']?.toString().toLowerCase().trim() ?? '') == productName
     );
 
     for (var row in recipes) {
       final mainCat = row['Main Category']?.toString() ?? '';
-
-      // 1. EXCLUSION LOGIC (Regex from Sheet)
       if (_exclusionRegex.hasMatch(mainCat)) continue;
 
-      // 2. GET SELL PRICE
       final sellPrice = _safeDouble(row['Sell']);
       if (sellPrice <= 0) continue;
 
-      // 3. GET UOM INFO
       double bottleUoM = _safeDouble(_selectedProduct!['Bottle UoM']);
       double singleUoM = _safeDouble(_selectedProduct!['Single UoM']);
       if (bottleUoM == 0) bottleUoM = 30.0;
       if (singleUoM == 0) singleUoM = 1.0;
 
-      // 4. CALCULATE IMPLIED BOTTLE PRICE
       final measure = row['Measure']?.toString().toLowerCase() ?? '';
       double impliedPrice = 0.0;
 
@@ -353,17 +394,15 @@ class _CountScreenState extends State<CountScreen> {
       } else if (measure == 'shots' || measure.contains('tot')) {
         impliedPrice = sellPrice * bottleUoM;
       } else if (measure == 'glass') {
-        impliedPrice = sellPrice / singleUoM;
+        impliedPrice = sellPrice * singleUoM; // Fixed logic: Price/Glass * Glasses/Bottle
       } else {
-        impliedPrice = sellPrice; // Fallback
+        impliedPrice = sellPrice;
       }
 
-      // 5. MAX CHECK
       if (impliedPrice > maxPrice) {
         maxPrice = impliedPrice;
       }
     }
-
     return maxPrice;
   }
 
@@ -450,7 +489,7 @@ class _CountScreenState extends State<CountScreen> {
       _calcTotalBottles = totalUnits;
       _calcTotalMl = calculatedWeightOrVol;
       _calcCostValue = costValue;
-      _calcRetailValue = retailValue; // Update State
+      _calcRetailValue = retailValue; // RESTORED
     });
   }
 
@@ -471,6 +510,8 @@ class _CountScreenState extends State<CountScreen> {
 
       _determineDefaultMeasurementMode(product);
     });
+
+    _loadContextData();
     _productFocusNode.unfocus();
   }
 
@@ -493,7 +534,8 @@ class _CountScreenState extends State<CountScreen> {
     }
   }
 
-  Future<void> _saveCount() async {
+  // --- DUPLICATE INTERVENTION ---
+  Future<void> _processSave() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedLocation == null && widget.initialLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Location')));
@@ -503,11 +545,113 @@ class _CountScreenState extends State<CountScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Pack Size')));
       return;
     }
+
     _recalculateTotals();
 
+    // 1. Open Bottle / Edit Mode = Direct Save
+    if (_isEditMode || _selectedPackSize == 'Open Bottle') {
+      await _commitSaveToDB();
+      return;
+    }
+
+    // 2. Check for Duplicates
     final storage = context.read<OfflineStorage>();
-    final id = _isEditMode ? widget.existingCount!['id'] : DateTime.now().millisecondsSinceEpoch.toString();
-    final stockId = _isEditMode ? widget.existingCount!['stock_id'] : id;
+    final allCounts = await storage.getStockCounts();
+
+    final dateToUse = widget.initialDate != null
+        ? widget.initialDate!.toIso8601String().split('T')[0]
+        : DateTime.now().toIso8601String().split('T')[0];
+
+    final locationToUse = widget.initialLocation ?? _selectedLocation!;
+    final productName = _selectedProduct?['Inventory Product Name'] ?? _productController.text;
+
+    try {
+      final existingEntry = allCounts.firstWhere((c) =>
+      c['date'].toString().startsWith(dateToUse) &&
+          c['location'] == locationToUse &&
+          c['productName'] == productName &&
+          c['pack_size'] == _selectedPackSize &&
+          c['syncStatus'] != 'deleted'
+      );
+
+      // 3. Duplicate Found
+      if (mounted) {
+        await _showDuplicateInterventionDialog(existingEntry);
+      }
+
+    } catch (e) {
+      // No duplicate, save
+      await _commitSaveToDB();
+    }
+  }
+
+  Future<void> _showDuplicateInterventionDialog(Map<String, dynamic> existingEntry) async {
+    final currentCount = double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
+    final newCount = double.tryParse(_countController.text) ?? 0.0;
+    final addTotal = currentCount + newCount;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Item Already Counted'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('You already have $currentCount ${_selectedPackSize}s here.'),
+            const SizedBox(height: 8),
+            Text('Do you want to ADD to it, or EDIT (Overwrite) it?'),
+            const SizedBox(height: 16),
+            const Divider(),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Add:', style: TextStyle(color: Colors.green[700], fontWeight: FontWeight.bold)),
+                Text('$currentCount + $newCount = $addTotal', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Edit:', style: TextStyle(color: Colors.blue[700], fontWeight: FontWeight.bold)),
+                Text('New value will be $newCount', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          OutlinedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _commitSaveToDB(existingId: existingEntry['id'], isUpdate: true);
+            },
+            child: const Text('Edit (Overwrite)'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _countController.text = addTotal.toString();
+              _recalculateTotals();
+              _commitSaveToDB(existingId: existingEntry['id'], isUpdate: true);
+            },
+            child: const Text('ADD'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _commitSaveToDB({String? existingId, bool isUpdate = false}) async {
+    final storage = context.read<OfflineStorage>();
+
+    final id = existingId ?? (_isEditMode ? widget.existingCount!['id'] : DateTime.now().millisecondsSinceEpoch.toString());
+    final stockId = existingId ?? (_isEditMode ? widget.existingCount!['stock_id'] : id);
 
     final dateToUse = _isEditMode
         ? widget.existingCount!['date']
@@ -531,26 +675,26 @@ class _CountScreenState extends State<CountScreen> {
       'intercept': _safeDouble(_selectedProduct?['Intercept']),
       'location': widget.initialLocation ?? _selectedLocation!,
       'pack_size': _selectedPackSize,
-      'count': int.tryParse(_countController.text) ?? 0,
+      'count': double.tryParse(_countController.text) ?? 0.0,
       'weight': double.tryParse(_weightController.text) ?? 0.0,
       'volume_ml': _calcVolumeMl,
       'open_tots': _calcOpenTots,
       'total_bottles': _calcTotalBottles,
       'total_ml': _calcTotalMl,
       'cost_value': _calcCostValue,
-      'retail_value': _calcRetailValue, // NEW: Saved to DB
+      'retail_value': _calcRetailValue, // RESTORED
       'createdAt': createdDate,
       'updatedAt': DateTime.now().toIso8601String(),
       'auditId': _selectedAudit,
     };
 
     try {
-      if (_isEditMode) {
+      if (isUpdate || _isEditMode) {
         await storage.updateStockCount(countData);
         context.read<LoggerService>().info('Updated: ${_productController.text} ($id)');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated'), backgroundColor: Colors.blue));
-          Navigator.pop(context);
+          if (_isEditMode) Navigator.pop(context); else _clearForm();
         }
       } else {
         await storage.saveStockCount(countData);
@@ -560,6 +704,9 @@ class _CountScreenState extends State<CountScreen> {
           _clearForm();
         }
       }
+
+      _loadContextData();
+
     } catch (e) {
       context.read<LoggerService>().error('Save Failed', e);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
@@ -574,8 +721,9 @@ class _CountScreenState extends State<CountScreen> {
         _calcVolumeMl = 0;
         _calcTotalBottles = 0;
         _calcCostValue = 0;
-        _calcRetailValue = 0;
+        _calcRetailValue = 0; // RESET
       });
+      _loadContextData();
     } else {
       _productController.clear();
       _countController.text = '0';
@@ -587,7 +735,9 @@ class _CountScreenState extends State<CountScreen> {
         _calcVolumeMl = 0;
         _calcTotalBottles = 0;
         _calcCostValue = 0;
-        _calcRetailValue = 0;
+        _calcRetailValue = 0; // RESET
+        _todayTotalAcrossAllLocs = 0.0;
+        _historyStats = [];
       });
     }
   }
@@ -611,15 +761,7 @@ class _CountScreenState extends State<CountScreen> {
       appBar: AppBar(
         title: Text(_isEditMode ? 'Edit Count' : 'New Count'),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: IconButton.filled(
-              onPressed: _saveCount,
-              icon: const Icon(Icons.check),
-              tooltip: 'Save Count',
-              style: IconButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-            ),
-          ),
+          // Save button removed from here
           if (_isEditMode)
             IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: _deleteEntry, tooltip: 'Delete Entry'),
         ],
@@ -635,6 +777,7 @@ class _CountScreenState extends State<CountScreen> {
             key: _formKey,
             child: ListView(
               children: [
+                // 1. DATE BANNER
                 if (widget.initialDate != null && !_isEditMode)
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -657,6 +800,7 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
+                // 2. PRODUCT INPUT
                 Row(
                   children: [
                     Expanded(
@@ -704,29 +848,10 @@ class _CountScreenState extends State<CountScreen> {
                       ),
                     ),
                   ),
+
                 const SizedBox(height: 16),
 
-                if (_selectedProduct != null)
-                  Card(
-                    color: Colors.blue.shade50,
-                    elevation: 2,
-                    margin: const EdgeInsets.only(bottom: 16),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Product Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
-                          const Divider(color: Colors.blue),
-                          _buildDetailRow('Name', _selectedProduct!['Inventory Product Name']),
-                          _buildDetailRow('Category', _selectedProduct!['Category']),
-                          _buildDetailRow('Volume', '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}'),
-                          _buildDetailRow('Unit Cost', NumberFormat.simpleCurrency().format(costPrice)),
-                        ],
-                      ),
-                    ),
-                  ),
-
+                // 3. LOCATION INPUT
                 widget.initialLocation != null
                     ? TextFormField(
                   initialValue: widget.initialLocation,
@@ -743,6 +868,7 @@ class _CountScreenState extends State<CountScreen> {
 
                 const SizedBox(height: 16),
 
+                // 4. PACK SIZE INPUT
                 DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Pack Size', border: OutlineInputBorder()),
                   value: _selectedPackSize,
@@ -758,6 +884,7 @@ class _CountScreenState extends State<CountScreen> {
                 ),
                 const SizedBox(height: 16),
 
+                // 5. MODE SELECTOR (If Open Bottle)
                 if (_selectedPackSize == 'Open Bottle')
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
@@ -779,7 +906,9 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
+                // 6. COUNT INPUT ROW + SAVE BUTTON
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.center, // Align vertically
                   children: [
                     if (!_isWeightBased(_selectedPackSize))
                       Expanded(
@@ -805,9 +934,92 @@ class _CountScreenState extends State<CountScreen> {
                               keyboardType: TextInputType.number
                           )
                       ),
+
+                    const SizedBox(width: 12),
+
+                    // --- SAVE BUTTON ---
+                    SizedBox(
+                      height: 56, // Matches default TextField height
+                      width: 56,
+                      child: IconButton.filled(
+                        onPressed: _processSave,
+                        icon: const Icon(Icons.check, size: 28),
+                        tooltip: 'Save',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 24),
+
+                // 7. CONTEXT CARD (TOTAL TODAY)
+                if (_selectedProduct != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.indigo.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Total Today (All Locs):', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo)),
+                            Text(_todayTotalAcrossAllLocs.toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.indigo)),
+                          ],
+                        ),
+                        if (_historyStats.isNotEmpty) ...[
+                          const Divider(height: 16),
+                          const Align(alignment: Alignment.centerLeft, child: Text('History:', style: TextStyle(fontSize: 12, color: Colors.grey))),
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: _historyStats.map((h) {
+                              String date = h['date'];
+                              try { date = DateFormat('dd MMM').format(DateTime.parse(h['date'])); } catch(e){}
+                              return Column(
+                                children: [
+                                  Text(date, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                                  Text(h['total'].toStringAsFixed(1), style: const TextStyle(fontSize: 12)),
+                                ],
+                              );
+                            }).toList(),
+                          )
+                        ]
+                      ],
+                    ),
+                  ),
+
+                // 8. PRODUCT DETAILS CARD (MOVED HERE)
+                if (_selectedProduct != null)
+                  Card(
+                    color: Colors.blue.shade50,
+                    elevation: 2,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Product Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
+                          const Divider(color: Colors.blue),
+                          _buildDetailRow('Name', _selectedProduct!['Inventory Product Name']),
+                          _buildDetailRow('Category', _selectedProduct!['Category']),
+                          _buildDetailRow('Volume', '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}'),
+                          _buildDetailRow('Unit Cost', NumberFormat.simpleCurrency(name: 'R').format(costPrice)),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // 9. CALCULATED TOTALS
                 if (_selectedProduct != null)
                   Card(
                     color: Colors.green.shade50,
@@ -823,9 +1035,8 @@ class _CountScreenState extends State<CountScreen> {
                             _buildSummaryRow('Open Tots:', _calcOpenTots.toStringAsFixed(2)),
                           ],
                           _buildSummaryRow('Total Bottles/Units:', _calcTotalBottles.toStringAsFixed(2)),
-                          _buildSummaryRow('Total Cost Value:', NumberFormat.simpleCurrency().format(_calcCostValue)),
-                          // --- NEW RETAIL VALUE ROW ---
-                          _buildSummaryRow('Total Retail Value:', NumberFormat.simpleCurrency().format(_calcRetailValue), isTotal: true),
+                          _buildSummaryRow('Total Cost Value:', NumberFormat.simpleCurrency(name: 'R').format(_calcCostValue)),
+                          _buildSummaryRow('Total Retail Value:', NumberFormat.simpleCurrency(name: 'R').format(_calcRetailValue), isTotal: true),
                         ],
                       ),
                     ),
