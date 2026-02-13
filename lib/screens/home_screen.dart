@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/sync_service.dart';
-import '../widgets/sync_status.dart'; // <--- THIS IMPORT IS CRITICAL
+import '../widgets/sync_status.dart';
 import '../widgets/store_drawer.dart';
 import 'count_screen.dart';
+import 'invoices_screen.dart';
 import 'view_counts_screen.dart';
 import 'sync_screen.dart';
 import 'locations_screen.dart';
 import 'inventory_screen.dart';
 import 'offline_screen.dart';
 import 'variance_report_screen.dart';
+import 'purchases_line_items_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -83,125 +85,163 @@ class HomeScreen extends StatelessWidget {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SyncStatusWidget(), // This should now work
-              const SizedBox(height: 16),
-              Expanded(
-                child: ListView(
-                  children: [
-                    _buildFeatureCard(
-                      icon: Icons.add_circle_outline,
-                      title: 'New Count',
-                      subtitle: 'Scan and count items',
-                      color: Colors.blue,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const CountScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.list_alt,
-                      title: 'View Counts',
-                      subtitle: 'Browse and edit counts',
-                      color: Colors.green,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const ViewCountsScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.analytics,
-                      title: 'Variance Report',
-                      subtitle: 'Compare counts vs sales & purchases',
-                      color: Colors.purple,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const VarianceReportScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.inventory_2_outlined,
-                      title: 'Inventory',
-                      subtitle: 'View master product list',
-                      color: Colors.indigo,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const InventoryScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.location_on,
-                      title: 'Locations',
-                      subtitle: 'View and manage locations',
-                      color: Colors.teal,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const LocationsScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.cloud_upload,
-                      title: 'Sync Data',
-                      subtitle: 'Upload counts to server',
-                      color: Colors.orange,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const SyncScreen(),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Consumer<OfflineStorage>(
-                builder: (context, storage, child) {
-                  final pending = storage.pendingCounts.length;
-                  if (pending > 0) {
-                    return Card(
-                      margin: const EdgeInsets.only(top: 16),
-                      color: Colors.orange[50],
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.warning_amber_rounded,
-                                color: Colors.orange[800]),
-                            const SizedBox(width: 8),
-                            Text(
-                              '$pending counts pending sync',
-                              style: TextStyle(
-                                color: Colors.orange[800],
-                                fontWeight: FontWeight.bold,
-                              ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SyncStatusWidget(),
+                const SizedBox(height: 16),
+
+                // ✅ FIXED: Correct indexing - 14 total items (0-13)
+                ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: 14, // ✅ CORRECT: 14 items total
+                  itemBuilder: (context, index) {
+                    switch (index) {
+                      case 0:
+                        return _buildFeatureCard(
+                          icon: Icons.cloud_upload,
+                          title: 'Sync Data',
+                          subtitle: 'Upload counts to server',
+                          color: Colors.orange,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const SyncScreen(),
                             ),
-                          ],
+                          ),
+                        );
+                      case 1:
+                        return const SizedBox(height: 16);
+                      case 2:
+                        return _buildFeatureCard(
+                          icon: Icons.add_circle_outline,
+                          title: 'New Count',
+                          subtitle: 'Scan and count items',
+                          color: Colors.blue,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const CountScreen(),
+                            ),
+                          ),
+                        );
+                      case 3:
+                        return const SizedBox(height: 16);
+                      case 4:
+                        return _buildFeatureCard(
+                          icon: Icons.list_alt,
+                          title: 'View Counts',
+                          subtitle: 'Browse and edit counts',
+                          color: Colors.green,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const ViewCountsScreen(),
+                            ),
+                          ),
+                        );
+                      case 5:
+                        return const SizedBox(height: 16);
+                      case 6:
+                        return _buildFeatureCard(
+                          icon: Icons.receipt_long,
+                          title: 'GRV Upload',
+                          subtitle: 'Upload Goods Received Vouchers',
+                          color: Colors.brown,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const GrvInvoiceScreen(),
+                            ),
+                          ),
+                        );
+                      case 7:
+                        return const SizedBox(height: 16);
+                      case 8: // ✅ VARIANCE REPORT
+                        return _buildFeatureCard(
+                          icon: Icons.analytics,
+                          title: 'Variance Report',
+                          subtitle: 'Compare counts vs sales & purchases',
+                          color: Colors.purple,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const VarianceReportScreen(),
+                            ),
+                          ),
+                        );
+                      case 9:
+                        return const SizedBox(height: 16);
+                      case 10: // ✅ INVENTORY
+                        return _buildFeatureCard(
+                          icon: Icons.inventory_2_outlined,
+                          title: 'Inventory',
+                          subtitle: 'View master product list',
+                          color: Colors.indigo,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const InventoryScreen(),
+                            ),
+                          ),
+                        );
+                      case 11:
+                        return const SizedBox(height: 16);
+                      case 12: // ✅ LOCATIONS
+                        return _buildFeatureCard(
+                          icon: Icons.location_on,
+                          title: 'Locations',
+                          subtitle: 'View and manage locations',
+                          color: Colors.teal,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const LocationsScreen(),
+                            ),
+                          ),
+                        );
+                      case 13:
+                        return const SizedBox(height: 16);
+                      default:
+                        return const SizedBox.shrink();
+                    }
+                  },
+                ),
+
+                Consumer<OfflineStorage>(
+                  builder: (context, storage, child) {
+                    final pending = storage.pendingCounts.length;
+                    if (pending > 0) {
+                      return Card(
+                        margin: const EdgeInsets.only(top: 16),
+                        color: Colors.orange[50],
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.warning_amber_rounded,
+                                  color: Colors.orange[800]),
+                              const SizedBox(width: 8),
+                              Text(
+                                '$pending counts pending sync',
+                                style: TextStyle(
+                                  color: Colors.orange[800],
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
-              ),
-            ],
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
