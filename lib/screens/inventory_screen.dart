@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
+import '../services/store_manager.dart';
 import '../widgets/inventory_list.dart';
 import 'product_detail_screen.dart'; // 1. IMPORT THE DETAIL SCREEN
 
@@ -54,7 +55,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     setState(() => _isSyncing = true);
 
     try {
-      final syncService = context.read<SyncService>();
+      final syncService = context.read<StoreManager>().syncService;
       final result = await syncService.refreshMasterData(); // This triggers the merge logic
 
       if (mounted) {

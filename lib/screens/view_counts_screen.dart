@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/sync_service.dart';
+import '../services/store_manager.dart';
 import 'count_screen.dart';
 import 'package:intl/intl.dart';
 
@@ -18,9 +19,10 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
 
-  // --- NEW FILTER STATE ---
-  String _filterMode = 'All'; // Options: 'All', 'Today', 'Custom'
-  Set<String> _customSelectedDates = {}; // Stores 'YYYY-MM-DD' strings
+  // --- FILTER STATE ---
+  String _filterMode = 'All'; // 'All', 'Today', 'Custom'
+  Set<String> _customSelectedDates = {};
+  String? _selectedLocationFilter; // THIS WAS MISSING
 
   Map<String, Map<String, List<Map<String, dynamic>>>> _groupedCounts = {};
 
@@ -49,11 +51,8 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     });
   }
 
-  // --- 1. ROBUST FILTER LOGIC ---
   void _applyFilters() {
     final query = _searchController.text.toLowerCase();
-
-    // Normalize "Today" to YYYY-MM-DD
     final now = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
 
@@ -61,19 +60,16 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
       _filteredCounts = _allCounts.where((c) {
         // A. Search Text Filter
         final prod = c['productName']?.toString().toLowerCase() ?? '';
-        final loc = c['location']?.toString().toLowerCase() ?? '';
-        final matchesSearch = query.isEmpty || prod.contains(query) || loc.contains(query);
+        final barcode = c['barcode']?.toString().toLowerCase() ?? '';
+        final matchesSearch = query.isEmpty || prod.contains(query) || barcode.contains(query);
 
         // B. Date Filter
         final rawDate = c['date']?.toString() ?? '';
         String itemDateKey = '';
-
-        // Parse raw ISO date to YYYY-MM-DD for comparison
         try {
           final dt = DateTime.parse(rawDate);
           itemDateKey = DateFormat('yyyy-MM-dd').format(dt);
         } catch (e) {
-          // Fallback if date is already simple string
           itemDateKey = rawDate.split('T')[0];
         }
 
@@ -84,7 +80,14 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           matchesDate = _customSelectedDates.contains(itemDateKey);
         }
 
-        return matchesSearch && matchesDate;
+        // C. Location Filter (RESTORED)
+        bool matchesLocation = true;
+        if (_selectedLocationFilter != null) {
+          final loc = c['location']?.toString() ?? '';
+          matchesLocation = loc == _selectedLocationFilter;
+        }
+
+        return matchesSearch && matchesDate && matchesLocation;
       }).toList();
 
       _groupCounts();
@@ -95,32 +98,72 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     _applyFilters();
   }
 
-  // --- 2. MULTI-SELECT DATE DIALOG ---
+  // --- LOCATION SELECTOR (RESTORED) ---
+  Future<void> _openLocationSelector() async {
+    // Get unique locations from the ACTUAL data
+    final locations = _allCounts
+        .map((c) => c['location']?.toString())
+        .where((l) => l != null && l.isNotEmpty)
+        .toSet()
+        .toList();
+
+    locations.sort();
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Filter by Location'),
+        children: [
+          SimpleDialogOption(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+            onPressed: () {
+              setState(() => _selectedLocationFilter = null);
+              _applyFilters();
+              Navigator.pop(ctx);
+            },
+            child: const Text('All Locations', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+          ),
+          ...locations.map((loc) => SimpleDialogOption(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+            onPressed: () {
+              setState(() => _selectedLocationFilter = loc);
+              _applyFilters();
+              Navigator.pop(ctx);
+            },
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(loc!),
+                if (_selectedLocationFilter == loc) const Icon(Icons.check, size: 16, color: Colors.blue),
+              ],
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+
+  // --- DATE SELECTOR ---
   Future<void> _openDateSelector() async {
-    // 1. Extract all unique dates from the actual data
     final Set<String> availableDates = {};
     for (var c in _allCounts) {
       final raw = c['date']?.toString() ?? '';
       try {
         final dt = DateTime.parse(raw);
         availableDates.add(DateFormat('yyyy-MM-dd').format(dt));
-      } catch (e) { /* ignore bad dates */ }
+      } catch (e) { /* ignore */ }
     }
 
-    // 2. Sort them (Newest first)
-    final sortedDates = availableDates.toList()
-      ..sort((a, b) => b.compareTo(a));
+    final sortedDates = availableDates.toList()..sort((a, b) => b.compareTo(a));
 
     if (sortedDates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No dates available to filter')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No dates available')));
       return;
     }
 
-    // 3. Show Dialog
     await showDialog(
       context: context,
       builder: (context) {
-        // Local state for the dialog
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
@@ -134,8 +177,6 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                   itemBuilder: (ctx, i) {
                     final dateKey = sortedDates[i];
                     final isSelected = _customSelectedDates.contains(dateKey);
-
-                    // Pretty format for display
                     final displayDate = DateFormat('EEE, dd MMM yyyy').format(DateTime.parse(dateKey));
 
                     return CheckboxListTile(
@@ -143,11 +184,8 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                       value: isSelected,
                       onChanged: (bool? value) {
                         setDialogState(() {
-                          if (value == true) {
-                            _customSelectedDates.add(dateKey);
-                          } else {
-                            _customSelectedDates.remove(dateKey);
-                          }
+                          if (value == true) _customSelectedDates.add(dateKey);
+                          else _customSelectedDates.remove(dateKey);
                         });
                       },
                     );
@@ -155,26 +193,14 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                 ),
               ),
               actions: [
-                TextButton(
-                    onPressed: () {
-                      // Clear all
-                      setDialogState(() {
-                        _customSelectedDates.clear();
-                      });
-                    },
-                    child: const Text('Clear')
-                ),
-                FilledButton(
-                  onPressed: () {
-                    setState(() {
-                      // If user selected dates, switch mode to Custom. If empty, go back to All.
-                      _filterMode = _customSelectedDates.isNotEmpty ? 'Custom' : 'All';
-                      _applyFilters();
-                    });
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Apply'),
-                ),
+                TextButton(onPressed: () { setDialogState(() { _customSelectedDates.clear(); }); }, child: const Text('Clear')),
+                FilledButton(onPressed: () {
+                  setState(() {
+                    _filterMode = _customSelectedDates.isNotEmpty ? 'Custom' : 'All';
+                    _applyFilters();
+                  });
+                  Navigator.pop(context);
+                }, child: const Text('Apply')),
               ],
             );
           },
@@ -186,43 +212,30 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   Future<void> _downloadCounts() async {
     setState(() => _isLoading = true);
     try {
-      final syncService = context.read<SyncService>();
+      final syncService = context.read<StoreManager>().syncService;
       final count = await syncService.downloadExistingCounts();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Downloaded $count counts'), backgroundColor: Colors.green),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Downloaded $count counts'), backgroundColor: Colors.green));
         await _loadCounts();
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
       setState(() => _isLoading = false);
     }
   }
 
   void _groupCounts() {
     _groupedCounts = {};
-    _filteredCounts.sort((a, b) {
-      final dateA = a['date'] ?? '';
-      final dateB = b['date'] ?? '';
-      return dateB.compareTo(dateA);
-    });
+    _filteredCounts.sort((a, b) => (b['date'] ?? '').compareTo(a['date'] ?? ''));
 
     for (var count in _filteredCounts) {
       final date = count['date']?.toString() ?? 'Unknown Date';
       final location = count['location']?.toString() ?? 'Unknown Location';
 
-      if (!_groupedCounts.containsKey(date)) {
-        _groupedCounts[date] = {};
-      }
-      if (!_groupedCounts[date]!.containsKey(location)) {
-        _groupedCounts[date]![location] = [];
-      }
+      if (!_groupedCounts.containsKey(date)) _groupedCounts[date] = {};
+      if (!_groupedCounts[date]!.containsKey(location)) _groupedCounts[date]![location] = [];
+
       _groupedCounts[date]![location]!.add(count);
     }
   }
@@ -249,24 +262,13 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   void _addCountToDate(String dateStr) {
     try {
       final date = DateTime.parse(dateStr);
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => CountScreen(initialDate: date),
-        ),
-      ).then((_) => _loadCounts());
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Date Format')));
-    }
+      Navigator.push(context, MaterialPageRoute(builder: (context) => CountScreen(initialDate: date)))
+          .then((_) => _loadCounts());
+    } catch (e) {}
   }
 
   void _editCount(Map<String, dynamic> count) async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => CountScreen(existingCount: count),
-      ),
-    );
+    await Navigator.push(context, MaterialPageRoute(builder: (context) => CountScreen(existingCount: count)));
     _loadCounts();
   }
 
@@ -276,11 +278,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
       appBar: AppBar(
         title: const Text('View Counts'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.cloud_download),
-            tooltip: 'Download from Cloud',
-            onPressed: _downloadCounts,
-          ),
+          IconButton(icon: const Icon(Icons.cloud_download), tooltip: 'Download', onPressed: _downloadCounts),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(110),
@@ -301,8 +299,6 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-
-              // --- 3. UPDATED FILTER CHIPS ---
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -311,37 +307,31 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                     FilterChip(
                       label: const Text('All Dates'),
                       selected: _filterMode == 'All',
-                      onSelected: (val) {
-                        setState(() {
-                          _filterMode = 'All';
-                          _customSelectedDates.clear();
-                          _applyFilters();
-                        });
-                      },
+                      onSelected: (val) { setState(() { _filterMode = 'All'; _customSelectedDates.clear(); _applyFilters(); }); },
                     ),
                     const SizedBox(width: 8),
                     FilterChip(
                       label: const Text('Today'),
                       selected: _filterMode == 'Today',
-                      onSelected: (val) {
-                        setState(() {
-                          _filterMode = 'Today';
-                          _customSelectedDates.clear();
-                          _applyFilters();
-                        });
-                      },
+                      onSelected: (val) { setState(() { _filterMode = 'Today'; _customSelectedDates.clear(); _applyFilters(); }); },
                     ),
                     const SizedBox(width: 8),
-                    // Multi-Select Chip
                     FilterChip(
-                      label: Text(_filterMode == 'Custom'
-                          ? '${_customSelectedDates.length} Selected'
-                          : 'Select Dates...'),
+                      label: Text(_filterMode == 'Custom' ? '${_customSelectedDates.length} Selected' : 'Dates...'),
                       selected: _filterMode == 'Custom',
-                      onSelected: (val) {
-                        _openDateSelector(); // Open Dialog
-                      },
-                      avatar: _filterMode == 'Custom' ? const Icon(Icons.check_circle, size: 18) : const Icon(Icons.calendar_month, size: 18),
+                      onSelected: (val) => _openDateSelector(),
+                      avatar: const Icon(Icons.calendar_month, size: 18),
+                    ),
+                    const SizedBox(width: 8),
+                    // --- RESTORED LOCATION CHIP ---
+                    FilterChip(
+                      label: Text(_selectedLocationFilter ?? 'Location...'),
+                      selected: _selectedLocationFilter != null,
+                      onSelected: (val) => _openLocationSelector(),
+                      avatar: const Icon(Icons.place, size: 18),
+                      onDeleted: _selectedLocationFilter != null ? () {
+                        setState(() { _selectedLocationFilter = null; _applyFilters(); });
+                      } : null,
                     ),
                   ],
                 ),
@@ -353,16 +343,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _filteredCounts.isEmpty
-          ? Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.folder_open, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text('No counts found', style: TextStyle(fontSize: 16, color: Colors.grey)),
-          ],
-        ),
-      )
+          ? const Center(child: Text('No counts found', style: TextStyle(fontSize: 16, color: Colors.grey)))
           : ListView.builder(
         padding: const EdgeInsets.all(8),
         itemCount: _groupedCounts.keys.length,
@@ -370,55 +351,36 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           final dateKey = _groupedCounts.keys.elementAt(dateIndex);
           final locationMap = _groupedCounts[dateKey]!;
 
-          // Parse date for display
           String displayDate = dateKey;
           bool isToday = false;
           try {
             final dt = DateTime.parse(dateKey);
             displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
-
             final now = DateTime.now();
-            final today = DateTime(now.year, now.month, now.day);
-            final checkDate = DateTime(dt.year, dt.month, dt.day);
-            isToday = checkDate.isAtSameMomentAs(today);
+            if (dt.year == now.year && dt.month == now.month && dt.day == now.day) isToday = true;
           } catch (e) {}
 
           final headerColor = isToday ? Colors.green.shade100 : Colors.grey.shade200;
-          final headerIcon = isToday ? Icons.today : Icons.history;
 
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
             color: Colors.white,
-            shape: RoundedRectangleBorder(
-              side: BorderSide(color: isToday ? Colors.green : Colors.grey.shade300),
-              borderRadius: BorderRadius.circular(8),
-            ),
+            shape: RoundedRectangleBorder(side: BorderSide(color: isToday ? Colors.green : Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
             child: ExpansionTile(
               initiallyExpanded: dateIndex == 0,
               collapsedBackgroundColor: headerColor,
               backgroundColor: headerColor.withOpacity(0.3),
               title: Row(
                 children: [
-                  Icon(headerIcon, color: isToday ? Colors.green[800] : Colors.grey[700]),
+                  Icon(isToday ? Icons.today : Icons.history, color: isToday ? Colors.green[800] : Colors.grey[700]),
                   const SizedBox(width: 8),
-                  Text(
-                    isToday ? 'Today ($displayDate)' : displayDate,
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: isToday ? Colors.green[900] : Colors.black87
-                    ),
-                  ),
+                  Text(isToday ? 'Today ($displayDate)' : displayDate, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isToday ? Colors.green[900] : Colors.black87)),
                 ],
               ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline, color: Colors.blue),
-                    tooltip: 'Add to this date',
-                    onPressed: () => _addCountToDate(dateKey),
-                  ),
+                  IconButton(icon: const Icon(Icons.add_circle_outline, color: Colors.blue), onPressed: () => _addCountToDate(dateKey)),
                   const Icon(Icons.expand_more),
                 ],
               ),
@@ -434,38 +396,25 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                       child: Text(locationKey, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple)),
                     ),
                     ...items.map((item) {
-                      return Container(
-                        color: Colors.white,
-                        child: Dismissible(
-                          key: Key(item['id']),
-                          background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
-                          direction: DismissDirection.endToStart,
-                          confirmDismiss: (dir) async {
-                            _deleteCount(item['id']);
-                            return false;
-                          },
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.only(left: 32, right: 16),
-                            title: Text(item['productName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w500)),
-                            subtitle: Text('${item['pack_size']}'),
-                            trailing: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  '${(double.tryParse(item['total_bottles']?.toString() ?? '0') ?? 0).toStringAsFixed(2)}',
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                                if (item['syncStatus'] == 'pending')
-                                  const Icon(Icons.cloud_upload, size: 12, color: Colors.orange)
-                                else if (item['syncStatus'] == 'deleted')
-                                  const Icon(Icons.delete_forever, size: 12, color: Colors.red)
-                                else
-                                  const Icon(Icons.check_circle, size: 12, color: Colors.green),
-                              ],
-                            ),
-                            onTap: () => _editCount(item),
+                      return Dismissible(
+                        key: Key(item['id']),
+                        background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
+                        direction: DismissDirection.endToStart,
+                        confirmDismiss: (dir) async { _deleteCount(item['id']); return false; },
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.only(left: 32, right: 16),
+                          title: Text(item['productName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w500)),
+                          subtitle: Text('${item['pack_size']}'),
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('${(double.tryParse(item['total_bottles']?.toString() ?? '0') ?? 0).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              if (item['syncStatus'] == 'pending') const Icon(Icons.cloud_upload, size: 12, color: Colors.orange)
+                              else const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                            ],
                           ),
+                          onTap: () => _editCount(item),
                         ),
                       );
                     }),
