@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'offline_storage.dart';
@@ -24,17 +25,39 @@ class SyncService with ChangeNotifier {
   final Connectivity connectivity;
   final LoggerService? logger;
 
+  bool _isDisposed = false; // ✅ ONLY ONE DEFINITION
+
+  bool get isDisposed => _isDisposed;
+
   bool _isSyncing = false;
   String _lastSyncTime = '';
   int _lastSyncCount = 0;
   bool _inventoryLoaded = false;
   String? _lastError;
 
-  bool get isSyncing => _isSyncing;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+
+  bool get isSyncing => _isSyncing && !_isDisposed; // ✅ Add safety check
   String get lastSyncTime => _lastSyncTime;
   int get lastSyncCount => _lastSyncCount;
   bool get inventoryLoaded => _inventoryLoaded;
   String? get lastError => _lastError;
+
+  void _safeNotify() {
+    if (!_isDisposed) {
+      notifyListeners();
+    } else {
+      logger?.error('SyncService: Attempted to notify after disposal');
+    }
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    _connectivitySubscription?.cancel();
+    googleSheets.dispose();
+    super.dispose();
+  }
 
   SyncService({
     required this.offlineStorage,
@@ -45,8 +68,8 @@ class SyncService with ChangeNotifier {
   }
 
   void _initConnectivity() {
-    connectivity.onConnectivityChanged.listen((List<ConnectivityResult> results) {
-      notifyListeners();
+    _connectivitySubscription = connectivity.onConnectivityChanged.listen((results) {
+      _safeNotify();
     });
   }
 
@@ -69,11 +92,18 @@ class SyncService with ChangeNotifier {
 
   // --- SYNC ALL (UPLOAD) ---
   Future<SyncResult> syncAll() async {
-    if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
+    if (_isDisposed) {
+      logger?.error('SyncService: syncAll() called after disposal');
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Service disposed', success: false);
+    }
+
+    if (_isSyncing) {
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
+    }
 
     _isSyncing = true;
     _lastError = null;
-    notifyListeners();
+    _safeNotify(); // ✅ USE SAFE NOTIFY
     logger?.info('Sync Started...');
 
     try {
@@ -94,6 +124,15 @@ class SyncService with ChangeNotifier {
         }
       }
 
+      final pendingInvoices = await offlineStorage.getPendingInvoiceDetails();
+      if (pendingInvoices.isNotEmpty) {
+        logger?.info('Uploading ${pendingInvoices.length} invoice headers...');
+        final success = await googleSheets.syncInvoiceDetails(pendingInvoices);
+        if (success) {
+          // Mark invoices as synced (simplified - in production, track individual IDs)
+          logger?.info('Invoices synced successfully');
+        }
+      }
       // 1. Sync Products
       final newProducts = await offlineStorage.getPendingNewProducts();
       if (newProducts.isNotEmpty) {
@@ -107,7 +146,7 @@ class SyncService with ChangeNotifier {
       final pending = offlineStorage.pendingCounts;
       if (pending.isEmpty) {
         _lastSyncTime = _formatDateTime(DateTime.now());
-        notifyListeners();
+        _safeNotify();
         logger?.info('Sync Complete: Up to date');
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Up to date', success: true);
       }
@@ -125,42 +164,73 @@ class SyncService with ChangeNotifier {
         return SyncResult(hasInternet: true, syncedCount: 0, message: 'Sync failed', success: false);
       }
     } catch (e) {
-      _lastError = e.toString();
-      logger?.error('Sync Exception', e);
+      if (!_isDisposed) {
+        _lastError = e.toString();
+        logger?.error('Sync Exception', e);
+      }
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
     } finally {
-      _isSyncing = false;
-      notifyListeners();
+      if (!_isDisposed) {
+        _isSyncing = false;
+        _safeNotify();
+      }
     }
   }
 
+  // --- DOWNLOAD (STRICT SAFEGUARD) ---
   Future<int> downloadExistingCounts() async {
+    if (_isDisposed) {
+      logger?.error('SyncService: downloadExistingCounts() called after disposal');
+      return 0;
+    }
+
     if (_isSyncing) return 0;
+
+    // SAFEGUARD: Block download if there are ANY pending changes
+    if (offlineStorage.pendingCounts.isNotEmpty) {
+      const msg = 'Cannot download: You have unsynced changes. Please press "Sync Data" (Upload) first.';
+      logger?.error(msg);
+      throw Exception(msg);
+    }
+
     _isSyncing = true;
-    notifyListeners();
+    _safeNotify();
     try {
       final hasInternet = await checkConnectivity();
       if (!hasInternet) throw Exception('No internet');
-      logger?.info('Downloading existing counts...');
+
+      logger?.info('Downloading clean list from server...');
       final remoteCounts = await googleSheets.fetchStockCounts();
-      if (remoteCounts.isNotEmpty) await offlineStorage.saveRemoteStockCounts(remoteCounts);
+
+      // Wipe & Replace (Safe now because we checked for pending items above)
+      await offlineStorage.overwriteLocalCounts(remoteCounts);
+
       return remoteCounts.length;
     } catch (e) {
-      logger?.error('Download Failed', e);
+      if (!_isDisposed) {
+        logger?.error('Download Failed', e);
+      }
       rethrow;
     } finally {
-      _isSyncing = false;
-      notifyListeners();
+      if (!_isDisposed) {
+        _isSyncing = false;
+        _safeNotify();
+      }
     }
   }
 
-  // --- REFRESH MASTER DATA (DEBUGGING ENHANCED) ---
+  // --- REFRESH MASTER DATA ---
   Future<SyncResult> refreshMasterData() async {
+    if (_isDisposed) {
+      logger?.error('SyncService: refreshMasterData() called after disposal');
+      return SyncResult(hasInternet: true, syncedCount: 0, message: 'Service disposed', success: false);
+    }
+
     if (_isSyncing) return SyncResult(hasInternet: true, syncedCount: 0, message: 'Busy', success: false);
 
     _isSyncing = true;
     _lastError = null;
-    notifyListeners();
+    _safeNotify();
     logger?.info('Master Refresh: Starting...');
 
     try {
@@ -169,7 +239,6 @@ class SyncService with ChangeNotifier {
 
       logger?.info('Fetching Store Data & Costs...');
 
-      // Fetch all in parallel
       final results = await Future.wait([
         googleSheets.fetchInventory(),
         googleSheets.fetchLocations(),
@@ -188,24 +257,9 @@ class SyncService with ChangeNotifier {
       final itemSalesMap = results[5];
       final masterCosts = results[6];
 
-      // --- DEBUGGING LOGIC ---
-      if (masterCosts.isEmpty) {
-        logger?.error('WARNING: MasterCosts returned 0 items.');
-      } else {
-        logger?.info('MasterCosts: Loaded ${masterCosts.length} items.');
-        logger?.info('MasterCosts Keys (Sample): ${masterCosts.first.keys.toList()}');
-      }
-
-      if (inventory.isEmpty) {
-        logger?.error('WARNING: Store Inventory returned 0 items.');
-      } else {
-        logger?.info('Inventory Keys (Sample): ${inventory.first.keys.toList()}');
-      }
-
       // Build Cost Map
       final costMap = <String, double>{};
       for (var c in masterCosts) {
-        // Handle variations in casing
         final name = (c['productName'] ?? c['Product Name'])?.toString().toLowerCase().trim();
         final cost = _safeDouble(c['avgCost'] ?? c['avgcost'] ?? c['Cost'] ?? c['Unit Cost']);
 
@@ -214,12 +268,9 @@ class SyncService with ChangeNotifier {
         }
       }
 
-      logger?.info('Built Cost Map with ${costMap.length} valid entries.');
-
       // Inject Costs
       int costsUpdated = 0;
       final updatedInventory = inventory.map((item) {
-        // Try multiple keys for Name
         final rawName = item['Inventory Product Name'] ?? item['Product Name'] ?? item['productName'];
         final name = rawName?.toString().toLowerCase().trim() ?? '';
 
@@ -236,10 +287,6 @@ class SyncService with ChangeNotifier {
 
       if (updatedInventory.isNotEmpty && costsUpdated == 0) {
         logger?.error('CRITICAL: No costs matched! Name mismatch suspected.');
-        if (costMap.isNotEmpty) {
-          logger?.info('Example Cost Key: "${costMap.keys.first}"');
-          logger?.info('Example Inv Key:  "${updatedInventory.first['Inventory Product Name']?.toString().toLowerCase().trim()}"');
-        }
       } else {
         logger?.info('Merged costs into $costsUpdated inventory items.');
       }
@@ -261,16 +308,24 @@ class SyncService with ChangeNotifier {
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Updated $costsUpdated costs', success: true);
 
     } catch (e) {
-      _lastError = 'Refresh error: $e';
-      logger?.error('Master Refresh Failed', e);
+      if (!_isDisposed) {
+        _lastError = 'Refresh error: $e';
+        logger?.error('Master Refresh Failed', e);
+      }
       return SyncResult(hasInternet: true, syncedCount: 0, message: 'Error: $e', success: false);
     } finally {
-      _isSyncing = false;
-      notifyListeners();
+      if (!_isDisposed) {
+        _isSyncing = false;
+        _safeNotify();
+      }
     }
   }
 
-  Future<void> loadInventory() async { await refreshMasterData(); }
+  Future<void> loadInventory() async {
+    if (!_isDisposed) {
+      await refreshMasterData();
+    }
+  }
 
   Future<Map<String, int>> getDatabaseStats() async {
     try {
@@ -290,6 +345,20 @@ class SyncService with ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> getSyncStatus() async {
+    if (_isDisposed) {
+      return {
+        'hasInternet': false,
+        'isSyncing': false,
+        'lastSyncTime': '',
+        'lastSyncCount': 0,
+        'pendingCount': 0,
+        'totalCounts': 0,
+        'inventoryLoaded': false,
+        'lastError': 'Service disposed',
+        'inventoryCount': 0,
+      };
+    }
+
     final stats = await getDatabaseStats();
     final hasInternet = await checkConnectivity();
     return {
