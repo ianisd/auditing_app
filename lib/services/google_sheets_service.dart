@@ -4,11 +4,13 @@ import 'logger_service.dart';
 
 class GoogleSheetsService {
   final http.Client _client = http.Client();
-  final String scriptUrl;
+  final String masterScriptUrl; // Single master script
+  final String storeIdentifier; // Either store ID or sheet ID from URL
   final LoggerService? logger;
 
   GoogleSheetsService({
-    required this.scriptUrl,
+    required this.masterScriptUrl,
+    required this.storeIdentifier, // Extracted from original URL
     this.logger,
   });
 
@@ -16,84 +18,32 @@ class GoogleSheetsService {
     _client.close();
   }
 
-  // ===========================================================================
-  // SYNC OPERATIONS (POST)
-  // ===========================================================================
-
-  Future<bool> syncStockCounts(List<Map<String, dynamic>> counts) async {
-    // --- FIX: TRANSFORM DATA BEFORE SENDING ---
-    // The script expects a boolean 'deleted' field.
-    // The local database uses 'syncStatus' string.
-    // We must map one to the other.
-    final payload = counts.map((c) {
-      final item = Map<String, dynamic>.from(c);
-
-      // 1. Set the Delete Flag
-      item['deleted'] = (c['syncStatus'] == 'deleted');
-
-      // 2. Ensure IDs are consistent
-      if (item['stock_id'] == null && item['id'] != null) {
-        item['stock_id'] = item['id'];
-      }
-
-      return item;
-    }).toList();
-
-    return _sendPostRequest('syncStockCounts', {'data': payload});
-  }
-
-  Future<bool> syncNewProducts(List<Map<String, dynamic>> products) async {
-    return _sendPostRequest('syncNewProducts', {'endpoint': 'syncNewProducts', 'data': products});
-  }
-
-  Future<bool> syncNewLocations(List<Map<String, dynamic>> locations) async {
-    return _sendPostRequest('syncNewLocations', {'endpoint': 'syncNewLocations', 'data': locations});
-  }
-
-  Future<bool> syncInvoiceDetails(List<Map<String, dynamic>> invoices) async {
-    return _sendPostRequest('syncInvoiceDetails', {'endpoint': 'syncInvoiceDetails', 'data': invoices});
-  }
-
-  // Helper for POST requests
+  // Send request to master script with store identifier
   Future<bool> _sendPostRequest(String tag, Map<String, dynamic> jsonData) async {
     try {
-      final body = json.encode(jsonData);
-      // logger?.info('POST [$tag]: Sending ${body.length} bytes...');
+      final payload = {
+        'data': jsonData['data'],
+        'storeIdentifier': storeIdentifier, // Critical: pass store identifier
+        'operation': jsonData['endpoint'] ?? tag,
+      };
 
-      final request = http.Request('POST', Uri.parse(scriptUrl));
+      final body = json.encode(payload);
+      final request = http.Request('POST', Uri.parse(masterScriptUrl));
       request.headers['Content-Type'] = 'application/json';
       request.body = body;
-      request.followRedirects = false;
 
       final streamedResponse = await _client.send(request);
       var response = await http.Response.fromStream(streamedResponse);
-
-      // Handle 302 Redirect
-      if (response.statusCode == 302 || response.statusCode == 307) {
-        final location = response.headers['location'];
-        if (location != null && location.isNotEmpty) {
-          final getRequest = http.Request('GET', Uri.parse(location));
-          if (response.headers['set-cookie'] != null) {
-            getRequest.headers['cookie'] = response.headers['set-cookie']!;
-          }
-          final getStreamedResponse = await _client.send(getRequest);
-          response = await http.Response.fromStream(getStreamedResponse);
-        }
-      }
 
       if (response.statusCode == 200) {
         if (response.body.trim().toUpperCase().startsWith('<HTML')) {
           logger?.error('POST Failed: Received HTML (Script Error/Auth Page)');
           return false;
         }
+
         try {
           final result = json.decode(response.body);
-          if (result['status'] == 'success' || result['success'] == true) {
-            return true;
-          } else {
-            logger?.error('POST Failed: Server message: ${result['message']}');
-            return false;
-          }
+          return result['status'] == 'success' || result['success'] == true;
         } catch (e) {
           logger?.error('POST Parse Error', e);
           return false;
@@ -108,43 +58,17 @@ class GoogleSheetsService {
     }
   }
 
-  // ===========================================================================
-  // FETCH OPERATIONS (GET)
-  // ===========================================================================
-
-  Future<List<Map<String, dynamic>>> fetchLocations() async => _fetchTable('Locations');
-  Future<List<Map<String, dynamic>>> fetchInventory() async => _fetchTable('Inventory');
-  Future<List<Map<String, dynamic>>> fetchAudits() async => _fetchTable('AuditCalendar');
-  Future<List<Map<String, dynamic>>> fetchStockCounts() async => _fetchTable('StockCounts');
-  Future<List<Map<String, dynamic>>> fetchPurchases() async => _fetchTable('Purchases');
-  Future<List<Map<String, dynamic>>> fetchStoreSalesData() async => _fetchTable('StoreSalesData');
-  Future<List<Map<String, dynamic>>> fetchItemSales() async => _fetchTable('ItemSales');
-
-  Future<List<Map<String, dynamic>>> fetchMasterProducts() async => _fetchTable('MasterProducts');
-  Future<List<Map<String, dynamic>>> fetchMasterBarcodes() async => _fetchTable('MasterBarcodes');
-  Future<List<Map<String, dynamic>>> fetchComputedCosts() async => _fetchTable('MasterCostsComputed');
-
-  // Generic Fetch Helper
+  // GET request with store identifier
   Future<List<Map<String, dynamic>>> _fetchTable(String tableName) async {
     try {
-      final client = http.Client();
-      final request = http.Request('GET', Uri.parse('$scriptUrl?table=$tableName'));
-      request.followRedirects = false;
+      final url = Uri.parse(masterScriptUrl).replace(
+        queryParameters: {
+          'table': tableName,
+          'storeIdentifier': storeIdentifier, // Critical: specify store
+        },
+      );
 
-      final streamedResponse = await client.send(request);
-      var response = await http.Response.fromStream(streamedResponse);
-
-      if (response.statusCode == 302 || response.statusCode == 307) {
-        final location = response.headers['location'];
-        if (location != null) {
-          final getRequest = http.Request('GET', Uri.parse(location));
-          if (response.headers['set-cookie'] != null) {
-            getRequest.headers['cookie'] = response.headers['set-cookie']!;
-          }
-          final getStreamedResponse = await client.send(getRequest);
-          response = await http.Response.fromStream(getStreamedResponse);
-        }
-      }
+      final response = await http.get(url);
 
       if (response.statusCode == 200) {
         if (response.body.trim().startsWith('<')) {
@@ -153,12 +77,6 @@ class GoogleSheetsService {
         }
 
         final dynamic decoded = json.decode(response.body);
-
-        if (decoded is Map && decoded['error'] != null) {
-          logger?.error('GET $tableName Server Error: ${decoded['error']}');
-          return [];
-        }
-
         if (decoded is List) {
           return decoded.map((item) {
             if (item is Map) return Map<String, dynamic>.from(item);
@@ -173,11 +91,55 @@ class GoogleSheetsService {
     }
   }
 
-  // ✅ NEW: fetchMasterSuppliers using dynamic scriptUrl
+  // SYNC OPERATIONS - All route through master script
+  Future<bool> syncStockCounts(List<Map<String, dynamic>> counts) async {
+    final payload = counts.map((c) {
+      final item = Map<String, dynamic>.from(c);
+      item['deleted'] = (c['syncStatus'] == 'deleted');
+      if (item['stock_id'] == null && item['id'] != null) {
+        item['stock_id'] = item['id'];
+      }
+      return item;
+    }).toList();
+
+    return _sendPostRequest('syncStockCounts', {'data': payload, 'endpoint': 'syncStockCounts'});
+  }
+
+  Future<bool> syncNewProducts(List<Map<String, dynamic>> products) async {
+    return _sendPostRequest('syncNewProducts', {'data': products, 'endpoint': 'syncNewProducts'});
+  }
+
+  Future<bool> syncNewLocations(List<Map<String, dynamic>> locations) async {
+    return _sendPostRequest('syncNewLocations', {'data': locations, 'endpoint': 'syncNewLocations'});
+  }
+
+  Future<bool> syncInvoiceDetails(List<Map<String, dynamic>> invoices) async {
+    return _sendPostRequest('syncInvoiceDetails', {'data': invoices, 'endpoint': 'syncInvoiceDetails'});
+  }
+
+  // FETCH OPERATIONS - All route through master script
+  Future<List<Map<String, dynamic>>> fetchLocations() async => _fetchTable('Locations');
+  Future<List<Map<String, dynamic>>> fetchInventory() async => _fetchTable('Inventory');
+  Future<List<Map<String, dynamic>>> fetchAudits() async => _fetchTable('AuditCalendar');
+  Future<List<Map<String, dynamic>>> fetchStockCounts() async => _fetchTable('StockCounts');
+  Future<List<Map<String, dynamic>>> fetchPurchases() async => _fetchTable('Purchases');
+  Future<List<Map<String, dynamic>>> fetchStoreSalesData() async => _fetchTable('StoreSalesData');
+  Future<List<Map<String, dynamic>>> fetchItemSales() async => _fetchTable('ItemSales');
+  Future<List<Map<String, dynamic>>> fetchMasterProducts() async => _fetchTable('MasterProducts');
+  Future<List<Map<String, dynamic>>> fetchMasterBarcodes() async => _fetchTable('MasterBarcodes');
+  Future<List<Map<String, dynamic>>> fetchComputedCosts() async => _fetchTable('MasterCostsComputed');
+
+  // Master suppliers come from master sheet (not store-specific)
   Future<List<Map<String, dynamic>>> fetchMasterSuppliers() async {
     try {
-      // Use the store-specific scriptUrl (from active store)
-      final response = await _sendGetRequest('MasterSuppliers', scriptUrl: scriptUrl);
+      final url = Uri.parse(masterScriptUrl).replace(
+        queryParameters: {
+          'table': 'MasterSuppliers',
+          'storeIdentifier': 'MASTER', // Use master sheet for suppliers
+        },
+      );
+
+      final response = await http.get(url);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data is List) {
@@ -189,12 +151,5 @@ class GoogleSheetsService {
       print('ERROR fetching master suppliers: $e');
       return [];
     }
-  }
-
-  // Update _sendGetRequest to accept optional scriptUrl override
-  Future<http.Response> _sendGetRequest(String endpoint, {String? scriptUrl}) async {
-    final url = scriptUrl ?? this.scriptUrl; // ✅ USE DYNAMIC URL
-    final requestUrl = Uri.parse('$url?table=$endpoint');
-    return await http.get(requestUrl);
   }
 }
