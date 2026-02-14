@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'sync_service.dart';
 import 'google_sheets_service.dart';
 import 'logger_service.dart';
@@ -13,29 +13,32 @@ class StoreManager with ChangeNotifier {
   late Box _box;
   bool _initialized = false;
   final LoggerService? _logger;
-  final OfflineStorage offlineStorage; // ✅ INJECTED: Passed from main.dart
+  final OfflineStorage offlineStorage;
 
   Map<String, dynamic>? _activeStore;
   List<Map<String, dynamic>> _stores = [];
 
-  // ✅ NEW: Store-scoped sync service
+  // Store-scoped sync service with store identifier
   SyncService? _syncService;
 
-  // ✅ FIXED: Constructor accepts offlineStorage
   StoreManager({required this.offlineStorage, LoggerService? logger})
       : _logger = logger;
 
   bool get isInitialized => _initialized;
-
   Map<String, dynamic>? get activeStore => _activeStore;
-
   List<Map<String, dynamic>> get stores => _stores;
 
-  // ✅ FIXED: Get store-scoped sync service using injected offlineStorage
+  // Get store-scoped sync service using store identifier
   SyncService get syncService {
     if (_syncService == null || _syncService!.isDisposed) {
-      final url = _activeStore?['url'] ?? '';
-      final googleSheets = GoogleSheetsService(scriptUrl: url, logger: _logger);
+      // Extract store identifier from the original script URL
+      final storeId = extractStoreIdFromUrl(_activeStore?['url'] ?? '');
+
+      final googleSheets = GoogleSheetsService(
+        masterScriptUrl: 'YOUR_SINGLE_MASTER_SCRIPT_URL', // Same for all stores
+        storeIdentifier: storeId, // Extracted from original URL
+        logger: _logger,
+      );
 
       _syncService = SyncService(
         offlineStorage: offlineStorage,
@@ -43,10 +46,20 @@ class StoreManager with ChangeNotifier {
         logger: _logger,
       );
 
-      // ✅ CRITICAL: Also set for OfflineStorage (since sync_service uses same instance)
-      offlineStorage.setGoogleSheetsService(googleSheets, url);
+      // Set for OfflineStorage
+      final storeIdForStorage = extractStoreIdFromUrl(_activeStore?['url'] ?? '');
+      offlineStorage.setGoogleSheetsService(googleSheets, storeIdForStorage);
     }
     return _syncService!;
+  }
+
+  // Extract unique identifier from Google Apps Script URL
+  String extractStoreIdFromUrl(String scriptUrl) {
+    // Example: https://script.google.com/macros/s/AKfycby8rEkWNyByf-As3UYF4GD74lpRmfzAjT_tYz3OASSDQhSzeZrH48zDMGYjBmVcoPQ/exec
+    // Extract: AKfycby8rEkWNyByf-As3UYF4GD74lpRmfzAjT_tYz3OASSDQhSzeZrH48zDMGYjBmVcoPQ
+    final regex = RegExp(r'/s/([^/]+)/exec');
+    final match = regex.firstMatch(scriptUrl);
+    return match?.group(1) ?? DateTime.now().millisecondsSinceEpoch.toString();
   }
 
   Future<void> init() async {
@@ -75,14 +88,14 @@ class StoreManager with ChangeNotifier {
     }
   }
 
-  Future<void> addStore(String name, String url) async {
+  Future<void> addStore(String name, String scriptUrl) async {
+    // Extract store identifier from the script URL
+    final storeId = extractStoreIdFromUrl(scriptUrl);
+
     final newStore = {
-      'id': DateTime
-          .now()
-          .millisecondsSinceEpoch
-          .toString(),
+      'id': DateTime.now().millisecondsSinceEpoch.toString(),
       'name': name,
-      'url': url.trim(),
+      'url': scriptUrl.trim(), // Store the original URL
     };
 
     _stores.add(newStore);
@@ -93,7 +106,7 @@ class StoreManager with ChangeNotifier {
   Future<void> setActiveStore(String storeId) async {
     print('DEBUG: StoreManager.setActiveStore() called with storeId: $storeId');
 
-    // CRITICAL: Dispose old sync service BEFORE changing store
+    // Dispose old sync service
     _syncService?.dispose();
     _syncService = null;
 
@@ -101,35 +114,31 @@ class StoreManager with ChangeNotifier {
     _activeStore = store;
     await _box.put(_activeStoreKey, storeId);
 
-    print('  ✅ Active store set: ${store['name']} (${store['url']})');
+    print('  ✅ Active store set: ${store['name']} (URL: ${store['url']})');
 
-    // CRITICAL: Create GoogleSheetsService for this store
+    // Extract store identifier from URL
+    final storeIdentifier = extractStoreIdFromUrl(store['url'] ?? '');
+
     final googleSheetsService = GoogleSheetsService(
-      scriptUrl: store['url'] ?? '',
+      masterScriptUrl: 'https://script.google.com/macros/s/AKfycbzHaJ6Jgn9XFiFw081cUBp0OkEwrz8uTc1TY50ATtcTcQss7rmp10fsyH8FQEcnHIu-/exec', // Same for all stores
+      storeIdentifier: storeIdentifier, // Extracted from URL
       logger: _logger,
     );
 
-    print('  ✅ Created GoogleSheetsService for URL: ${store['url']}');
+    print('  ✅ Created GoogleSheetsService for identifier: $storeIdentifier');
 
-    // ✅ CRITICAL: Pass service to OfflineStorage BEFORE calling switchStore
-    print('  🔄 Calling offlineStorage.setGoogleSheetsService()');
-    offlineStorage.setGoogleSheetsService(
-        googleSheetsService, store['url'] ?? '');
-    print('  ✅ GoogleSheetsService passed to OfflineStorage');
-
-    // ✅ CRITICAL: Now call switchStore to load master data
-    print('  🔄 Calling offlineStorage.switchStore($storeId)');
+    offlineStorage.setGoogleSheetsService(googleSheetsService, storeIdentifier);
     await offlineStorage.switchStore(storeId);
-    print('  ✅ offlineStorage.switchStore() completed');
 
     notifyListeners();
   }
+
   Future<void> removeStore(String storeId) async {
     _stores.removeWhere((s) => s['id'] == storeId);
     await _box.put(_storesKey, _stores);
 
     if (_activeStore?['id'] == storeId) {
-      _syncService?.dispose(); // ✅ Dispose sync service when removing active store
+      _syncService?.dispose();
       _syncService = null;
       _activeStore = null;
       await _box.delete(_activeStoreKey);
