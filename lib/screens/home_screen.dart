@@ -1,18 +1,19 @@
+import 'package:counting_app/screens/plu_mapping_screen.dart';
+import 'package:counting_app/screens/setup_store_screen.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../widgets/sync_status.dart';
 import '../widgets/store_drawer.dart';
 import 'count_screen.dart';
-import 'invoices_screen.dart';
+import 'grv_list_screen.dart';
+import 'grv_upload_screen.dart';
 import 'view_counts_screen.dart';
 import 'sync_screen.dart';
 import 'locations_screen.dart';
 import 'inventory_screen.dart';
 import 'offline_screen.dart';
 import 'variance_report_screen.dart';
-import 'purchases_line_items_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -96,7 +97,7 @@ class HomeScreen extends StatelessWidget {
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: 14, // ✅ CORRECT: 14 items total
+                  itemCount: 20, // ✅ UPDATED: 20 items total (added PLU Mappings)
                   itemBuilder: (context, index) {
                     switch (index) {
                       case 0:
@@ -146,20 +147,50 @@ class HomeScreen extends StatelessWidget {
                         return const SizedBox(height: 16);
                       case 6:
                         return _buildFeatureCard(
-                          icon: Icons.receipt_long,
-                          title: 'GRV Upload',
-                          subtitle: 'Upload Goods Received Vouchers',
+                          icon: Icons.upload_file,
+                          title: 'Upload GRV CSV',
+                          subtitle: 'Auto-extract from CSV file',
                           color: Colors.brown,
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => const GrvInvoiceScreen(),
+                              builder: (context) => const GrvUploadScreen(),
                             ),
                           ),
                         );
                       case 7:
                         return const SizedBox(height: 16);
-                      case 8: // ✅ VARIANCE REPORT
+                      case 8:
+                        return _buildFeatureCard(
+                          icon: Icons.receipt,
+                          title: 'GRV Invoices',
+                          subtitle: 'View saved GRV invoices',
+                          color: Colors.deepOrange,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const GrvListScreen(),
+                            ),
+                          ),
+                        );
+                      case 9:
+                        return const SizedBox(height: 16);
+                      case 10: // ✅ PLU MAPPINGS (NEW)
+                        return _buildFeatureCard(
+                          icon: Icons.link,
+                          title: 'PLU Mappings',
+                          subtitle: 'Manage GRV PLU mappings',
+                          color: Colors.amber.shade700, // Choose a distinct color
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const PluMappingScreen()),
+                            );
+                          },
+                        );
+                      case 11:
+                        return const SizedBox(height: 16);
+                      case 12: // ✅ VARIANCE REPORT
                         return _buildFeatureCard(
                           icon: Icons.analytics,
                           title: 'Variance Report',
@@ -172,9 +203,9 @@ class HomeScreen extends StatelessWidget {
                             ),
                           ),
                         );
-                      case 9:
+                      case 13:
                         return const SizedBox(height: 16);
-                      case 10: // ✅ INVENTORY
+                      case 14: // ✅ INVENTORY
                         return _buildFeatureCard(
                           icon: Icons.inventory_2_outlined,
                           title: 'Inventory',
@@ -187,9 +218,9 @@ class HomeScreen extends StatelessWidget {
                             ),
                           ),
                         );
-                      case 11:
+                      case 15:
                         return const SizedBox(height: 16);
-                      case 12: // ✅ LOCATIONS
+                      case 16: // ✅ LOCATIONS
                         return _buildFeatureCard(
                           icon: Icons.location_on,
                           title: 'Locations',
@@ -202,14 +233,28 @@ class HomeScreen extends StatelessWidget {
                             ),
                           ),
                         );
-                      case 13:
+                      case 17:
+                        return const SizedBox(height: 16);
+                      case 18: // ✅ ADD STORE
+                        return _buildFeatureCard(
+                          icon: Icons.store,
+                          title: 'Manage Stores',
+                          subtitle: 'Add or switch stores',
+                          color: Colors.blueGrey,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const SetupStoreScreen(),
+                            ),
+                          ),
+                        );
+                      case 19:
                         return const SizedBox(height: 16);
                       default:
                         return const SizedBox.shrink();
                     }
                   },
                 ),
-
                 Consumer<OfflineStorage>(
                   builder: (context, storage, child) {
                     final pending = storage.pendingCounts.length;
