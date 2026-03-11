@@ -1,5 +1,9 @@
 import 'package:intl/intl.dart';
 
+// ===========================================================================
+// GRV INVOICE MODEL
+// ===========================================================================
+
 class GrvInvoice {
   final String invoiceDetailsID;
   final String invoiceNumber;
@@ -21,7 +25,6 @@ class GrvInvoice {
     required this.syncStatus,
   });
 
-  // Convert to Map for Hive storage (matches your existing pattern)
   Map<String, dynamic> toJson() => {
     'invoiceDetailsID': invoiceDetailsID,
     'Invoice Number': invoiceNumber,
@@ -33,7 +36,6 @@ class GrvInvoice {
     'syncStatus': syncStatus,
   };
 
-  // Create from Hive Map (matches your existing _safeCast pattern)
   factory GrvInvoice.fromJson(Map<String, dynamic> json) {
     return GrvInvoice(
       invoiceDetailsID: json['invoiceDetailsID']?.toString() ?? '',
@@ -62,23 +64,28 @@ class GrvInvoice {
   }
 }
 
-class GrvLineItem {
-  final String plu;
+// ===========================================================================
+// GRV PARSED LINE ITEM (From CSV - contains PLU)
+// ===========================================================================
+
+class ParsedGrvLineItem {
+  final String plu;           // PLU from CSV - only used for matching
   final String description;
   final int quantityCases;
   final int unitsPerCase;
   final double pricePerUnit;
-  final String? productName;
-  final String? barcode;
 
-  GrvLineItem({
+  // These get filled after matching
+  String? productName;
+  String? barcode;
+  String? supplierBottleID;   // ← This gets set AFTER matching, from MasterCosts
+
+  ParsedGrvLineItem({
     required this.plu,
     required this.description,
     required this.quantityCases,
     required this.unitsPerCase,
     required this.pricePerUnit,
-    this.productName,
-    this.barcode,
   });
 
   double get costPerCase => pricePerUnit * unitsPerCase;
@@ -86,7 +93,7 @@ class GrvLineItem {
   double get totalValue => costPerCase * quantityCases;
   bool get isMatched => productName != null;
 
-  // Convert to Purchases table format (reuses existing schema)
+  // Convert to Purchase record AFTER matching
   Map<String, dynamic> toPurchaseRecord({
     required String invoiceDetailsID,
     required String supplierID,
@@ -100,8 +107,10 @@ class GrvLineItem {
       'Supplier': supplierName,
       'Barcode': barcode ?? '',
       'Purchased Product Name': productName ?? description,
-      'purSupplierBottleID': plu, // CRITICAL: Link to cost lookup
-      'Cost Per Bottle': pricePerUnit, // Per single unit (not case)
+      // ✅ CORRECT: Use supplierBottleID from MasterCosts, NOT the PLU
+      'supplierBottleID': supplierBottleID ?? '',
+      'purSupplierBottleID': supplierBottleID ?? '', // Keep both for compatibility
+      'Cost Per Bottle': pricePerUnit,
       'Stock Delivery Date': deliveryDate.toIso8601String(),
       'Case/Pack Size': 'Case $unitsPerCase',
       'Qty Purchased': quantityCases.toDouble(),
@@ -109,5 +118,57 @@ class GrvLineItem {
       'Cost of Purchases': totalValue,
       'syncStatus': 'pending',
     };
+  }
+}
+
+// ===========================================================================
+// GRV LINE ITEM DISPLAY MODEL (Used for UI display)
+// ===========================================================================
+
+class GrvLineItemDisplay {
+  final String? plu;           // From CSV, for display only
+  final String description;
+  final int quantityCases;
+  final int unitsPerCase;
+  final double pricePerUnit;
+
+  String? productName;         // Filled after matching
+  String? barcode;             // Filled after matching
+  String? supplierBottleID;    // ← The REAL ID for cost lookup
+  String? matchedBy;           // 🔴 NEW: Track how we matched (saved_mapping, plu_direct, fuzzy, manual)
+  late final double costPerCase;
+
+  GrvLineItemDisplay({
+    this.plu,
+    required this.description,
+    required this.quantityCases,
+    required this.unitsPerCase,
+    required this.pricePerUnit,
+    this.productName,
+    this.barcode,
+    this.supplierBottleID,
+    this.matchedBy,
+  }) {
+    costPerCase = pricePerUnit * unitsPerCase;
+  }
+
+  int get totalUnits => quantityCases * unitsPerCase;
+  double get totalValue => costPerCase;
+  bool get isMatched => productName != null && productName!.isNotEmpty;
+
+  // Convert to ParsedGrvLineItem for saving
+  ParsedGrvLineItem toParsedLineItem() {
+    final item = ParsedGrvLineItem(
+      plu: plu ?? '',
+      description: description,
+      quantityCases: quantityCases,
+      unitsPerCase: unitsPerCase,
+      pricePerUnit: pricePerUnit,
+    );
+    // Copy over matched data
+    item.productName = productName;
+    item.barcode = barcode;
+    item.supplierBottleID = supplierBottleID;
+    return item;
   }
 }
