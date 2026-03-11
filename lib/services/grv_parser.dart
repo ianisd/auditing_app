@@ -1,4 +1,6 @@
 import 'package:csv/csv.dart';
+import 'dart:math';
+import '../models/grv_models.dart';
 
 class GrvData {
   final String supplierName;
@@ -14,133 +16,178 @@ class GrvData {
   });
 }
 
-class ParsedGrvLineItem {
-  final String plu;
-  final String description;
-  final int quantityCases;
-  final int unitsPerCase;
-  final double pricePerUnit;
-
-  // Derived after PLU matching (initially null)
-  String? productName;
-  String? barcode;
-  double? costPerCase;
-
-  ParsedGrvLineItem({
-    required this.plu,
-    required this.description,
-    required this.quantityCases,
-    required this.unitsPerCase,
-    required this.pricePerUnit,
-  }) : costPerCase = pricePerUnit * unitsPerCase;
-}
-
 class GrvParser {
   GrvData parse(String csvContent) {
-    final normalizedContent = csvContent.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    // 1. Sanitize Content
+    String cleanContent = csvContent.replaceAll('\u0000', '').replaceAll('\uFEFF', '');
+    final normalizedContent = cleanContent.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 
     final rows = const CsvToListConverter(
       eol: '\n',
-      fieldDelimiter: ',',
-      textDelimiter: '"',
       shouldParseNumbers: false,
+      allowInvalid: true,
     ).convert(normalizedContent);
 
     String supplierName = 'Unknown Supplier';
-    String invoiceNumber = 'INV-${DateTime.now().millisecondsSinceEpoch}';
+    String invoiceNumber = '';
+    String goodsReceivedNumber = '';
     DateTime deliveryDate = DateTime.now();
+    List<ParsedGrvLineItem> lineItems = [];
 
-    // ✅ FIXED: Handle your exact CSV format (metadata in specific rows)
-    for (var i = 0; i < rows.length; i++) {
-      final row = rows[i];
-      if (row.isEmpty) continue;
+    // --- PHASE 1: Extract Metadata ---
 
-      final cell = row[0].toString().trim();
+    // A. Extract Supplier (Target Row 5)
+    if (rows.length > 4) {
+      // Join columns to merge split text: "DURB" | "AN" -> "DURBAN"
+      String row5Content = rows[4].join('').trim();
+      String upperLine = row5Content.toUpperCase();
+      String cleaned = row5Content.replaceAll(RegExp(r'[,"]'), '').trim();
 
-      // Extract supplier from row 4: "DURBAN NORTH LIQ"
-      if (i == 4 && cell.toUpperCase().contains('LIQ')) {
-        supplierName = cell.replaceAll(RegExp(r'^"|"$'), '').trim();
-      }
-
-      // Extract invoice from row 12: "Reference : inv181187"
-      if (i == 12 && cell.contains('Reference')) {
-        final match = RegExp(r':\s*([A-Za-z0-9\-]+)').firstMatch(cell);
-        if (match != null) {
-          invoiceNumber = match.group(1)!.trim();
-        }
-      }
-
-      // Extract delivery date from row 13: "Date Delv : 07/02/2026"
-      if (i == 13 && cell.contains('Date Delv')) {
-        final match = RegExp(r':\s*(\d{1,2}/\d{1,2}/\d{4})').firstMatch(cell);
-        if (match != null) {
-          try {
-            final parts = match.group(1)!.split('/');
-            deliveryDate = DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
-          } catch (e) {
-            // Use default date if parsing fails
-          }
-        }
+      if (cleaned.isNotEmpty && !upperLine.contains('BACKSTOCK')) {
+        supplierName = cleaned;
       }
     }
 
-    final lineItems = <ParsedGrvLineItem>[];
-
-    // ✅ FIXED: Start parsing line items from row with "Code" header (row 16)
-    bool inDataSection = false;
-    for (var i = 0; i < rows.length; i++) {
+    // B. Scan for Invoice & Date (First 20 rows)
+    for (var i = 0; i < rows.length && i < 20; i++) {
       final row = rows[i];
       if (row.isEmpty) continue;
 
-      // Detect header row (contains "Code" in first column)
-      if (row.length > 0 && row[0].toString().toLowerCase().contains('code')) {
-        inDataSection = true;
-        continue;
+      // 1. Normalize the row for searching labels
+      // Join all cells, remove spaces to fix "Refe rence" -> "REFERENCE"
+      String rawJoined = row.join(' ').trim();
+      String condensed = row.join('').replaceAll(' ', '').toUpperCase(); // REFERENCE:INV123
+
+      // 2. Extract Reference (Invoice Number)
+      if (invoiceNumber.isEmpty && (condensed.contains('REFERENCE:') || condensed.contains('INV:'))) {
+        // Find the original text by looking for the colon in the raw joined string
+        // We use the raw string to preserve the casing of the invoice number (e.g. "inv181")
+        // Strategy: Split by colon, take the last part.
+        List<String> parts = row.join('').split(':');
+        if (parts.length > 1) {
+          // Take everything after the first colon
+          String potentialInv = parts.sublist(1).join(':').trim();
+          if (potentialInv.isNotEmpty) {
+            invoiceNumber = potentialInv;
+          }
+        }
       }
 
-      if (!inDataSection) continue;
-
-      // Skip footer rows (totals row with empty PLU but has values)
-      if (row.length >= 7 &&
-          row[0].toString().trim().isEmpty &&
-          (row[6].toString().contains(',') ||
-              row[6].toString().contains('.'))) {
-        continue;
+      // 3. Extract Goods Received No (Fallback)
+      if (goodsReceivedNumber.isEmpty && condensed.contains('GOODSRECEIVEDNO:')) {
+        List<String> parts = row.join('').split(':');
+        if (parts.length > 1) {
+          String val = parts.sublist(1).join(':').trim();
+          if (val.isNotEmpty) {
+            goodsReceivedNumber = val;
+          }
+        }
       }
 
-      // Skip empty rows
-      if (row.every((cell) => cell.toString().trim().isEmpty)) {
-        continue;
+      // 4. Extract Date
+      final dateMatch = RegExp(r'(\d{2})[/-](\d{2})[/-](\d{4})').firstMatch(rawJoined);
+      if (dateMatch != null) {
+        try {
+          deliveryDate = DateTime(
+              int.parse(dateMatch.group(3)!),
+              int.parse(dateMatch.group(2)!),
+              int.parse(dateMatch.group(1)!)
+          );
+        } catch (_) {}
       }
+    }
+
+    // --- PHASE 2: Finalize Invoice Number ---
+    if (invoiceNumber.isEmpty) {
+      if (goodsReceivedNumber.isNotEmpty) {
+        // If we found a GRV Number (e.g. "183"), use it + UUID suffix
+        // This ensures "183" from this year doesn't clash with "183" next year.
+        String uuid = _generateHexId(4);
+        invoiceNumber = '$goodsReceivedNumber-$uuid';
+      } else {
+        // Absolute fallback if CSV is empty/broken
+        invoiceNumber = _generateHexId(8);
+      }
+    }
+
+    // --- PHASE 3: Dynamic Column Mapping ---
+    int headerRowIndex = -1;
+    int colIdxCode = 0;
+    int colIdxDesc = 1;
+    int colIdxQty = -1;
+    int colIdxPack = -1;
+    int colIdxCost = -1;
+
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+
+      final rowString = row.join(',').toLowerCase();
+
+      if (rowString.contains('desc') && (rowString.contains('qty') || rowString.contains('quantity'))) {
+        headerRowIndex = i;
+
+        for (int c = 0; c < row.length; c++) {
+          String header = row[c].toString().toLowerCase().trim();
+          if (header == 'code') colIdxCode = c;
+          else if (header.contains('desc')) colIdxDesc = c;
+          else if (header == 'qty' || header == 'quantity') colIdxQty = c;
+          else if (header.contains('pack')) colIdxPack = c;
+          else if (header.contains('price') || header.contains('cost')) {
+            if (!header.contains('total')) colIdxCost = c;
+          }
+        }
+
+        if (row.length > colIdxCode && row[colIdxCode].toString().trim().isEmpty && colIdxDesc == 1) {
+          colIdxCode = 0;
+        }
+        break;
+      }
+    }
+
+    if (headerRowIndex == -1 || colIdxQty == -1) {
+      return GrvData(
+        supplierName: supplierName,
+        invoiceNumber: invoiceNumber,
+        deliveryDate: deliveryDate,
+        lineItems: [],
+      );
+    }
+
+    // --- PHASE 4: Parse Data Rows ---
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+
+      int maxNeededIndex = [colIdxCode, colIdxDesc, colIdxQty, colIdxPack, colIdxCost].reduce(max);
+      if (row.length <= maxNeededIndex) continue;
 
       try {
-        // Your CSV structure: Code,Description,-,Unit,Qty,Pack Size,Unit Price,...
-        // Row example: "2756", "Appletiser 330 cans", "-", "EACH", "5.0000", "24.00", "18.0000", "2,160.00", "0.00", "2,160.00"
-        if (row.length < 7) continue;
+        String description = row[colIdxDesc].toString().trim();
+        if (description.isEmpty || description.toLowerCase().contains('total') || description.contains('-------')) continue;
 
-        final pluRaw = row[0].toString().trim();
-        if (pluRaw.isEmpty || !RegExp(r'^\d+$').hasMatch(pluRaw)) continue;
+        String code = row[colIdxCode].toString().trim();
+        if (code.isEmpty) code = description.hashCode.toString().substring(0, 6);
 
-        final description = row[1].toString().trim();
-        final qtyRaw = row[4].toString().trim(); // Column 5: Qty
-        final packSizeRaw = row[5].toString().trim(); // Column 6: Pack Size
-        final unitPriceRaw = row[6].toString().trim(); // Column 7: Unit Price
+        double qty = _getDataAt(row, colIdxQty);
+        double packSize = _getDataAt(row, colIdxPack);
+        double cost = _getDataAt(row, colIdxCost);
 
-        final qtyCases = _parseDouble(qtyRaw).toInt();
-        final unitsPerCase = _parseDouble(packSizeRaw).toInt();
-        final pricePerUnit = _parseDouble(unitPriceRaw);
+        if (packSize == 0) packSize = 1;
 
-        if (qtyCases <= 0 || unitsPerCase <= 0) continue;
+        // Force 2 decimal places
+        cost = _roundToTwoDecimal(cost);
 
-        lineItems.add(ParsedGrvLineItem(
-          plu: pluRaw,
-          description: description,
-          quantityCases: qtyCases,
-          unitsPerCase: unitsPerCase,
-          pricePerUnit: pricePerUnit,
-        ));
+        if (qty != 0) {
+          lineItems.add(ParsedGrvLineItem(
+            plu: code,
+            description: description,
+            quantityCases: qty.toInt(),
+            unitsPerCase: packSize.toInt(),
+            pricePerUnit: cost,
+          ));
+        }
       } catch (e) {
-        continue; // Skip malformed rows
+        // Skip malformed rows
       }
     }
 
@@ -152,9 +199,30 @@ class GrvParser {
     );
   }
 
-  double _parseDouble(String value) {
-    // Handle values like "5.0000", "24.00", "18.0000", "2,160.00"
-    final cleaned = value.replaceAll(',', '').replaceAll(RegExp(r'[^\d.]'), '');
-    return double.tryParse(cleaned) ?? 0.0;
+  double _getDataAt(List<dynamic> row, int index) {
+    if (index < 0 || index >= row.length) return 0.0;
+    return _parseDouble(row[index]);
+  }
+
+  double _parseDouble(dynamic value) {
+    if (value == null) return 0.0;
+    String s = value.toString();
+    bool isNegative = s.endsWith('-');
+
+    s = s.replaceAll(RegExp(r'[^\d.-]'), '');
+    double val = double.tryParse(s) ?? 0.0;
+
+    if (isNegative && val > 0) return -val;
+    return val;
+  }
+
+  double _roundToTwoDecimal(double value) {
+    return (value * 100).roundToDouble() / 100;
+  }
+
+  String _generateHexId(int length) {
+    final rnd = Random();
+    final bytes = List<int>.generate((length / 2).ceil(), (_) => rnd.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join().substring(0, length);
   }
 }
