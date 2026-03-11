@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/sync_service.dart';
 import '../services/store_manager.dart';
 import '../widgets/inventory_list.dart';
 import 'product_detail_screen.dart'; // 1. IMPORT THE DETAIL SCREEN
