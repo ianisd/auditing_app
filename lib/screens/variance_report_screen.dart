@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
@@ -87,6 +89,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
   }
 
+  // 🔥 MODIFIED: Now uses isolate for calculation
   Future<void> _runReport() async {
     if (_startDate == null || _endDate == null) return;
 
@@ -95,26 +98,42 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final storage = context.read<OfflineStorage>();
     final logger = context.read<LoggerService>();
 
-    final results = await Future.wait([
-      storage.getStockCounts(),
-      storage.getPurchases(),
-      storage.getStoreSalesData(),
-      storage.getItemSalesMap(),
-      storage.getAllInventory(),
-    ]);
-
     try {
-      final service = VarianceService(logger: logger);
+      // 1. Fetch data on UI thread (fast)
+      final results = await Future.wait([
+        storage.getStockCounts(),
+        storage.getPurchases(),
+        storage.getStoreSalesData(),
+        storage.getItemSalesMap(),
+        storage.getAllInventory(),
+      ]);
 
-      final reportItems = service.calculateReport(
-        stocks: results[0],
-        purchases: results[1],
-        storeSalesData: results[2],
-        itemSalesMap: results[3],
-        inventory: results[4],
-        dateFromStr: _startDate!,
-        dateToStr: _endDate!,
+      logger.info('📊 Data fetched (${results[2].length} sales records), starting isolate calculation...');
+
+      // 2. Run heavy calculation in isolate with timeout
+      final jsonResults = await compute(
+        calculateReportIsolate,
+        {
+          'stocks': results[0],
+          'purchases': results[1],
+          'storeSalesData': results[2],
+          'itemSalesMap': results[3],
+          'inventory': results[4],
+          'dateFromStr': _startDate!,
+          'dateToStr': _endDate!,
+        },
+      ).timeout(
+        const Duration(seconds: 45), // Increased timeout for large datasets
+        onTimeout: () {
+          logger.error('⏱️ Report calculation timed out after 45 seconds');
+          return []; // Return empty list on timeout
+        },
       );
+
+      // 3. Convert JSON back to VarianceItem objects
+      final reportItems = jsonResults.map((json) => VarianceItem.fromJson(json)).toList();
+
+      logger.info('✅ Isolate calculation complete: ${reportItems.length} items');
 
       if (mounted) {
         setState(() {
@@ -137,11 +156,23 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
           _isLoading = false;
         });
       }
-    } catch (e) {
-      if (mounted) {
+    } catch (e, stack) {
+      logger.error('❌ Report Error', e);
+// The stack trace will be logged separately or you can combine them
+      logger.error('Stack: $stack');      if (mounted) {
         setState(() => _isLoading = false);
-        logger.error('Report Error', e);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+
+        // Show user-friendly error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error calculating report: ${e.toString().substring(0, min(100, e.toString().length))}'),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Retry',
+              onPressed: _runReport,
+            ),
+          ),
+        );
       }
     }
   }
@@ -432,7 +463,18 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
           // 4. REPORT LIST
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Calculating variance report...'),
+                  Text('This may take a moment',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            )
                 : _groupedReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : ListView.builder(
@@ -648,18 +690,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       ),
     );
   }
-}
-Widget _buildDetailRow(String label, double value, {bool isBold = false, Color? color}) {
-  return Padding(
-    padding: const EdgeInsets.symmetric(vertical: 1),
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
-        Text(value.toStringAsFixed(2), style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
-      ],
-    ),
-  );
 }
 
 Widget _buildDateDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
