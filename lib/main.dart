@@ -1,20 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 import 'services/offline_storage.dart';
-import 'services/google_sheets_service.dart';
-import 'services/sync_service.dart';
 import 'services/store_manager.dart';
 import 'services/logger_service.dart';
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
-
-// Import your generated adapters if you have run 'flutter pub run build_runner build'
-// import 'models/inventory_item.dart';
-// import 'models/store_config.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,10 +47,19 @@ void main() async {
     logger: logger,
   );
 
-  // ✅ CRITICAL FIX: Initialize storeManager BEFORE offlineStorage
+  // ✅ CRITICAL: Check connectivity before initialization
+  final hasInternet = await _checkConnectivity();
+
+  if (!hasInternet) {
+    logger.info('📱 App starting in OFFLINE mode - using cached data only');
+  } else {
+    logger.info('🌐 App starting in ONLINE mode - will sync data');
+  }
+
+  // Initialize storeManager
   await storeManager.init();
 
-  // ✅ CRITICAL FIX: If active store exists, call setActiveStore() to set up GoogleSheetsService
+  // ✅ CRITICAL: If active store exists, set up services
   if (storeManager.activeStore != null) {
     await storeManager.setActiveStore(storeManager.activeStore!['id']);
   }
@@ -64,11 +70,27 @@ void main() async {
         Provider<LoggerService>.value(value: logger),
         ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: offlineStorage),
-        // ⚠️ REMOVED GLOBAL SyncService PROVIDER
+        Provider<Connectivity>.value(value: Connectivity()),
+        // StreamProvider for connectivity status
+        StreamProvider<List<ConnectivityResult>>(
+          create: (_) => Connectivity().onConnectivityChanged,
+          initialData: const [],
+        ),
       ],
       child: const MyApp(),
     ),
   );
+}
+
+Future<bool> _checkConnectivity() async {
+  try {
+    final connectivity = Connectivity();
+    final result = await connectivity.checkConnectivity();
+    return result.isNotEmpty &&
+        result.any((r) => r != ConnectivityResult.none);
+  } catch (e) {
+    return false;
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -83,7 +105,6 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         appBarTheme: const AppBarTheme(elevation: 0, centerTitle: true),
       ),
-
       home: const RootSwitcher(),
       debugShowCheckedModeBanner: false,
     );
@@ -98,22 +119,29 @@ class RootSwitcher extends StatefulWidget {
 }
 
 class _RootSwitcherState extends State<RootSwitcher> {
-  String? _lastProcessedStoreId; // ✅ NEW: Track last processed store
+  String? _lastProcessedStoreId;
+  bool _isOfflineBannerShowing = false;
+  bool _hasInitialSetup = false;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _handleStoreChange());
-    context.read<StoreManager>().addListener(_handleStoreChange);
+    // ✅ FIXED: Only call once after build, no listener loop
+    WidgetsBinding.instance.addPostFrameCallback((_) => _handleInitialStoreSetup());
+
+    // Subscribe to connectivity changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(_handleConnectivityChange);
   }
 
   @override
   void dispose() {
-    context.read<StoreManager>().removeListener(_handleStoreChange);
+    _connectivitySubscription.cancel(); // Cancel subscription
     super.dispose();
   }
 
-  void _handleStoreChange() {
+  // ✅ FIXED: Initial setup only
+  void _handleInitialStoreSetup() {
     if (!mounted) return;
 
     final storeManager = context.read<StoreManager>();
@@ -122,39 +150,129 @@ class _RootSwitcherState extends State<RootSwitcher> {
     if (storeManager.activeStore != null) {
       final activeId = storeManager.activeStore!['id'];
 
-      // ✅ CRITICAL: Only process if different from last processed store
-      if (activeId == _lastProcessedStoreId) {
-        return; // Exit early to prevent loop
-      }
-
-      _lastProcessedStoreId = activeId;
-
-      // ✅ CRITICAL: Let StoreManager handle the service setup first
-      // The service setup happens in setActiveStore() which should be called
-      // by your UI flow (e.g., when user selects a store)
-
-      // Only call switchStore if storage isn't ready for this store
       if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
-        print('DEBUG: Calling offlineStorage.switchStore($activeId)');
+        print('DEBUG: Initial store setup - calling offlineStorage.switchStore($activeId)');
         offlineStorage.switchStore(activeId);
+        _hasInitialSetup = true;
       }
     }
   }
 
-  // ✅ ADDED: Missing build() method
+  // ✅ NEW: Handle connectivity changes
+  void _handleConnectivityChange(List<ConnectivityResult> results) {
+    final hasInternet = results.isNotEmpty &&
+        results.any((r) => r != ConnectivityResult.none);
+
+    if (hasInternet && _isOfflineBannerShowing) {
+      // Just came online - refresh data
+      _refreshData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📶 Back online - refreshing data'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        setState(() {
+          _isOfflineBannerShowing = false;
+        });
+      }
+    } else if (!hasInternet && !_isOfflineBannerShowing) {
+      // Just went offline
+      if (mounted) {
+        setState(() {
+          _isOfflineBannerShowing = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📴 Offline mode - using cached data'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // ✅ FIXED: Refresh data when coming online
+  Future<void> _refreshData() async {
+    final offlineStorage = context.read<OfflineStorage>();
+    final storeManager = context.read<StoreManager>();
+
+    if (storeManager.activeStore != null && offlineStorage.isReady) {
+      try {
+        // ✅ FIXED: Use correct method name
+        await offlineStorage.loadMasterSuppliersFromSheet();
+        // Note: setState is already called in _handleConnectivityChange
+      } catch (e) {
+        print('Failed to refresh data: $e');
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
+
+    // Watch connectivity (this will trigger rebuilds when connectivity changes)
+    final connectivityResults = context.watch<List<ConnectivityResult>>();
+    final hasInternet = connectivityResults.isNotEmpty &&
+        connectivityResults.any((r) => r != ConnectivityResult.none);
 
     if (storeManager.activeStore == null) {
       return const SetupStoreScreen();
     }
 
     if (!offlineStorage.isReady) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              if (!hasInternet) ...[
+                const Icon(Icons.wifi_off, color: Colors.orange, size: 32),
+                const SizedBox(height: 8),
+                Text(
+                  'Offline mode - using cached data',
+                  style: TextStyle(color: Colors.orange.shade700),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
     }
 
-    return const HomeScreen();
+    return Stack(
+      children: [
+        const HomeScreen(),
+        // Offline banner
+        if (_isOfflineBannerShowing)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              color: Colors.orange,
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.wifi_off, color: Colors.white, size: 16),
+                  SizedBox(width: 8),
+                  Text(
+                    'Offline Mode - Working from cache',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
