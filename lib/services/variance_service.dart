@@ -36,12 +36,45 @@ class VarianceItem {
   double get varianceCost => variance * costPrice;
   double get varianceRetail => variance * retailPrice;
   double get totalStockValueRetail => currentCount * retailPrice;
+
+  // Convert to JSON for isolate communication
+  Map<String, dynamic> toJson() => {
+    'productName': productName,
+    'mainCategory': mainCategory,
+    'category': category,
+    'previousCount': previousCount,
+    'purchases': purchases,
+    'sales': sales,
+    'currentCount': currentCount,
+    'costPrice': costPrice,
+    'retailPrice': retailPrice,
+    'allEntries': allEntries,
+    'inventoryItem': inventoryItem,
+  };
+
+  // Create from JSON after isolate returns
+  factory VarianceItem.fromJson(Map<String, dynamic> json) => VarianceItem(
+    productName: json['productName'],
+    mainCategory: json['mainCategory'],
+    category: json['category'],
+    previousCount: json['previousCount'],
+    purchases: json['purchases'],
+    sales: json['sales'],
+    currentCount: json['currentCount'],
+    costPrice: json['costPrice'],
+    retailPrice: json['retailPrice'],
+    allEntries: List<Map<String, dynamic>>.from(json['allEntries'] ?? []),
+    inventoryItem: json['inventoryItem'] as Map<String, dynamic>?,
+  );
 }
 
 class VarianceService {
   final LoggerService? logger;
 
   VarianceService({this.logger});
+
+  // 🔥 NEW: Isolate-friendly constructor (no logger)
+  VarianceService.isolate() : logger = null;
 
   final RegExp _exclusionRegex = RegExp(
     r'Special Shooter|Special Beverage|Cocktail Ingredient|Special Tot|Special Spirit Bottle|Special Alcoholic Beverage',
@@ -83,13 +116,23 @@ class VarianceService {
     final fromDate = _stripTime(fromDtRaw);
     final toDate = _stripTime(toDtRaw);
 
+    print('📊 VARIANCE REPORT INPUTS:');
+    print('  - Stocks: ${stocks.length}');
+    print('  - Purchases: ${purchases.length}');
+    print('  - StoreSalesData: ${storeSalesData.length}');
+    print('  - ItemSalesMap: ${itemSalesMap.length}');
+    print('  - Inventory: ${inventory.length}');
+    print('  - Date Range: $dateFromStr to $dateToStr');
+    print('  - Parsed From: $fromDate');
+    print('  - Parsed To: $toDate');
+
     if (logger != null) {
       logger!.info('--- CALC START ---');
       logger!.info('Range: ${fromDate.toIso8601String().split('T')[0]} to ${toDate.toIso8601String().split('T')[0]}');
     }
 
     Map<String, double> prodCosts = {};
-    Map<String, double> prodRetail = {};
+    Map<String, double> prodRetail = {}; // Will now store MAX price from sales
     Map<String, String> prodMainCat = {};
     Map<String, String> prodCat = {};
     Map<String, Map<String, dynamic>> inventoryRef = {};
@@ -103,7 +146,7 @@ class VarianceService {
       prodCat[name] = item['Category']?.toString() ?? 'General';
     }
 
-    // 2. Build Recipe Map
+    // 2. Build Recipe Map and Calculate MAX Retail Prices (like sheet's MAX query)
     Map<String, List<Map<String, dynamic>>> pluToRecipes = {};
 
     for (var row in itemSalesMap) {
@@ -152,6 +195,7 @@ class VarianceService {
           impliedBottlePrice = sellPrice;
         }
 
+        // 🔥 UPDATED: Store the MAX price (like sheet's MAX query)
         if (impliedBottlePrice > (prodRetail[name] ?? 0)) {
           prodRetail[name] = impliedBottlePrice;
         }
@@ -210,6 +254,11 @@ class VarianceService {
     // 5. Sales
     Map<String, double> prodSales = {};
 
+    print('📅 Sample StoreSalesData dates:');
+    for (var i = 0; i < storeSalesData.length && i < 5; i++) {
+      print('  Sale ${i+1}: "${storeSalesData[i]['Date']}"');
+    }
+
     for (var sale in storeSalesData) {
       String dateRaw = sale['Date']?.toString() ?? '';
       DateTime? saleDateRaw = _parseDate(dateRaw);
@@ -219,6 +268,8 @@ class VarianceService {
       final saleDate = _stripTime(saleDateRaw);
       bool isStrictlyAfterStart = saleDate.isAfter(fromDate);
       bool isBeforeOrOnEnd = saleDate.isBefore(toDate) || saleDate.isAtSameMomentAs(toDate);
+
+      print('  Processing sale: dateRaw="$dateRaw", parsed=$saleDateRaw');
 
       if (isStrictlyAfterStart && isBeforeOrOnEnd) {
         final plu = sale['No.']?.toString().trim();
@@ -242,7 +293,7 @@ class VarianceService {
               } else {
                 final distinctProducts = matchingRecipes.map((r) => r['Product']).toSet();
                 if (distinctProducts.length > 1) {
-                  logger?.error('AMBIGUITY: PLU $plu "$menuItemName" collision. Using first.');
+                  print('AMBIGUITY: PLU $plu "$menuItemName" collision. Using first.');
                 }
                 recipesToProcess = [matchingRecipes.first];
               }
@@ -274,12 +325,9 @@ class VarianceService {
                   finalDeduction = qtyUsed / bottleUoM;
                 }
                 else if (measure == 'glass') {
-                  // e.g. Sold 1 glass. 4 glasses per bottle. Deduct 0.25 bottles.
                   finalDeduction = qtyUsed * singleUoM;
                 }
                 else if (measure == 'ml') {
-                  // e.g. Sold 25ml. Bottle is 750ml. Deduct 0.033 bottles.
-                  // Note: qtyUsed here is the Total ML sold (Qty * RecipeQuantity)
                   finalDeduction = qtyUsed / volumeMl;
                 } else {
                   finalDeduction = qtyUsed;
@@ -306,12 +354,14 @@ class VarianceService {
       double cp = prodCosts[name] ?? 0.0;
       double rp = prodRetail[name] ?? 0.0;
 
-      // --- SMART ESTIMATION ---
-      // If one price is missing, estimate it from the other to ensure correlation in report
-      if (rp == 0 && cp > 0) {
-        rp = cp * _estimatedMarkup; // Estimate Retail = Cost * 3
-      } else if (cp == 0 && rp > 0) {
-        cp = rp / _estimatedMarkup; // Estimate Cost = Retail / 3
+      // 🔥 UPDATED: Match Google Sheets logic exactly:
+      // 1. Use maxPrice from sales if available
+      // 2. Otherwise fall back to unitCost * 3
+      double finalRetailPrice = rp > 0 ? rp : cp * _estimatedMarkup;
+
+      // Also estimate cost if needed for variance calculations
+      if (cp == 0 && rp > 0) {
+        cp = rp / _estimatedMarkup;
       }
 
       report.add(VarianceItem(
@@ -323,7 +373,7 @@ class VarianceService {
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
         costPrice: cp,
-        retailPrice: rp,
+        retailPrice: finalRetailPrice, // Use the calculated retail price
         allEntries: prodHistory[name] ?? [],
         inventoryItem: inventoryRef[name],
       ));
@@ -335,15 +385,59 @@ class VarianceService {
   DateTime? _parseDate(String dateStr) {
     if (dateStr.isEmpty) return null;
     try {
-      if (dateStr.contains('/')) {
+      // Handle ISO format with time (2026-01-13T08:00:00.000Z)
+      if (dateStr.contains('T')) {
+        // Extract just the date part before T
+        final datePart = dateStr.split('T')[0];
+        final parts = datePart.split('-');
+        if (parts.length == 3) {
+          // ISO format is yyyy-MM-dd
+          return DateTime.utc(
+              int.parse(parts[0]),
+              int.parse(parts[1]),
+              int.parse(parts[2])
+          );
+        }
+      }
+      // Handle dd/MM/yyyy format (with slashes)
+      else if (dateStr.contains('/')) {
         final parts = dateStr.split('/');
         if (parts.length == 3) {
           return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
         }
       }
+      // Handle dd-MM-yyyy format (with hyphens)
+      else if (dateStr.contains('-')) {
+        final parts = dateStr.split('-');
+        if (parts.length == 3) {
+          return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+        }
+      }
+      // Try standard parsing as fallback
       return DateTime.tryParse(dateStr);
     } catch (e) {
       return null;
     }
   }
+}
+
+// 🔥 CORRECTED: Top-level function for isolate entry point (NO static keyword)
+@pragma('vm:entry-point')
+List<Map<String, dynamic>> calculateReportIsolate(Map<String, dynamic> params) {
+  // Create service without logger (can't send logger across isolates)
+  final service = VarianceService.isolate();
+
+  // Run the calculation
+  final List<VarianceItem> results = service.calculateReport(
+    stocks: params['stocks'],
+    purchases: params['purchases'],
+    storeSalesData: params['storeSalesData'],
+    itemSalesMap: params['itemSalesMap'],
+    inventory: params['inventory'],
+    dateFromStr: params['dateFromStr'],
+    dateToStr: params['dateToStr'],
+  );
+
+  // Convert to JSON-serializable format
+  return results.map((item) => item.toJson()).toList();
 }
