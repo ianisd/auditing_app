@@ -368,42 +368,77 @@ class _CountScreenState extends State<CountScreen> {
     if (_selectedProduct == null) return 0.0;
 
     final productName = _selectedProduct!['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
-    double maxPrice = 0.0;
+    if (productName.isEmpty) return 0.0;
 
-    final recipes = _itemSalesData.where((r) =>
-    (r['Product']?.toString().toLowerCase().trim() ?? '') == productName
-    );
+    // Priority mapping (lower number = higher priority)
+    final Map<String, int> priorityMap = {
+      'spirit bottle': 1,      // Highest priority - direct bottle sales
+      'fermented wine': 2,     // Wine bottle sales
+      'spirit tot': 3,         // Shot sales (less reliable than bottle)
+      'fermented wine glass': 4,
+      'mixer bottle': 5,
+      'mixer tot': 6,
+      'beverage': 7,           // Non-alcoholic
+    };
+    const int defaultPriority = 99;
 
-    for (var row in recipes) {
-      final mainCat = row['Main Category']?.toString() ?? '';
+    double bestPrice = 0.0;
+    int bestPriority = defaultPriority;
+
+    for (var row in _itemSalesData) {
+      final rowProduct = row['Product']?.toString().toLowerCase().trim() ?? '';
+      if (rowProduct.isEmpty || rowProduct != productName) continue;
+
+      final mainCat = row['Main Category']?.toString().toLowerCase().trim() ?? '';
       if (_exclusionRegex.hasMatch(mainCat)) continue;
 
       final sellPrice = _safeDouble(row['Sell']);
       if (sellPrice <= 0) continue;
 
+      // Get UoM from the product data
       double bottleUoM = _safeDouble(_selectedProduct!['Bottle UoM']);
       double singleUoM = _safeDouble(_selectedProduct!['Single UoM']);
-      if (bottleUoM == 0) bottleUoM = 30.0;
+
+      // Fallbacks if UoM not available
+      if (bottleUoM == 0) {
+        final singleUnitVolume = _safeDouble(_selectedProduct!['Single Unit Volume']);
+        if (singleUnitVolume > 0) {
+          bottleUoM = singleUnitVolume / 25.0;
+        } else {
+          bottleUoM = 30.0;
+        }
+      }
       if (singleUoM == 0) singleUoM = 1.0;
 
       final measure = row['Measure']?.toString().toLowerCase() ?? '';
       double impliedPrice = 0.0;
 
+      // Calculate implied price
       if (measure.contains('bottle') || measure.contains('can')) {
         impliedPrice = sellPrice;
-      } else if (measure == 'shots' || measure.contains('tot')) {
+      } else if (measure.contains('shots') || measure.contains('tot')) {
         impliedPrice = sellPrice * bottleUoM;
-      } else if (measure == 'glass') {
-        impliedPrice = sellPrice * singleUoM; // Fixed logic: Price/Glass * Glasses/Bottle
+      } else if (measure.contains('glass')) {
+        impliedPrice = sellPrice / singleUoM;
       } else {
         impliedPrice = sellPrice;
       }
 
-      if (impliedPrice > maxPrice) {
-        maxPrice = impliedPrice;
+      // Get priority for this category
+      final int currentPriority = priorityMap[mainCat] ?? defaultPriority;
+
+      // PRIORITY LOGIC: Only update if this category has HIGHER priority
+      // (lower number = higher priority)
+      if (currentPriority < bestPriority) {
+        bestPrice = impliedPrice;
+        bestPriority = currentPriority;
+
+        // Debug: Log priority selection
+        print('🎯 ${_selectedProduct!['Inventory Product Name']}: $mainCat (priority $currentPriority) → R${impliedPrice.toStringAsFixed(2)}');
       }
     }
-    return maxPrice;
+
+    return bestPrice;
   }
 
   void _recalculateTotals() {
