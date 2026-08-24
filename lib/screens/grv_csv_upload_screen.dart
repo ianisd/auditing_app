@@ -4,17 +4,19 @@ import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/offline_storage.dart';
 import '../services/grv_parser.dart';
-import '../models/grv_models.dart'; // or wherever GrvLineItemDisplay is
+import 'grv_line_items_screen.dart'; // or wherever GrvLineItemDisplay is
 
 class GrvCsvUploadScreen extends StatefulWidget {
   final String invoiceDetailsID;
   final String supplierName;
+  final String grvReference;
   final DateTime deliveryDate;
 
   const GrvCsvUploadScreen({
     super.key,
     required this.invoiceDetailsID,
     required this.supplierName,
+    required this.grvReference,
     required this.deliveryDate,
   });
 
@@ -53,7 +55,6 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
       }
 
       final filePath = result.files.single.path!;
-      if (filePath == null) throw Exception('File path is null');
 
       setState(() {
         _statusMessage = 'Reading file...';
@@ -81,8 +82,37 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
         _statusMessage = 'Saving ${grvData.lineItems.length} items...';
       });
 
-      // Save items to purchases
       final storage = context.read<OfflineStorage>();
+
+      // 🔥 FIX: Create invoice and get the actual ID
+      final invoiceData = {
+        'Invoice Number': 'CSV_UPLOAD_${DateTime.now().millisecondsSinceEpoch}',
+        'supplierID': await _getSupplierIdForName(widget.supplierName),
+        'Supplier Name': widget.supplierName,
+        'Date of Purchase': widget.deliveryDate.toIso8601String(),
+        'Delivery Date': widget.deliveryDate.toIso8601String(),
+        'Total Cost Ex Vat': 0.0,
+        'syncStatus': 'pending',
+      };
+
+      // 🔥 CRITICAL: Use the returned ID
+      final savedInvoiceId = await storage.saveInvoiceDetails(invoiceData);
+
+      // Then navigate with the returned invoice ID
+      final navigationResult = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => GrvLineItemsScreen(
+            invoiceDetailsID: savedInvoiceId, // 🔥 Use the returned ID
+            supplierName: widget.supplierName,
+            deliveryDate: widget.deliveryDate,
+            grvReference: widget.grvReference,
+            preloadedItems: grvData.lineItems,
+          ),
+        ),
+      );
+
+      // Save items to purchases (if needed)
       int savedCount = 0;
       const batchSize = 20;
 
@@ -91,8 +121,8 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
         for (var item in batch) {
           final purchase = {
             'purchases_ID': DateTime.now().millisecondsSinceEpoch.toString(),
-            'invoiceDetailsID': widget.invoiceDetailsID,
-            'supplierID': '', // TODO: populate from invoice if needed
+            'invoiceDetailsID': savedInvoiceId, // 🔥 Use the returned ID
+            'supplierID': await _getSupplierIdForName(widget.supplierName),
             'Supplier': widget.supplierName,
             'Barcode': item.barcode,
             'Purchased Product Name': item.description,
@@ -108,7 +138,7 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
           await storage.savePurchase(purchase);
           savedCount++;
         }
-        await Future.delayed(const Duration(milliseconds: 50)); // Small delay to prevent blocking UI
+        await Future.delayed(const Duration(milliseconds: 50));
       }
 
       setState(() {
@@ -117,7 +147,6 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
         _isLoading = false;
       });
 
-      // Optionally navigate back after a delay
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) {
         Navigator.pop(context);
@@ -129,6 +158,18 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  // In GrvCsvUploadScreen - Fix supplier ID
+  Future<String> _getSupplierIdForName(String supplierName) async {
+    final storage = context.read<OfflineStorage>();
+    final suppliers = await storage.getMasterSuppliers();
+    final match = suppliers.firstWhere(
+          (s) => s['Supplier']?.toString() == supplierName,
+      orElse: () => <String, dynamic>{},
+    );
+
+    return match['supplierID']?.toString() ?? '';
   }
 
   @override

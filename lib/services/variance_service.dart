@@ -1,5 +1,96 @@
 import '../services/logger_service.dart';
 
+import 'dart:async';
+import 'dart:isolate';
+
+// 🔥 Runs variance report with true cancellation support
+Future<Map<String, dynamic>> runVarianceReportWithCancellation(
+    Map<String, dynamic> params, {
+      required Duration timeout,
+    }) async {
+  final resultPort = ReceivePort();
+  final errorPort = ReceivePort();
+  final completer = Completer<Map<String, dynamic>>();
+  Isolate? isolate;
+
+  final resultSub = resultPort.listen((message) {
+    if (!completer.isCompleted) {
+      completer.complete(message as Map<String, dynamic>);
+    }
+  });
+
+  final errorSub = errorPort.listen((errorData) {
+    if (!completer.isCompleted) {
+      final errorList = errorData as List;
+      completer.completeError(
+        Exception('Isolate error: ${errorList[0]}'),
+        StackTrace.fromString(errorList[1]?.toString() ?? ''),
+      );
+    }
+  });
+
+  try {
+    isolate = await Isolate.spawn(
+      _varianceIsolateEntryPoint,
+      {'sendPort': resultPort.sendPort, 'params': params},
+      onError: errorPort.sendPort,
+      errorsAreFatal: true,
+      debugName: 'varianceReport',
+    );
+
+    return await completer.future.timeout(
+      timeout,
+      onTimeout: () {
+        throw TimeoutException('Report calculation timed out after ${timeout.inSeconds}s');
+      },
+    );
+  } finally {
+    resultSub.cancel();
+    errorSub.cancel();
+    resultPort.close();
+    errorPort.close();
+    isolate?.kill(priority: Isolate.immediate);
+  }
+}
+
+@pragma('vm:entry-point')
+void _varianceIsolateEntryPoint(Map<String, dynamic> message) {
+  final sendPort = message['sendPort'] as SendPort;
+  final params = message['params'] as Map<String, dynamic>;
+
+  final service = VarianceService.isolate();
+  final result = service.calculateReportWithDiagnostics(
+    stocks: params['stocks'],
+    purchases: params['purchases'],
+    itemsIssuedMap: params['itemsIssuedMap'] ?? [],
+    stockIssues: params['stockIssues'] ?? [],
+    storeSalesData: params['storeSalesData'],
+    itemSalesMap: params['itemSalesMap'],
+    inventory: params['inventory'],
+    dateFromStr: params['dateFromStr'],
+    dateToStr: params['dateToStr'],
+  );
+
+  sendPort.send(result);
+}
+
+@pragma('vm:entry-point')
+Map<String, dynamic> calculateReportIsolate(Map<String, dynamic> params) {
+  final service = VarianceService.isolate();
+
+  return service.calculateReportWithDiagnostics(
+    stocks: params['stocks'],
+    purchases: params['purchases'],
+    itemsIssuedMap: params['itemsIssuedMap'] ?? [],
+    stockIssues: params['stockIssues'] ?? [],
+    storeSalesData: params['storeSalesData'],
+    itemSalesMap: params['itemSalesMap'],
+    inventory: params['inventory'],
+    dateFromStr: params['dateFromStr'],
+    dateToStr: params['dateToStr'],
+  );
+}
+
 class VarianceItem {
   final String productName;
   final String mainCategory;
@@ -7,6 +98,7 @@ class VarianceItem {
 
   final double previousCount;
   final double purchases;
+  final double issues;
   final double sales;
   final double currentCount;
 
@@ -22,6 +114,7 @@ class VarianceItem {
     required this.category,
     required this.previousCount,
     required this.purchases,
+    required this.issues,
     required this.sales,
     required this.currentCount,
     required this.costPrice,
@@ -30,20 +123,20 @@ class VarianceItem {
     this.inventoryItem,
   });
 
-  double get theoreticalStock => previousCount + purchases - sales;
+  double get theoreticalStock => previousCount + purchases + issues - sales;
   double get variance => currentCount - theoreticalStock;
 
   double get varianceCost => variance * costPrice;
   double get varianceRetail => variance * retailPrice;
   double get totalStockValueRetail => currentCount * retailPrice;
 
-  // Convert to JSON for isolate communication
   Map<String, dynamic> toJson() => {
     'productName': productName,
     'mainCategory': mainCategory,
     'category': category,
     'previousCount': previousCount,
     'purchases': purchases,
+    'issues': issues,
     'sales': sales,
     'currentCount': currentCount,
     'costPrice': costPrice,
@@ -52,13 +145,13 @@ class VarianceItem {
     'inventoryItem': inventoryItem,
   };
 
-  // Create from JSON after isolate returns
   factory VarianceItem.fromJson(Map<String, dynamic> json) => VarianceItem(
     productName: json['productName'],
     mainCategory: json['mainCategory'],
     category: json['category'],
     previousCount: json['previousCount'],
     purchases: json['purchases'],
+    issues: json['issues'] ?? 0,
     sales: json['sales'],
     currentCount: json['currentCount'],
     costPrice: json['costPrice'],
@@ -73,7 +166,6 @@ class VarianceService {
 
   VarianceService({this.logger});
 
-  // 🔥 NEW: Isolate-friendly constructor (no logger)
   VarianceService.isolate() : logger = null;
 
   final RegExp _exclusionRegex = RegExp(
@@ -81,8 +173,6 @@ class VarianceService {
     caseSensitive: false,
   );
 
-  // Standard Hospitality Markup (300% or Cost * 3)
-  // Used to estimate missing prices so reports correlate
   static const double _estimatedMarkup = 3.0;
 
   String _normalize(dynamic input) {
@@ -101,43 +191,89 @@ class VarianceService {
     return DateTime(dt.year, dt.month, dt.day);
   }
 
-  List<VarianceItem> calculateReport({
+  bool _fuzzyMatch(String a, String b) {
+    final aNorm = a.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
+    final bNorm = b.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
+
+    if (aNorm.contains(bNorm) || bNorm.contains(aNorm)) return true;
+
+    final aWords = aNorm.split(RegExp(r'\s+'));
+    final bWords = bNorm.split(RegExp(r'\s+'));
+
+    int matches = 0;
+    for (var aWord in aWords) {
+      if (aWord.length < 3) continue;
+      for (var bWord in bWords) {
+        if (bWord.length < 3) continue;
+        if (aWord == bWord || aWord.contains(bWord) || bWord.contains(aWord)) {
+          matches++;
+          break;
+        }
+      }
+    }
+
+    return matches >= (aWords.length / 2).ceil();
+  }
+
+  Map<String, dynamic> calculateReportWithDiagnostics({
     required List<Map<String, dynamic>> stocks,
     required List<Map<String, dynamic>> purchases,
+    required List<Map<String, dynamic>> itemsIssuedMap,
+    required List<Map<String, dynamic>> stockIssues,
     required List<Map<String, dynamic>> storeSalesData,
     required List<Map<String, dynamic>> itemSalesMap,
     required List<Map<String, dynamic>> inventory,
     required String dateFromStr,
     required String dateToStr,
   }) {
+    print('🔍 ===== VARIANCE REPORT START =====');
+    print('📊 Input Data Counts:');
+    print('  - stocks: ${stocks.length}');
+    print('  - purchases: ${purchases.length}');
+    print('  - itemsIssuedMap: ${itemsIssuedMap.length}');
+    print('  - stockIssues: ${stockIssues.length}');
+    print('  - storeSalesData: ${storeSalesData.length}');
+    print('  - itemSalesMap: ${itemSalesMap.length}');
+    print('  - inventory: ${inventory.length}');
+    print('  - dateFrom: $dateFromStr');
+    print('  - dateTo: $dateToStr');
+    print('');
+
     final fromDtRaw = DateTime.parse(dateFromStr);
     final toDtRaw = DateTime.parse(dateToStr);
 
     final fromDate = _stripTime(fromDtRaw);
     final toDate = _stripTime(toDtRaw);
 
-    print('📊 VARIANCE REPORT INPUTS:');
-    print('  - Stocks: ${stocks.length}');
-    print('  - Purchases: ${purchases.length}');
-    print('  - StoreSalesData: ${storeSalesData.length}');
-    print('  - ItemSalesMap: ${itemSalesMap.length}');
-    print('  - Inventory: ${inventory.length}');
-    print('  - Date Range: $dateFromStr to $dateToStr');
-    print('  - Parsed From: $fromDate');
-    print('  - Parsed To: $toDate');
+    print('🔍 DATE RANGE: from=${fromDate.toIso8601String()}, to=${toDate.toIso8601String()}');
+    print('');
 
-    if (logger != null) {
-      logger!.info('--- CALC START ---');
-      logger!.info('Range: ${fromDate.toIso8601String().split('T')[0]} to ${toDate.toIso8601String().split('T')[0]}');
-    }
+    final diagnostics = {
+      'stocksCount': stocks.length,
+      'purchasesCount': purchases.length,
+      'storeSalesCount': storeSalesData.length,
+      'itemSalesMapCount': itemSalesMap.length,
+      'inventoryCount': inventory.length,
+      'itemsIssuedMapCount': itemsIssuedMap.length,
+      'stockIssuesCount': stockIssues.length,
+      'dateFrom': dateFromStr,
+      'dateTo': dateToStr,
+      'sampleDates': <String>[],
+      'ambiguousPluCollisions': 0,
+      'salesInRange': 0,
+      'issuesInRange': 0,
+      'productsWithVariance': 0,
+      'parsingErrors': 0,
+    };
 
     Map<String, double> prodCosts = {};
-    Map<String, double> prodRetail = {}; // Will now store MAX price from sales
+    Map<String, double> prodRetail = {};
     Map<String, String> prodMainCat = {};
     Map<String, String> prodCat = {};
     Map<String, Map<String, dynamic>> inventoryRef = {};
 
     // 1. Inventory Map
+    print('📦 Building Inventory Reference...');
     for (var item in inventory) {
       final name = _normalize(item['Inventory Product Name']);
       inventoryRef[name] = item;
@@ -145,8 +281,15 @@ class VarianceService {
       prodMainCat[name] = item['Main Category']?.toString() ?? 'Uncategorized';
       prodCat[name] = item['Category']?.toString() ?? 'General';
     }
+    print('  - ${inventoryRef.length} unique products in inventory');
+    print('');
 
-    // 2. Build Recipe Map and Calculate MAX Retail Prices (like sheet's MAX query)
+    // ============================================================================
+    // 2. SALES MAPPING (ItemSalesMap) - FOR SALES ONLY
+    // ============================================================================
+    print('📦 Building ItemSalesMap lookup (SALES ONLY)...');
+
+    // Build PLU → List of recipes from ItemSalesMap
     Map<String, List<Map<String, dynamic>>> pluToRecipes = {};
 
     for (var row in itemSalesMap) {
@@ -158,6 +301,7 @@ class VarianceService {
         pluToRecipes[plu]!.add(row);
       }
 
+      // Calculate retail prices from ItemSalesMap
       final name = _normalize(row['Product']);
       final sellPrice = _safeDouble(row['Sell']);
 
@@ -190,19 +334,50 @@ class VarianceService {
         } else if (measure == 'glass') {
           impliedBottlePrice = sellPrice * singleUoM;
         } else if (measure == 'ml') {
-          impliedBottlePrice = sellPrice * 30.0; // Fallback estimate if ML logic fails
+          impliedBottlePrice = sellPrice * 30.0;
         } else {
           impliedBottlePrice = sellPrice;
         }
 
-        // 🔥 UPDATED: Store the MAX price (like sheet's MAX query)
         if (impliedBottlePrice > (prodRetail[name] ?? 0)) {
           prodRetail[name] = impliedBottlePrice;
         }
       }
     }
+    print('  - ${pluToRecipes.length} PLU entries in ItemSalesMap');
+    print('');
 
-    // 3. Stock Counts
+    // ============================================================================
+    // 3. ISSUES MAPPING (ItemsIssuedMap) - FOR ISSUES ONLY
+    // ============================================================================
+    print('📦 Building ItemsIssuedMap lookup (ISSUES ONLY)...');
+
+    // Build PLU → Product name for fast issues lookup
+    Map<String, String> pluToProductMap = {};
+    Map<String, List<Map<String, dynamic>>> pluToIssuedMappings = {};
+
+    for (var row in itemsIssuedMap) {
+      final plu = row['PLU']?.toString().trim();
+      if (plu != null && plu.isNotEmpty) {
+        if (!pluToIssuedMappings.containsKey(plu)) {
+          pluToIssuedMappings[plu] = [];
+        }
+        pluToIssuedMappings[plu]!.add(row);
+
+        final product = row['Product']?.toString().trim() ??
+            row['Menu Item']?.toString().trim() ?? '';
+        if (product.isNotEmpty) {
+          pluToProductMap[plu] = _normalize(product);
+        }
+      }
+    }
+    print('  - ${pluToIssuedMappings.length} PLU entries in ItemsIssuedMap');
+    print('');
+
+    // ============================================================================
+    // 4. STOCK COUNTS - Get Previous and Current counts
+    // ============================================================================
+    print('📊 Processing Stock Counts...');
     Map<String, double> prevCounts = {};
     Map<String, double> currCounts = {};
     Map<String, List<Map<String, dynamic>>> prodHistory = {};
@@ -213,15 +388,15 @@ class VarianceService {
       final dateStr = rawDate.contains('T') ? rawDate.split('T')[0] : rawDate;
       final qty = _safeDouble(row['total_bottles']);
 
-      if (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0) {
-        if (!prodHistory.containsKey(name)) prodHistory[name] = [];
-        prodHistory[name]!.add(row);
-      }
-
       if (dateStr == dateToStr) {
         currCounts[name] = (currCounts[name] ?? 0) + qty;
       } else if (dateStr == dateFromStr) {
         prevCounts[name] = (prevCounts[name] ?? 0) + qty;
+      }
+
+      if (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0) {
+        if (!prodHistory.containsKey(name)) prodHistory[name] = [];
+        prodHistory[name]!.add(row);
       }
 
       if (!prodMainCat.containsKey(name)) {
@@ -229,9 +404,16 @@ class VarianceService {
         prodCat[name] = row['category']?.toString() ?? 'General';
       }
     }
+    print('  - Previous counts: ${prevCounts.length} products');
+    print('  - Current counts: ${currCounts.length} products');
+    print('');
 
-    // 4. Purchases
+    // ============================================================================
+    // 5. PURCHASES - Aggregate within date range (exclusive of end date)
+    // ============================================================================
+    print('📦 Processing Purchases...');
     Map<String, double> prodPurchases = {};
+    int purchaseInRange = 0;
     for (var row in purchases) {
       String dateRaw = row['Stock Delivery Date']?.toString() ?? '';
       if (dateRaw.isEmpty) continue;
@@ -240,126 +422,227 @@ class VarianceService {
 
       if (deliveryDateRaw != null) {
         final deliveryDate = _stripTime(deliveryDateRaw);
-        bool isAfterOrOnStart = deliveryDate.isAtSameMomentAs(fromDate) || deliveryDate.isAfter(fromDate);
-        bool isStrictlyBeforeEnd = deliveryDate.isBefore(toDate);
+        bool isOnOrAfterStart = deliveryDate.compareTo(fromDate) >= 0;
+        bool isBeforeEnd = deliveryDate.compareTo(toDate) < 0;
 
-        if (isAfterOrOnStart && isStrictlyBeforeEnd) {
+        if (isOnOrAfterStart && isBeforeEnd) {
           final name = _normalize(row['Purchased Product Name']);
           final qty = _safeDouble(row['Total Stock In Bottles']);
           prodPurchases[name] = (prodPurchases[name] ?? 0) + qty;
+          purchaseInRange++;
+        }
+      }
+    }
+    print('  - $purchaseInRange purchases in range');
+    print('  - ${prodPurchases.length} unique products with purchases');
+    print('');
+
+    // ============================================================================
+    // 6. ISSUES - Match the sheet formula exactly
+    // ============================================================================
+    print('📦 Processing Stock Issues (ISSUES ONLY)...');
+    print('  - Total stockIssues records: ${stockIssues.length}');
+
+    Map<String, double> productBottleUoM = {};
+    for (var item in inventory) {
+      final name = _normalize(item['Inventory Product Name']);
+      final bottleUoM = _safeDouble(item['Bottle UoM']);
+      if (bottleUoM > 0) {
+        productBottleUoM[name] = bottleUoM;
+      }
+    }
+
+    Map<String, double> pluToQuantity = {};
+    for (var row in itemsIssuedMap) {
+      final plu = row['PLU']?.toString().trim();
+      if (plu != null && plu.isNotEmpty) {
+        pluToQuantity[plu] = _safeDouble(row['Quantity']);
+      }
+    }
+
+    Map<String, double> pluNetTotals = {};
+    Map<String, String> pluToProductName = {};
+    int issuesInRange = 0;
+    int issuesSkipped = 0;
+    int issuesMatched = 0;
+
+    for (var row in stockIssues) {
+      String dateRaw = row['Date']?.toString() ?? '';
+      if (dateRaw.isEmpty) continue;
+
+      DateTime? issueDateRaw = _parseDate(dateRaw);
+      if (issueDateRaw == null) continue;
+
+      final issueDate = _stripTime(issueDateRaw);
+
+      bool isAfterStart = issueDate.compareTo(fromDate) > 0;
+      bool isOnOrBeforeEnd = issueDate.compareTo(toDate) <= 0;
+
+      if (isAfterStart && isOnOrBeforeEnd) {
+        issuesInRange++;
+
+        final plu = row['Item']?.toString().trim() ?? '';
+        final name = row['Name']?.toString().trim() ?? '';
+        final issued = _safeDouble(row['Issued'] ?? 0);
+
+        if (issued == 0) {
+          issuesSkipped++;
+          continue;
+        }
+
+        String productName = '';
+        if (plu.isNotEmpty && pluToProductMap.containsKey(plu)) {
+          productName = pluToProductMap[plu]!;
+        } else if (name.isNotEmpty && inventoryRef.containsKey(name)) {
+          productName = name;
+        } else {
+          productName = name.isNotEmpty ? name : plu;
+        }
+
+        if (productName.isNotEmpty) {
+          double quantity = pluToQuantity[plu] ?? 1.0;
+          double bottleUoM = productBottleUoM[productName] ?? 30.0;
+          double totalQtyIssuedBtl = (issued * quantity) / bottleUoM;
+
+          pluNetTotals[plu] = (pluNetTotals[plu] ?? 0) + totalQtyIssuedBtl;
+          pluToProductName[plu] = productName;
+          issuesMatched++;
         }
       }
     }
 
-    // 5. Sales
-    Map<String, double> prodSales = {};
+    Map<String, double> prodIssues = {};
+    for (var entry in pluNetTotals.entries) {
+      final plu = entry.key;
+      final netTotal = entry.value;
 
-    print('📅 Sample StoreSalesData dates:');
-    for (var i = 0; i < storeSalesData.length && i < 5; i++) {
-      print('  Sale ${i+1}: "${storeSalesData[i]['Date']}"');
+      if (netTotal.abs() < 0.001) {
+        print('  ⏭️ PLU $plu cancels to 0, skipping');
+        continue;
+      }
+
+      final productName = pluToProductName[plu] ?? plu;
+      prodIssues[productName] = (prodIssues[productName] ?? 0) + netTotal;
     }
+
+    print('  - Issues in date range: $issuesInRange');
+    print('  - Issues skipped (qty == 0): $issuesSkipped');
+    print('  - Issues matched to products: $issuesMatched');
+    print('  - ${prodIssues.length} unique products with issues');
+    print('');
+
+    // ============================================================================
+    // 7. SALES - Match the sheet formula exactly
+    // ============================================================================
+    print('📦 Processing Store Sales (SALES ONLY)...');
+
+    // 🔥 Build PLU → List of recipes, only include if Total Qty Used > 0
+    Map<String, List<Map<String, dynamic>>> pluToAllRecipes = {};
+    for (var row in itemSalesMap) {
+      final plu = row['PLU']?.toString().trim();
+      final totalQtyUsed = _safeDouble(row['Total Qty Used']);
+      if (plu != null && plu.isNotEmpty && totalQtyUsed > 0) {
+        pluToAllRecipes.putIfAbsent(plu, () => []);
+        pluToAllRecipes[plu]!.add(row);
+      }
+    }
+
+    Map<String, double> prodSales = {};
+    int salesInRange = 0;
+    int salesMatched = 0;
+    int salesUnmatched = 0;
 
     for (var sale in storeSalesData) {
       String dateRaw = sale['Date']?.toString() ?? '';
       DateTime? saleDateRaw = _parseDate(dateRaw);
-
       if (saleDateRaw == null) continue;
 
       final saleDate = _stripTime(saleDateRaw);
-      bool isStrictlyAfterStart = saleDate.isAfter(fromDate);
-      bool isBeforeOrOnEnd = saleDate.isBefore(toDate) || saleDate.isAtSameMomentAs(toDate);
 
-      print('  Processing sale: dateRaw="$dateRaw", parsed=$saleDateRaw');
+      bool isAfterStart = saleDate.compareTo(fromDate) > 0;
+      bool isOnOrBeforeEnd = saleDate.compareTo(toDate) <= 0;
 
-      if (isStrictlyAfterStart && isBeforeOrOnEnd) {
-        final plu = sale['No.']?.toString().trim();
-        final menuItemName = _normalize(sale['MenuItem'] ?? sale['Menu Item'] ?? sale['Item']);
+      if (isAfterStart && isOnOrBeforeEnd) {
+        salesInRange++;
 
-        if (plu != null && pluToRecipes.containsKey(plu)) {
-          final possibleRecipes = pluToRecipes[plu]!;
-          List<Map<String, dynamic>> recipesToProcess = [];
+        final salePlu = sale['No.']?.toString().trim();
+        final qtySold = _safeDouble(sale['Qty']);
 
-          try {
-            final matchingRecipes = possibleRecipes.where(
-                    (r) => _normalize(r['Menu Item']) == menuItemName
-            ).toList();
+        if (salePlu != null && salePlu.isNotEmpty && qtySold > 0) {
+          final allRecipes = pluToAllRecipes[salePlu] ?? [];
 
-            if (matchingRecipes.isNotEmpty) {
-              final firstCat = (matchingRecipes.first['Main Category'] ?? '').toString().toLowerCase();
-              final isMultiIngredient = firstCat.contains('special') || firstCat.contains('cocktail');
+          if (allRecipes.isNotEmpty) {
+            salesMatched++;
 
-              if (isMultiIngredient) {
-                recipesToProcess = matchingRecipes;
-              } else {
-                final distinctProducts = matchingRecipes.map((r) => r['Product']).toSet();
-                if (distinctProducts.length > 1) {
-                  print('AMBIGUITY: PLU $plu "$menuItemName" collision. Using first.');
-                }
-                recipesToProcess = [matchingRecipes.first];
-              }
-
-              for (var selectedRecipe in recipesToProcess) {
-                final productName = _normalize(selectedRecipe['Product']);
-                final qtySold = _safeDouble(sale['Qty']);
-                double qtyUsed = qtySold * (_safeDouble(selectedRecipe['Quantity']));
-                final measure = selectedRecipe['Measure']?.toString().toLowerCase() ?? '';
-
-                double finalDeduction = 0.0;
-                double bottleUoM = 30.0;
-                double singleUoM = 1.0;
-                double volumeMl = 750.0;
-
-                if (inventoryRef.containsKey(productName)) {
-                  bottleUoM = _safeDouble(inventoryRef[productName]!['Bottle UoM']);
-                  singleUoM = _safeDouble(inventoryRef[productName]!['Single UoM']);
-                  volumeMl = _safeDouble(inventoryRef[productName]!['Single Unit Volume']);
-                  if (bottleUoM == 0) bottleUoM = 30.0;
-                  if (singleUoM == 0) singleUoM = 1.0;
-                  if (volumeMl == 0) volumeMl = 750.0;
-                }
-
-                if (measure.contains('bottle') || measure.contains('can')) {
-                  finalDeduction = qtyUsed;
-                }
-                else if (measure == 'shots' || measure.contains('tot')) {
-                  finalDeduction = qtyUsed / bottleUoM;
-                }
-                else if (measure == 'glass') {
-                  finalDeduction = qtyUsed * singleUoM;
-                }
-                else if (measure == 'ml') {
-                  finalDeduction = qtyUsed / volumeMl;
-                } else {
-                  finalDeduction = qtyUsed;
-                }
-
-                prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+            Map<String, Map<String, dynamic>> uniqueProductRecipes = {};
+            for (var recipe in allRecipes) {
+              final productName = _normalize(recipe['Product']);
+              if (productName.isNotEmpty && !uniqueProductRecipes.containsKey(productName)) {
+                uniqueProductRecipes[productName] = recipe;
               }
             }
-          } catch (e) {
-            // Ignore
+
+            for (var recipe in uniqueProductRecipes.values) {
+              final productName = _normalize(recipe['Product']);
+              final recipeQuantity = _safeDouble(recipe['Quantity']);
+              final measure = recipe['Measure']?.toString().toLowerCase() ?? '';
+
+              double qtyUsed = qtySold * recipeQuantity;
+              double finalDeduction = _calculateDeduction(
+                productName: productName,
+                qtyUsed: qtyUsed,
+                measure: measure,
+                inventoryRef: inventoryRef,
+              );
+
+              prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+            }
+          } else {
+            salesUnmatched++;
+            if (salesUnmatched <= 10) {
+              print('⚠️ No recipe found for PLU: "$salePlu"');
+            }
           }
         }
       }
     }
 
-    // 6. Compile Report
-    final allNames = {...prevCounts.keys, ...currCounts.keys, ...prodPurchases.keys, ...prodSales.keys};
+    print('  - $salesInRange sales in range');
+    print('  - $salesMatched sales matched, $salesUnmatched unmatched');
+    print('  - ${prodSales.length} unique products with sales');
+    print('');
+
+    // ============================================================================
+    // 8. COMPILE REPORT
+    // ============================================================================
+    print('📊 Compiling Variance Report...');
+    final allNames = {
+      ...prevCounts.keys,
+      ...currCounts.keys,
+      ...prodPurchases.keys,
+      ...prodIssues.keys,
+      ...prodSales.keys
+    };
+    print('  - ${allNames.length} unique product names found');
+    print('');
+
     List<VarianceItem> report = [];
 
     for (var name in allNames) {
       if (name.isEmpty) continue;
-      if ((prevCounts[name]??0) == 0 && (currCounts[name]??0) == 0 && (prodPurchases[name]??0) == 0 && (prodSales[name]??0) == 0) continue;
+      if ((prevCounts[name]??0) == 0 &&
+          (currCounts[name]??0) == 0 &&
+          (prodPurchases[name]??0) == 0 &&
+          (prodIssues[name]??0) == 0 &&
+          (prodSales[name]??0) == 0) {
+        continue;
+      }
 
       double cp = prodCosts[name] ?? 0.0;
       double rp = prodRetail[name] ?? 0.0;
 
-      // 🔥 UPDATED: Match Google Sheets logic exactly:
-      // 1. Use maxPrice from sales if available
-      // 2. Otherwise fall back to unitCost * 3
       double finalRetailPrice = rp > 0 ? rp : cp * _estimatedMarkup;
 
-      // Also estimate cost if needed for variance calculations
       if (cp == 0 && rp > 0) {
         cp = rp / _estimatedMarkup;
       }
@@ -370,74 +653,92 @@ class VarianceService {
         category: prodCat[name] ?? 'General',
         previousCount: prevCounts[name] ?? 0,
         purchases: prodPurchases[name] ?? 0,
+        issues: prodIssues[name] ?? 0,
         sales: prodSales[name] ?? 0,
         currentCount: currCounts[name] ?? 0,
         costPrice: cp,
-        retailPrice: finalRetailPrice, // Use the calculated retail price
+        retailPrice: finalRetailPrice,
         allEntries: prodHistory[name] ?? [],
         inventoryItem: inventoryRef[name],
       ));
     }
 
-    return report;
+    diagnostics['productsWithVariance'] = report.length;
+    diagnostics['issuesInRange'] = issuesInRange;
+    diagnostics['salesInRange'] = salesInRange;
+
+    print('📊 Final Report: ${report.length} variance items');
+    print('🔍 ===== VARIANCE REPORT END =====');
+    print('');
+
+    return {
+      'items': report.map((item) => item.toJson()).toList(),
+      'diagnostics': diagnostics,
+    };
   }
 
   DateTime? _parseDate(String dateStr) {
     if (dateStr.isEmpty) return null;
     try {
-      // Handle ISO format with time (2026-01-13T08:00:00.000Z)
       if (dateStr.contains('T')) {
-        // Extract just the date part before T
         final datePart = dateStr.split('T')[0];
         final parts = datePart.split('-');
         if (parts.length == 3) {
-          // ISO format is yyyy-MM-dd
           return DateTime.utc(
               int.parse(parts[0]),
               int.parse(parts[1]),
               int.parse(parts[2])
           );
         }
-      }
-      // Handle dd/MM/yyyy format (with slashes)
-      else if (dateStr.contains('/')) {
+      } else if (dateStr.contains('/')) {
         final parts = dateStr.split('/');
         if (parts.length == 3) {
           return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
         }
-      }
-      // Handle dd-MM-yyyy format (with hyphens)
-      else if (dateStr.contains('-')) {
+      } else if (dateStr.contains('-')) {
         final parts = dateStr.split('-');
         if (parts.length == 3) {
           return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
         }
       }
-      // Try standard parsing as fallback
       return DateTime.tryParse(dateStr);
     } catch (e) {
       return null;
     }
   }
-}
 
-// 🔥 CORRECTED: Top-level function for isolate entry point (NO static keyword)
-@pragma('vm:entry-point')
-List<Map<String, dynamic>> calculateReportIsolate(Map<String, dynamic> params) {
-  // Create service without logger (can't send logger across isolates)
-  final service = VarianceService.isolate();
+  double _calculateDeduction({
+    required String productName,
+    required double qtyUsed,
+    required String measure,
+    required Map<String, Map<String, dynamic>> inventoryRef,
+  }) {
+    double finalDeduction = 0.0;
+    double bottleUoM = 30.0;
+    double singleUoM = 1.0;
+    double volumeMl = 750.0;
 
-  // Run the calculation
-  final List<VarianceItem> results = service.calculateReport(
-    stocks: params['stocks'],
-    purchases: params['purchases'],
-    storeSalesData: params['storeSalesData'],
-    itemSalesMap: params['itemSalesMap'],
-    inventory: params['inventory'],
-    dateFromStr: params['dateFromStr'],
-    dateToStr: params['dateToStr'],
-  );
+    if (inventoryRef.containsKey(productName)) {
+      bottleUoM = _safeDouble(inventoryRef[productName]!['Bottle UoM']);
+      singleUoM = _safeDouble(inventoryRef[productName]!['Single UoM']);
+      volumeMl = _safeDouble(inventoryRef[productName]!['Single Unit Volume']);
+      if (bottleUoM == 0) bottleUoM = 30.0;
+      if (singleUoM == 0) singleUoM = 1.0;
+      if (volumeMl == 0) volumeMl = 750.0;
+    }
 
-  // Convert to JSON-serializable format
-  return results.map((item) => item.toJson()).toList();
+    if (measure.contains('bottle') || measure.contains('can')) {
+      finalDeduction = qtyUsed;
+    } else if (measure == 'shots' || measure.contains('tot')) {
+      finalDeduction = qtyUsed / bottleUoM;
+    } else if (measure == 'glass') {
+      finalDeduction = qtyUsed * singleUoM;
+    } else if (measure == 'ml') {
+      finalDeduction = qtyUsed / volumeMl;
+    } else {
+      finalDeduction = qtyUsed;
+    }
+
+    return finalDeduction;
+  }
 }

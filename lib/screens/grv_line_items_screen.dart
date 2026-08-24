@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter/foundation.dart';
+import 'package:data_table_2/data_table_2.dart';
 import '../models/plu_mapping.dart';
 import '../services/offline_storage.dart';
 import 'add_product_screen.dart';
@@ -16,6 +19,7 @@ class GrvLineItemsScreen extends StatefulWidget {
   final String invoiceDetailsID;
   final String supplierName;
   final DateTime deliveryDate;
+  final String grvReference;
   final List<ParsedGrvLineItem>? preloadedItems;
 
   const GrvLineItemsScreen({
@@ -23,6 +27,7 @@ class GrvLineItemsScreen extends StatefulWidget {
     required this.invoiceDetailsID,
     required this.supplierName,
     required this.deliveryDate,
+    required this.grvReference,
     this.preloadedItems,
   });
 
@@ -43,6 +48,13 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   double _totalValue = 0.0;
   bool _isDisposed = false;
   bool _hasInitialized = false;
+  Map<String, dynamic>? _noMatchBrowserSelection;
+
+  // 🔥 Add this
+  Timer? _debounceTimer;
+
+  // 🔥 Add this for tracking the correct invoice ID
+  String? _currentInvoiceId;
 
   // Cache for product details to avoid repeated lookups
   final Map<String, Map<String, dynamic>> _productCache = {};
@@ -67,16 +79,19 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     if (!_hasInitialized) {
       final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
 
-      // Handle arguments passed from Upload Screen
       if (args == null && widget.preloadedItems != null && widget.preloadedItems!.isNotEmpty) {
+        // 🔥 Cancel any existing timer
+        _debounceTimer?.cancel();
 
-        // 🔴 FIX: Wait for the build to finish before running logic!
-        WidgetsBinding.instance.addPostFrameCallback((_) {
+        _debounceTimer = Timer(const Duration(milliseconds: 300), () {
           if (mounted) {
-            _autoMatchPluItems(widget.preloadedItems!);
+            final storage = context.read<OfflineStorage>();
+
+            // 🔥 FIX: Don't check for duplicates here - the invoice was just saved!
+            // The upload screen already saved the invoice. Just auto-match.
+            _autoMatchPluItems(widget.preloadedItems!, invoiceId: widget.invoiceDetailsID);
           }
         });
-
       }
 
       _hasInitialized = true;
@@ -86,10 +101,168 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   @override
   void dispose() {
     _isDisposed = true;
+    _debounceTimer?.cancel();
     super.dispose();
   }
 
+
   bool _isMounted() => mounted && !_isDisposed;
+
+  /// Check if an invoice already exists for this supplier + invoice number
+  Future<Map<String, dynamic>?> _checkForExistingInvoice(
+      String invoiceNumber,
+      String supplierName
+      ) async {
+    final storage = context.read<OfflineStorage>();
+    return await storage.findInvoiceBySupplierAndNumber(
+      supplierName: supplierName,
+      invoiceNumber: invoiceNumber,
+    );
+  }
+
+  /// Check for duplicate invoice with enhanced criteria
+  Future<Map<String, dynamic>?> _checkForDuplicateInvoice({
+    required String invoiceNumber,
+    required String supplierName,
+    required DateTime deliveryDate,
+    required List<ParsedGrvLineItem> items,
+  }) async {
+    final storage = context.read<OfflineStorage>();
+
+    // 1. First check by supplier + invoice number
+    final existingInvoice = await storage.findInvoiceBySupplierAndNumber(
+      supplierName: supplierName,
+      invoiceNumber: invoiceNumber,
+    );
+
+    if (existingInvoice == null) {
+      return null; // No duplicate found
+    }
+
+    // 2. Get existing purchases for this invoice
+    final existingPurchases = await storage.getPurchasesByInvoiceId(
+      existingInvoice['invoiceDetailsID']?.toString() ?? '',
+    );
+
+    // 3. Check if the items match exactly
+    final existingItemCount = existingPurchases.length;
+    final newItemCount = items.length;
+
+    // 4. Check if the delivery date matches
+    final existingDate = existingInvoice['Date of Purchase']?.toString();
+    final newDate = deliveryDate.toIso8601String();
+    final datesMatch = existingDate == newDate;
+
+    // 5. Check if the total value matches
+    double toDouble(dynamic value) {
+      if (value == null) return 0.0;
+      if (value is num) return value.toDouble();
+      if (value is String) return double.tryParse(value) ?? 0.0;
+      return 0.0;
+    }
+
+// Then:
+    final existingTotal = existingPurchases.fold<double>(
+      0.0,
+          (sum, p) => sum + toDouble(p['Cost of Purchases']),
+    );
+    final newTotal = items.fold<double>(
+      0.0,
+          (sum, i) => sum + i.totalValue,
+    );
+    final totalsMatch = (existingTotal - newTotal).abs() < 0.01;
+
+    // 6. Check if the items match (by barcode or product name)
+    final existingItems = existingPurchases.map((p) =>
+    '${p['Barcode']}|${p['Purchased Product Name']}'
+    ).toSet();
+    final newItems = items.map((i) =>
+    '${i.barcode}|${i.description}'
+    ).toSet();
+    final itemsMatch = existingItems.containsAll(newItems) &&
+        newItems.containsAll(existingItems);
+
+    // 7. Determine duplicate type
+    final isExactDuplicate = datesMatch && totalsMatch && itemsMatch;
+    final isPartialDuplicate = !isExactDuplicate &&
+        (datesMatch || totalsMatch || itemsMatch);
+
+    print('🔍 Duplicate Analysis:');
+    print('  - Exact duplicate: $isExactDuplicate');
+    print('  - Partial duplicate: $isPartialDuplicate');
+    print('  - Dates match: $datesMatch');
+    print('  - Totals match: $totalsMatch');
+    print('  - Items match: $itemsMatch');
+
+    return {
+      'existingInvoice': existingInvoice,
+      'existingItemCount': existingItemCount,
+      'newItemCount': newItemCount,
+      'isExactDuplicate': isExactDuplicate,
+      'isPartialDuplicate': isPartialDuplicate,
+      'existingTotal': existingTotal,
+      'newTotal': newTotal,
+      'datesMatch': datesMatch,
+      'totalsMatch': totalsMatch,
+      'itemsMatch': itemsMatch,
+    };
+  }
+
+  /// Show duplicate warning dialog with 3 options
+  Future<String?> _showDuplicateWarningDialog({
+    required String invoiceNumber,
+    required String supplierName,
+    required String? existingDate,
+    int existingItemCount = 0,  // 🔥 ADD THIS
+    int newItemCount = 0,       // 🔥 ADD THIS
+  }) async {
+    return await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('⚠️ Duplicate GRV Detected'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Invoice #$invoiceNumber from $supplierName already exists.'),
+            const SizedBox(height: 8),
+            if (existingDate != null)
+              Text('Existing date: ${existingDate.split('T')[0]}'),
+            const SizedBox(height: 8),
+            // 🔥 Show item counts
+            Text('Existing items: $existingItemCount, New items: $newItemCount'),
+            const SizedBox(height: 16),
+            const Text(
+              'What would you like to do?',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text('• UPDATE: Keep existing invoice, add/update items'),
+            const Text('• CREATE NEW: Create a new GRV (keeps both)'),
+            const Text('• CANCEL: Stop this upload'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('CANCEL'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(context, 'create_new'),
+            style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+            child: const Text('CREATE NEW'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, 'update'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            child: const Text('UPDATE'),
+          ),
+        ],
+      ),
+    ) ?? 'cancel';
+  }
 
   //=========================================================================
   // HELPER METHODS - DATA EXTRACTION
@@ -195,7 +368,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     print('  📦 Pre-fetching data...');
     final allInventory = await storage.getAllInventory();
-    final allSuppliers = await storage.getMasterSuppliers();
+    // 🔥 FIX: Use cached version
+    final allSuppliers = await storage.getMasterSuppliersCached();
     final allMasterCosts = await storage.getMasterCosts();
     final productByPlu = await _buildPluLookupFromItemsIssued(storage);
     final productByName = await _buildProductNameLookup(allInventory);
@@ -214,6 +388,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   }
 
   String? _findSupplierId(List<Map<String, dynamic>> allSuppliers) {
+    // This method is called with allSuppliers from _buildLookupMaps,
+    // which already uses the cached version. No change needed.
     final supplier = allSuppliers.firstWhere(
           (s) => s['Supplier']?.toString() == widget.supplierName,
       orElse: () => <String, dynamic>{},
@@ -246,7 +422,6 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       final savedMapping = await storage.getPluMapping(supplierID, item.plu);
 
       if (savedMapping != null) {
-        // 🔴 FIX: Trust the saved mapping directly! Bypass strict validation.
         final lookupName = savedMapping.productName.toLowerCase().trim();
 
         if (productByName.containsKey(lookupName)) {
@@ -266,17 +441,29 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       }
 
       // If no saved mapping, try direct PLU match
+      // WITH — verify the resolved name actually exists in inventory:
+      // If no saved mapping, try direct PLU match
       if (productName == null && productByPlu.containsKey(item.plu)) {
         final pluMatch = productByPlu[item.plu];
-        productName = pluMatch?['productName']?.toString();
-        matchedPlu = item.plu;
-        matchedBy = 'plu_direct';
-        print('    ✅ [PLU DIRECT] ${item.plu} -> $productName');
+        final candidateName = pluMatch?['productName']?.toString();
+
+        if (candidateName != null && candidateName.isNotEmpty) {
+          // Confirm this name resolves to a real inventory record
+          final inventoryRecord = await _getProductDetailsByName(candidateName);
+          if (inventoryRecord != null && inventoryRecord.isNotEmpty) {
+            productName = inventoryRecord['Inventory Product Name']?.toString();
+            barcode = inventoryRecord['Barcode']?.toString();
+            matchedBy = 'plu_direct';
+            print('    ✅ [PLU DIRECT] ${item.plu} -> $productName (inventory confirmed)');
+          } else {
+            print('    ⚠️ [PLU DIRECT] ${item.plu} -> "$candidateName" NOT found in inventory, skipping');
+          }
+        }
       }
     }
 
     // ------------------------------------------------------------------------
-    // PHASE 2: Try fuzzy matching with scoring
+    // PHASE 2: Fuzzy matching — always requires user confirmation
     // ------------------------------------------------------------------------
     if (productName == null) {
       print('    🔍 [FUZZY] Attempting to match: "${item.description}"');
@@ -284,27 +471,30 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       final matches = _findBestProductMatches(item.description, productByName);
 
       if (matches.isNotEmpty) {
-        if (matches.length == 1) {
-          // Single clear match
-          productName = matches.first['Inventory Product Name']?.toString();
-          matchedBy = 'fuzzy_single';
-          print('    ✅ [FUZZY] Single match: "$productName"');
-        } else {
-          // Multiple possible matches - MUST show dialog and wait
-          print('    ⚠️ [FUZZY] ${matches.length} possible matches - showing dialog');
+        // ✅ FIX: Always show dialog regardless of match count.
+        // Removed the fuzzy_single silent auto-accept — a single result above
+        // the 0.3 threshold is NOT a confirmed match and must never be
+        // written to purchases without user approval.
+        print('    ⚠️ [FUZZY] ${matches.length} possible match(es) - showing dialog');
 
-          // Use await directly - don't check _isMounted() here
-          final selectedProduct = await _showProductSelectionDialog(
-            context,
-            item.description,
-            matches,
-          );
+        final selectedProduct = await _showProductSelectionDialog(
+          context,
+          item.description,
+          matches,
+        );
 
-          if (selectedProduct != null) {
-            productName = selectedProduct['Inventory Product Name']?.toString();
-            barcode = selectedProduct['Barcode']?.toString();
-            matchedBy = 'manual_selection';
-            print('    ✅ [MANUAL] User selected: "$productName"');
+        if (selectedProduct != null) {
+          // User tapped "Browse All" instead of picking a fuzzy suggestion
+          final wantsBrowse = selectedProduct['__browse_all__'] == true;
+          final resolvedProduct = wantsBrowse
+              ? await _showFullProductBrowser(context, item.description)
+              : selectedProduct;
+
+          if (resolvedProduct != null) {
+            productName = resolvedProduct['Inventory Product Name']?.toString();
+            barcode = resolvedProduct['Barcode']?.toString();
+            matchedBy = wantsBrowse ? 'manual_browser' : 'manual_selection';
+            print('    ✅ [${wantsBrowse ? 'BROWSE' : 'MANUAL'}] User selected: "$productName"');
 
             // Offer to save mapping
             if (supplierID != null && item.plu.isNotEmpty) {
@@ -312,11 +502,11 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 context,
                 item,
                 supplierID,
-                selectedProduct,
+                resolvedProduct,
               );
 
               if (shouldSave) {
-                final correctPlu = await _findPluForProduct(selectedProduct);
+                final correctPlu = await _findPluForProduct(resolvedProduct);
                 if (correctPlu != null) {
                   final mapping = PluMapping(
                     csvPlu: item.plu,
@@ -334,31 +524,55 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                   } else {
                     print('    ❌ VERIFICATION: Mapping NOT found in DB!');
                   }
-
                   final allMappings = await storage.getAllPluMappings();
                   print('    📊 Total mappings now: ${allMappings.length}');
                 }
               }
             }
           } else {
-            print('    ⚠️ [MANUAL] User cancelled selection');
+            print('    ⚠️ [FUZZY] User dismissed browser without selecting');
           }
+        } else {
+          print('    ⚠️ [FUZZY] User skipped selection');
         }
+
       } else {
         print('    ❌ [FUZZY] No matches found');
 
         if (_isMounted()) {
-          // Show options: Try again or Add New Product
           final String? action = await _showNoMatchDialog(context, item.description);
 
-          if (action == 'add_new') {
+          if (action == 'browser_selected' && _noMatchBrowserSelection != null) {
+            // User picked from the full inventory browser
+            final selectedProduct = _noMatchBrowserSelection!;
+            _noMatchBrowserSelection = null;
+            productName = selectedProduct['Inventory Product Name']?.toString();
+            barcode = selectedProduct['Barcode']?.toString();
+            matchedBy = 'manual_browser';
+            print('    ✅ Selected from browser: "$productName"');
+
+            if (supplierID != null && item.plu.isNotEmpty) {
+              final correctPlu = await _findPluForProduct(selectedProduct);
+              if (correctPlu != null) {
+                final mapping = PluMapping(
+                  csvPlu: item.plu,
+                  csvDescription: item.description,
+                  correctPlu: correctPlu,
+                  productName: productName!,
+                  supplierId: supplierID,
+                  createdAt: DateTime.now(),
+                );
+                await storage.savePluMapping(mapping);
+                print('    💾 [MAPPING SAVED] ${item.plu} -> $correctPlu');
+              }
+            }
+          } else if (action == 'add_new') {
             print('    ➕ User chose to add new product');
-            // Navigate to AddProductScreen
             final newProduct = await Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => AddProductScreen(
-                  initialName: item.description, // Pre-fill with CSV description
+                  initialName: item.description,
                 ),
               ),
             );
@@ -369,7 +583,6 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               matchedBy = 'new_product';
               print('    ✅ New product created: "$productName"');
 
-              // Save mapping if PLU exists
               if (supplierID != null && item.plu.isNotEmpty) {
                 final correctPlu = await _findPluForProduct(newProduct);
                 if (correctPlu != null) {
@@ -386,38 +599,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 }
               }
             }
-          } else if (action == 'search_again') {
-            print('    🔍 User chose to search again');
-            // Show full product browser
-            final selectedProduct = await _showFullProductBrowser(
-              context,
-              item.description,
-            );
-
-            if (selectedProduct != null) {
-              productName = selectedProduct['Inventory Product Name']?.toString();
-              barcode = selectedProduct['Barcode']?.toString();
-              matchedBy = 'manual_browser';
-              print('    ✅ Selected from browser: "$productName"');
-
-              // Save mapping if PLU exists
-              if (supplierID != null && item.plu.isNotEmpty) {
-                final correctPlu = await _findPluForProduct(selectedProduct);
-                if (correctPlu != null) {
-                  final mapping = PluMapping(
-                    csvPlu: item.plu,
-                    csvDescription: item.description,
-                    correctPlu: correctPlu,
-                    productName: productName!,
-                    supplierId: supplierID,
-                    createdAt: DateTime.now(),
-                  );
-                  await storage.savePluMapping(mapping);
-                }
-              }
-            }
           } else {
-            print('    ⏭️ User chose to skip');
+            print('    ⏭️ User chose to skip or dismissed');
           }
         }
       }
@@ -459,7 +642,6 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       String description,
       Map<String, Map<String, dynamic>> productByName, {
         double threshold = 0.3,
-        int maxResults = 5,
       }) {
 
     String normalize(String s) {
@@ -548,10 +730,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     // Sort by score descending
     scored.sort((a, b) => b.value.compareTo(a.value));
 
-    return scored.take(maxResults).map((e) => e.key).toList();
+    return scored.map((e) => e.key).toList();
   }
-
-  // Add this method near the other helper methods (around line 200)
   bool _fuzzyMatch(String a, String b) {
     final aNorm = a.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
     final bNorm = b.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
@@ -696,109 +876,239 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       String searchTerm,
       List<Map<String, dynamic>> matches,
       ) async {
+    final TextEditingController searchController = TextEditingController();
+    List<Map<String, dynamic>> filtered = List.from(matches);
+
     return showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Select Product for "$searchTerm"'),
-        content: Container(
-          width: double.maxFinite,
-          constraints: const BoxConstraints(maxHeight: 400),
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: matches.length,
-            itemBuilder: (context, index) {
-              final product = matches[index];
-              return Card(
-                margin: const EdgeInsets.symmetric(vertical: 4),
-                child: ListTile(
-                  title: Text(product['Inventory Product Name'] ?? 'Unknown'),
-                  subtitle: Text('Category: ${product['Category'] ?? 'N/A'}'),
-                  onTap: () => Navigator.pop(context, product),
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Match: "$searchTerm"',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                 ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Skip'),
-          ),
-        ],
+                const SizedBox(height: 8),
+                TextField(
+                  controller: searchController,
+                  autofocus: false,
+                  decoration: const InputDecoration(
+                    hintText: 'Filter results...',
+                    prefixIcon: Icon(Icons.search, size: 18),
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                  ),
+                  onChanged: (val) {
+                    setDialogState(() {
+                      filtered = val.isEmpty
+                          ? List.from(matches)
+                          : matches.where((p) {
+                        final name = p['Inventory Product Name']
+                            ?.toString()
+                            .toLowerCase() ??
+                            '';
+                        return name.contains(val.toLowerCase());
+                      }).toList();
+                    });
+                  },
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${filtered.length} of ${matches.length} results',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 400,
+              child: filtered.isEmpty
+                  ? const Center(child: Text('No results match your filter'))
+                  : ListView.builder(
+                shrinkWrap: true,
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final product = filtered[index];
+                  return Card(
+                    margin: const EdgeInsets.symmetric(vertical: 3),
+                    child: ListTile(
+                      dense: true,
+                      title: Text(
+                        product['Inventory Product Name'] ?? 'Unknown',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        'Category: ${product['Category'] ?? 'N/A'}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      onTap: () => Navigator.pop(context, product),
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              // Skip this item entirely — leaves it unlinked
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: const Text('Skip'),
+              ),
+              // None of the fuzzy suggestions are right — open the full browser
+              OutlinedButton.icon(
+                icon: const Icon(Icons.search, size: 16),
+                label: const Text('Browse All'),
+                onPressed: () => Navigator.pop(context, const {'__browse_all__': true}),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
+  // REPLACE the existing _showFullProductBrowser:
   Future<Map<String, dynamic>?> _showFullProductBrowser(
       BuildContext context,
       String searchTerm,
       ) async {
     final storage = context.read<OfflineStorage>();
     final allInventory = await storage.getAllInventory();
-
-    // Filter by search term
-    final filtered = allInventory.where((p) {
+    final TextEditingController searchController =
+    TextEditingController(text: searchTerm);
+    List<Map<String, dynamic>> filtered = allInventory.where((p) {
       final name = p['Inventory Product Name']?.toString().toLowerCase() ?? '';
       return name.contains(searchTerm.toLowerCase());
     }).toList();
 
     return showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Search Products: "$searchTerm"'),
-        content: Container(
-          width: double.maxFinite,
-          height: 400,
-          child: filtered.isEmpty
-              ? const Center(child: Text('No products found'))
-              : ListView.builder(
-            itemCount: filtered.length,
-            itemBuilder: (context, index) {
-              final product = filtered[index];
-              return Card(
-                margin: const EdgeInsets.symmetric(vertical: 4),
-                child: ListTile(
-                  title: Text(product['Inventory Product Name'] ?? 'Unknown'),
-                  subtitle: Text('Barcode: ${product['Barcode'] ?? 'N/A'}'),
-                  onTap: () => Navigator.pop(context, product),
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Search inventory for: "$searchTerm"',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.bold),
                 ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Cancel'),
-          ),
-        ],
+                const SizedBox(height: 8),
+                TextField(
+                  controller: searchController,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'Type to search all products...',
+                    prefixIcon: Icon(Icons.search, size: 18),
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    contentPadding:
+                    EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                  ),
+                  onChanged: (val) {
+                    setDialogState(() {
+                      filtered = val.isEmpty
+                          ? allInventory
+                          : allInventory.where((p) {
+                        final name =
+                            p['Inventory Product Name']
+                                ?.toString()
+                                .toLowerCase() ??
+                                '';
+                        return name.contains(val.toLowerCase());
+                      }).toList();
+                    });
+                  },
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${filtered.length} products',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 400,
+              child: filtered.isEmpty
+                  ? const Center(
+                  child: Text('No products found — try a different search'))
+                  : ListView.builder(
+                shrinkWrap: true,
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final product = filtered[index];
+                  return Card(
+                    margin: const EdgeInsets.symmetric(vertical: 3),
+                    child: ListTile(
+                      dense: true,
+                      title: Text(
+                        product['Inventory Product Name'] ?? 'Unknown',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        'Category: ${product['Category'] ?? 'N/A'}  |  Barcode: ${product['Barcode'] ?? 'N/A'}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      onTap: () => Navigator.pop(context, product),
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: const Text('Cancel'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
   Future<String?> _showNoMatchDialog(BuildContext context, String description) async {
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('No matches for "$description"'),
-        content: const Text('What would you like to do?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'skip'),
-            child: const Text('Skip'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'search_again'),
-            child: const Text('Search Again'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, 'add_new'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: const Text('Add New Product'),
-          ),
-        ],
-      ),
-    );
+    // Skip the intermediate dialog — go straight to the full browser
+    // so the user can immediately search the entire inventory.
+    // Returns 'skip', 'add_new', or null (user dismissed).
+    final selectedProduct = await _showFullProductBrowser(context, description);
+
+    if (selectedProduct == null) {
+      // User closed the browser — ask skip or add new
+      return showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Still no match for "$description"'),
+          content: const Text('What would you like to do?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'skip'),
+              child: const Text('Skip'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 'add_new'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text('Add New Product'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // User picked a product from the browser — handle it inline
+    // by returning a sentinel so the caller knows a product was chosen
+    // We store the selection in a temporary field and signal via sentinel
+    _noMatchBrowserSelection = selectedProduct;
+    return 'browser_selected';
   }
 
   Future<bool> _showSaveMappingDialog(
@@ -888,6 +1198,204 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // TODO: Add helper methods for building UI components
   // Example: _buildHeaderCard(), _buildEmptyState(), _buildItemList()
 
+  //=========================================================================
+  // UNLINKED ITEM RESOLUTION
+  //=========================================================================
+
+  /// Shows a dialog listing each unlinked item with three actions:
+  ///   • Link   — opens the full inventory browser so the user can map it
+  ///   • Skip   — removes the item from the list (won't be saved)
+  ///   • Save as-is — marks the item with description only (no inventory link)
+  ///
+  /// Returns [true] when the user has dealt with every item and is ready to
+  /// proceed with saving, or [false] if they cancel the whole dialog.
+  Future<bool> _resolveUnlinkedItems(List<GrvLineItemDisplay> unmapped) async {
+    // Work on a snapshot so we can track which items still need action.
+    final pending = List<GrvLineItemDisplay>.from(unmapped);
+
+    for (final item in pending) {
+      if (!_isMounted()) return false;
+
+      // Ask the user what to do with this specific item.
+      final action = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Unlinked Item'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This item is not linked to inventory:',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.warning_amber, size: 16, color: Colors.orange),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      item.description,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'What would you like to do?',
+                style: TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+          actions: [
+            // Cancel the whole save operation
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            // Remove this item from the GRV entirely
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'skip'),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Remove'),
+            ),
+            // Save with description only — no inventory linkage
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, 'save_as_is'),
+              child: const Text('Save as-is'),
+            ),
+            // Open full product browser to link it now
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, 'link'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+              child: const Text('Link'),
+            ),
+          ],
+        ),
+      );
+
+      if (action == null || action == 'cancel') return false;
+
+      if (action == 'skip') {
+        // Remove item from the live list
+        if (_isMounted()) {
+          setState(() {
+            _items.remove(item);
+            _calculateTotal();
+          });
+        }
+        continue;
+      }
+
+      if (action == 'save_as_is') {
+        // Stamp the item so isMatched returns true with description-only data.
+        // We use the description as a stand-in productName and a sentinel
+        // barcode so the save loop won't filter it out.
+        if (_isMounted()) {
+          setState(() {
+            final idx = _items.indexOf(item);
+            if (idx != -1) {
+              _items[idx]
+                ..productName = item.description
+                ..barcode = 'UNLINKED_${DateTime.now().millisecondsSinceEpoch}'
+                ..matchedBy = 'save_as_is';
+            }
+          });
+        }
+        continue;
+      }
+
+      if (action == 'link') {
+        // Open the full inventory browser inline.
+        final selectedProduct = await _showFullProductBrowser(context, item.description);
+
+        if (selectedProduct != null && _isMounted()) {
+          final productName = selectedProduct['Inventory Product Name']?.toString();
+          final barcode = selectedProduct['Barcode']?.toString();
+
+          // Try to look up the supplierBottleID from MasterCosts
+          String? supplierBottleID;
+          try {
+            final storage = context.read<OfflineStorage>();
+            final allSuppliers = await storage.getMasterSuppliers();
+            final supplierID = _findSupplierId(allSuppliers);
+            if (supplierID != null && productName != null) {
+              final allMasterCosts = await storage.getMasterCosts();
+              final costKey = '$supplierID|${productName.toLowerCase().trim()}';
+              final costMatch = allMasterCosts.firstWhere(
+                    (c) =>
+                '${ c['supplierID']}|${c['Product Name']?.toString().toLowerCase().trim()}' == costKey,
+                orElse: () => <String, dynamic>{},
+              );
+              if (costMatch.isNotEmpty) {
+                supplierBottleID = costMatch['supplierBottleID']?.toString();
+              }
+            }
+          } catch (_) {}
+
+          setState(() {
+            final idx = _items.indexOf(item);
+            if (idx != -1) {
+              _items[idx]
+                ..productName = productName
+                ..barcode = barcode
+                ..supplierBottleID = supplierBottleID
+                ..matchedBy = 'manual_browser';
+            }
+          });
+
+          // Offer to save the PLU mapping for next time
+          try {
+            final storage = context.read<OfflineStorage>();
+            final allSuppliers = await storage.getMasterSuppliers();
+            final supplierID = _findSupplierId(allSuppliers);
+            if (supplierID != null && (item.plu?.isNotEmpty ?? false) && productName != null) {
+              final shouldSave = await _showSaveMappingDialog(
+                context,
+                item.toParsedLineItem(),
+                supplierID,
+                selectedProduct,
+              );
+              if (shouldSave) {
+                final correctPlu = await _findPluForProduct(selectedProduct);
+                if (correctPlu != null) {
+                  final mapping = PluMapping(
+                    csvPlu: item.plu!,
+                    csvDescription: item.description,
+                    correctPlu: correctPlu,
+                    productName: productName,
+                    supplierId: supplierID,
+                    createdAt: DateTime.now(),
+                  );
+                  await storage.savePluMapping(mapping);
+                  print('    💾 [MAPPING SAVED from resolution] ${item.plu} -> $correctPlu');
+                }
+              }
+            }
+          } catch (e) {
+            print('⚠️ Could not save mapping during resolution: $e');
+          }
+        } else {
+          // User dismissed the browser without selecting — ask again next loop
+          // by re-inserting the item at the front of pending. Instead, we just
+          // leave it unmatched and the outer save loop will silently skip it
+          // (it won't pass the isMatched filter).  Show a snackbar so the user
+          // knows it will be excluded.
+          _safeShowSnackBar(
+            '⚠️ "${item.description}" skipped — no product selected',
+            backgroundColor: Colors.orange,
+          );
+        }
+        continue;
+      }
+    }
+
+    return true; // All items processed — proceed with save
+  }
+
   Widget _buildSaveButton() {
     if (_isLoading) {
       return FloatingActionButton(
@@ -913,7 +1421,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // TODO: Add helper methods to break down the matching logic
   // Example: _buildLookupMaps(), _processBatch(), _findBestMatch(), _lookupCost()
 
-  Future<void> _autoMatchPluItems(List<ParsedGrvLineItem> items) async {
+  Future<void> _autoMatchPluItems(
+      List<ParsedGrvLineItem> items, {
+        String? invoiceId,
+      }) async {
     print('DEBUG: _autoMatchPluItems() called with ${items.length} items');
     if (!_isMounted()) return;
     setState(() => _isMatching = true);
@@ -932,30 +1443,28 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       final costsBySupplierAndProduct = lookups['costsBySupplierAndProduct'] as Map<String, Map<String, dynamic>>;
       final allSuppliers = lookups['allSuppliers'] as List<Map<String, dynamic>>;
 
-      const batchSize = 5;
-      for (var i = 0; i < items.length; i += batchSize) {
+      // Use the provided invoice ID or fallback to widget
+      final effectiveInvoiceId = invoiceId ?? widget.invoiceDetailsID;
+      print('📌 Using invoice ID: $effectiveInvoiceId');
+
+      for (var i = 0; i < items.length; i++) {
         if (!_isMounted()) return;
 
-        final batch = items.skip(i).take(batchSize).toList();
-        print('  🔄 Processing batch ${i ~/ batchSize + 1}/${(items.length / batchSize).ceil()}');
+        print('  🔄 Processing item ${i + 1}/${items.length}: "${items[i].description}"');
 
-        final batchResults = await Future.wait(
-          batch.map((item) => _matchSingleItem(
-            item,
-            productByPlu,
-            productByName,
-            costsBySupplierAndProduct,
-            allSuppliers,
-          )),
+        final result = await _matchSingleItem(
+          items[i],
+          productByPlu,
+          productByName,
+          costsBySupplierAndProduct,
+          allSuppliers,
         );
 
-        matchedItems.addAll(batchResults);
-        matchedCount += batchResults.where((item) => item.isMatched).length;
+        matchedItems.add(result);
+        if (result.isMatched) matchedCount++;
 
-        // Optional: Update UI for really large batches
-        if (items.length > 50 && _isMounted()) {
-          setState(() {});
-        }
+        // Update UI after each item so user sees progress
+        if (_isMounted()) setState(() {});
       }
     } catch (e) {
       print('❌ Error during matching: $e');
@@ -963,8 +1472,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     if (!_isMounted()) return;
 
-    // 2. 🔴 CRITICAL FIX: Ensure this number matches the one in _showProgressDialogForLargeFile
-    // If it opened for > 20, it must close for > 20.
+    // 2. Close progress dialog if it was opened
     if (items.length > 20) {
       Navigator.pop(context);
     }
@@ -985,6 +1493,14 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     }
   }
 
+  /// Generate an 8-character ID for new invoices
+  String _generateInvoiceId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final rnd = math.Random();
+    return String.fromCharCodes(Iterable.generate(
+        8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+  }
+
   //=========================================================================
   // CORE BUSINESS LOGIC - SAVE OPERATIONS
   //=========================================================================
@@ -994,6 +1510,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   Future<void> _saveAllItems() async {
     print('DEBUG: _saveAllItems() called');
     print('  - Total items to save: ${_items.length}');
+    print('  - Current invoice ID: ${_currentInvoiceId ?? widget.invoiceDetailsID}');
+    print('  - GRV Reference: ${widget.grvReference}');  // 🔥 DEBUG
 
     if (!_isMounted()) return;
 
@@ -1003,27 +1521,17 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       return;
     }
 
-    final unmappedCount = _items.where((i) => !i.isMatched).length;
-    print('DEBUG: Unmapped items: $unmappedCount');
+    // Check for unmatched items and let the user resolve them before saving:
+    final unmappedItems = _items.where((i) => !i.isMatched).toList();
+    print('DEBUG: Unmapped items: ${unmappedItems.length}');
 
-    if (unmappedCount > 0) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Unmapped Items'),
-          content: Text('$unmappedCount item(s) not linked to inventory.\n\nSave mapped items only?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save Mapped Items'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            ),
-          ],
-        ),
-      );
-      if (confirm != true) {
-        print('DEBUG: Save operation cancelled by user');
+    if (unmappedItems.isNotEmpty) {
+      final resolved = await _resolveUnlinkedItems(unmappedItems);
+      if (!resolved) {
+        return;
+      }
+      if (_items.isEmpty) {
+        _safeShowSnackBar('⚠️ No items left to save', backgroundColor: Colors.orange);
         return;
       }
     }
@@ -1033,100 +1541,144 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     try {
       final storage = context.read<OfflineStorage>();
-      final invoice = await storage.getInvoiceDetails(widget.invoiceDetailsID);
+
+      // Use the correct invoice ID
+      final effectiveInvoiceId = _currentInvoiceId ?? widget.invoiceDetailsID;
+      print('🔍 Using invoice ID: $effectiveInvoiceId');
+
+      var invoice = await storage.getInvoiceDetails(effectiveInvoiceId);
 
       if (invoice == null) {
-        print('ERROR: Invoice details not found for ID: ${widget.invoiceDetailsID}');
-        throw Exception('Invoice details not found');
+        print('ERROR: Invoice details not found for ID: $effectiveInvoiceId');
+
+        // Try to create the invoice if it doesn't exist
+        final supplierId = await _getSupplierId();
+        final invoiceData = {
+          'invoiceDetailsID': effectiveInvoiceId,
+          'Invoice Number': _extractInvoiceNumber(),
+          'GRV Reference': widget.grvReference,  // 🔥 ADD GRV TO INVOICE
+          'supplierID': supplierId,
+          'Supplier Name': widget.supplierName,
+          'Date of Purchase': widget.deliveryDate.toIso8601String(),
+          'Delivery Date': widget.deliveryDate.toIso8601String(),
+          'Total Cost Ex Vat': 0.0,
+          'syncStatus': 'pending',
+        };
+        await storage.saveInvoiceDetails(invoiceData);
+        invoice = await storage.getInvoiceDetails(effectiveInvoiceId);
+
+        if (invoice == null) {
+          throw Exception('Invoice details not found for ID: $effectiveInvoiceId');
+        }
       }
 
       print('DEBUG: Found invoice: ${invoice['Invoice Number']}');
-      print('DEBUG: Saving ${_items.length} items...');
 
-      int savedCount = 0;
-      const batchSize = 20;
+      // 🔥🔥🔥 GRV DIAGNOSTIC 🔥🔥🔥
+      print('🔥🔥🔥 GRV DIAGNOSTIC 🔥🔥🔥');
+      print('  widget.grvReference = "${widget.grvReference}"');
+      print('  widget.grvReference.isEmpty = ${widget.grvReference.isEmpty}');
+      print('  effectiveInvoiceId = "$effectiveInvoiceId"');
+      print('  invoice?["GRV Reference"] = "${invoice['GRV Reference']}"');
 
-      for (var i = 0; i < _items.length; i += batchSize) {
-        if (!_isMounted()) return;
-
-        final batch = _items.skip(i).take(batchSize).where((item) =>
-        item.isMatched).toList();
-        print('DEBUG: Processing batch ${i ~/ batchSize + 1} with ${batch
-            .length} items');
-
-        int batchItemCounter = 0;
-        for (var item in batch) {
-          if (!_isMounted()) return;
-
-          print('DEBUG: Saving item - Product: ${item
-              .productName}, Quantity: ${item.quantityCases}, Price: ${item
-              .pricePerUnit}');
-
-          // Get product details using cached helper method
-          Map<String, dynamic>? productDetails;
-          if (item.productName != null) {
-            productDetails = await _getProductDetailsByName(item.productName!);
-          }
-
-          // 🔴 STABLE ID GENERATION
-          // Use invoice ID + product identifier to create a stable, repeatable ID
-          final String productKey = item.plu ??
-              item.barcode ??
-              item.productName?.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '') ??
-              'item_$batchItemCounter';
-
-          final String purchaseId = 'purchase_${widget
-              .invoiceDetailsID}_$productKey';
-
-          final purchase = {
-            'purchases_ID': purchaseId,
-            // Stable ID that won't change between syncs
-            'invoiceDetailsID': widget.invoiceDetailsID,
-            'supplierID': invoice['supplierID'] ?? '',
-            'Supplier': widget.supplierName,
-            'Barcode': item.barcode ?? productDetails?['Barcode'] ?? '',
-            'Purchased Product Name': item.productName!,
-            'supplierBottleID': item.supplierBottleID ?? '',
-            'purSupplierBottleID': item.supplierBottleID ?? '',
-            'plu': item.plu ?? '',
-            'Main Category': productDetails?['Main Category'] ?? '',
-            'Category': productDetails?['Category'] ?? '',
-            'Single Unit Volume': productDetails?['Single Unit Volume'] ?? 0,
-            'UoM': productDetails?['UoM'] ?? '',
-            'Cost Per Bottle': item.pricePerUnit,
-            'Stock Delivery Date': widget.deliveryDate.toIso8601String(),
-            'Case/Pack Size': 'Case ${item.unitsPerCase}',
-            'Qty Purchased': item.quantityCases.toDouble(),
-            'Purchases Bottles': item.totalUnits.toDouble(),
-            'Purchase Units': 0,
-            'Cost of Purchases': item.totalValue,
-            'syncStatus': 'pending',
-          };
-
-          await storage.savePurchase(purchase);
-          savedCount++;
-          batchItemCounter++;
-
-          print('DEBUG: Purchase saved - ID: ${purchase['purchases_ID']}');
-          print('DEBUG:   supplierBottleID: ${purchase['supplierBottleID']}');
-          if (productDetails != null) {
-            print(
-                'DEBUG:   Category: ${productDetails['Category']}, Volume: ${productDetails['Single Unit Volume']}');
-          }
-        }
-
-        if (i + batchSize < _items.length) {
-          await Future.delayed(const Duration(milliseconds: 50));
+      // 🔥 FALLBACK: If widget.grvReference is empty, try to get it from invoice
+      String grvToUse = widget.grvReference;
+      if (grvToUse.isEmpty) {
+        grvToUse = invoice['GRV Reference']?.toString() ?? '';
+        if (grvToUse.isNotEmpty) {
+          print('✅ Using GRV from invoice: "$grvToUse"');
+        } else {
+          print('⚠️ WARNING: No GRV found anywhere! Purchases will be created without GRV.');
         }
       }
 
-      await storage.saveInvoiceDetails({...invoice, 'Total Cost Ex Vat': _totalValue});
+      print('DEBUG: Saving ${_items.length} items...');
+
+      // BUILD PURCHASE LIST FOR MERGE
+      final purchasesToSave = <Map<String, dynamic>>[];
+      int lineIndex = 0;
+
+      final matchedItems = _items.where((item) => item.isMatched).toList();
+      print('DEBUG: Processing ${matchedItems.length} matched items');
+
+      for (var item in matchedItems) {
+        if (!_isMounted()) return;
+
+        print('DEBUG: Saving item - Product: ${item.productName}, Quantity: ${item.quantityCases}, Price: ${item.pricePerUnit}');
+
+        Map<String, dynamic>? productDetails;
+        if (item.productName != null) {
+          productDetails = await _getProductDetailsByName(item.productName!);
+        }
+
+        final String productKey = item.plu?.isNotEmpty == true
+            ? item.plu!
+            : (item.barcode?.isNotEmpty == true ? item.barcode! : 'unknown');
+
+        // 🔥 DEBUG: Check what grvToUse actually contains
+        print('🔥🔥🔥 CRITICAL CHECK: grvToUse = "$grvToUse"');
+        print('🔥🔥🔥 grvToUse.isEmpty = ${grvToUse.isEmpty}');
+
+        if (grvToUse.isEmpty) {
+          // 🔥 Force a value
+          grvToUse = 'NOGRV';
+          print('⚠️ Forcing grvToUse to "$grvToUse"');
+        }
+
+        final String purchaseId = 'purchase_${effectiveInvoiceId}_${grvToUse}_${productKey}_line$lineIndex';
+        print('🔥 FINAL purchaseId: "$purchaseId"');
+
+        final purchase = {
+          'purchases_ID': purchaseId,
+          'invoiceDetailsID': effectiveInvoiceId,
+          'GRV Reference': grvToUse,  // 🔥 CRITICAL: Include GRV using grvToUse
+          'Invoice Nr.': invoice['Invoice Number']?.toString() ?? '',
+          'Inv. Date of Purchase': invoice['Date of Purchase']?.toString() ?? widget.deliveryDate.toIso8601String(),
+          'supplierID': invoice['supplierID'] ?? '',
+          'Supplier': widget.supplierName,
+          'Barcode': item.barcode ?? productDetails?['Barcode'] ?? '',
+          'Purchased Product Name': item.productName!,
+          'supplierBottleID': item.supplierBottleID ?? '',
+          'purSupplierBottleID': item.supplierBottleID ?? '',
+          'plu': item.plu ?? '',
+          'Main Category': productDetails?['Main Category'] ?? '',
+          'Category': productDetails?['Category'] ?? '',
+          'Single Unit Volume': productDetails?['Single Unit Volume'] ?? 0,
+          'UoM': productDetails?['UoM'] ?? '',
+          'Cost Per Bottle': item.pricePerUnit,
+          'Stock Delivery Date': widget.deliveryDate.toIso8601String(),
+          'Case/Pack Size': 'Case ${item.unitsPerCase}',
+          'Qty Purchased': item.quantityCases.toDouble(),
+          'Purchases Bottles': item.totalUnits.toDouble(),
+          'Purchase Units': 0,
+          'Cost of Purchases': item.totalValue,
+          'syncStatus': 'pending',
+        };
+
+        purchasesToSave.add(purchase);
+        lineIndex++;
+      }
+
+      // UPDATE INVOICE TOTAL
+      final updatedInvoiceData = {...invoice, 'Total Cost Ex Vat': _totalValue};
+      await storage.saveInvoiceDetails(updatedInvoiceData);
       print('DEBUG: Invoice total updated to: $_totalValue');
 
+      // SAVE PURCHASES
+      if (purchasesToSave.isNotEmpty) {
+        print('DEBUG: Using merge strategy to save ${purchasesToSave.length} purchases');
+        await storage.savePurchasesWithMerge(
+          invoiceId: effectiveInvoiceId,
+          newPurchases: purchasesToSave,
+        );
+      }
+
       if (_isMounted()) {
-        print('DEBUG: Save completed successfully - $savedCount items saved');
-        Navigator.pop(context, true);
-        _safeShowSnackBar('✓ Saved $savedCount items to Purchases');
+        print('DEBUG: Save completed successfully - ${purchasesToSave.length} items merged');
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context, true);
+        }
+        _safeShowSnackBar('✓ Saved ${purchasesToSave.length} items to Purchases');
       }
     } catch (e) {
       print('ERROR: Save operation failed: $e');
@@ -1134,6 +1686,28 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     } finally {
       if (_isMounted()) setState(() => _isLoading = false);
     }
+  }
+
+  /// Helper to get supplier ID
+  Future<String> _getSupplierId() async {
+    final storage = context.read<OfflineStorage>();
+    // 🔥 FIX: Use cached version
+    final suppliers = await storage.getMasterSuppliersCached();
+    final match = suppliers.firstWhere(
+          (s) => s['Supplier']?.toString() == widget.supplierName,
+      orElse: () => <String, dynamic>{},
+    );
+    return match['supplierID']?.toString() ?? '';
+  }
+
+  /// Helper to extract invoice number from items
+  String _extractInvoiceNumber() {
+    // Try to get from preloaded items
+    if (widget.preloadedItems != null && widget.preloadedItems!.isNotEmpty) {
+      // Use the first item's PLU or description as fallback
+      return 'GRV_${DateTime.now().millisecondsSinceEpoch}';
+    }
+    return 'GRV_${DateTime.now().millisecondsSinceEpoch}';
   }
 
   //=========================================================================
@@ -1151,6 +1725,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
           invoiceDetailsID: widget.invoiceDetailsID,
           supplierName: widget.supplierName,
           deliveryDate: widget.deliveryDate,
+          grvReference: widget.grvReference,
         ),
       ),
     );
@@ -1242,7 +1817,20 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
-      appBar: AppBar(title: const Text('GRV: Line Items')),
+      appBar: AppBar(
+        title: Text('GRV: ${widget.supplierName}'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Center(
+              child: Text(
+                widget.deliveryDate.toIso8601String().split('T')[0],
+                style: const TextStyle(fontSize: 13, color: Colors.white70),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -1299,44 +1887,16 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 children: [
                   Icon(Icons.inventory_2, size: 48, color: Colors.grey),
                   const SizedBox(height: 16),
-                  Text('No items added yet', style: TextStyle(color: Colors.grey)),
+                  Text('No items added yet',
+                      style: TextStyle(color: Colors.grey)),
                   const SizedBox(height: 8),
-                  Text('Tap ADD ITEM to start', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text('Tap ADD ITEM to start',
+                      style:
+                      TextStyle(color: Colors.grey, fontSize: 12)),
                 ],
               ),
             )
-                : ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _items.length,
-              itemBuilder: (context, index) {
-                final item = _items[index];
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: item.isMatched ? Colors.green.shade100 : Colors.red.shade100,
-                      child: Text(
-                        item.plu?.substring(0, math.min(2, item.plu?.length ?? 0)) ?? '?',
-                        style: TextStyle(
-                          color: item.isMatched ? Colors.green.shade900 : Colors.red.shade900,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    title: Text(item.description),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('${item.quantityCases} × ${item.unitsPerCase} @ R${item.pricePerUnit.toStringAsFixed(2)}/unit'),
-                        if (!item.isMatched) Text('⚠️ Unmatched', style: TextStyle(color: Colors.red)),
-                      ],
-                    ),
-                    trailing: Text('R${item.totalValue.toStringAsFixed(2)}', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                );
-              },
-            ),
+                : _buildItemsTable(),
 
             const SizedBox(height: 24),
           ],
@@ -1344,5 +1904,160 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       ),
       floatingActionButton: _buildSaveButton(),
     );
+  }
+  Widget _buildItemsTable() {
+    final isDesktop = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.macOS ||
+            defaultTargetPlatform == TargetPlatform.linux);
+
+    if (!isDesktop) {
+      // Mobile: keep original card/list style
+      return ListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _items.length,
+        itemBuilder: (context, index) {
+          final item = _items[index];
+          return Card(
+            margin: const EdgeInsets.only(bottom: 8),
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor:
+                item.isMatched ? Colors.green.shade100 : Colors.red.shade100,
+                child: Text(
+                  item.plu?.substring(0, math.min(2, item.plu?.length ?? 0)) ??
+                      '?',
+                  style: TextStyle(
+                    color: item.isMatched
+                        ? Colors.green.shade900
+                        : Colors.red.shade900,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              title: Text(item.description),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                      '${item.quantityCases} × ${item.unitsPerCase} @ R${item.pricePerUnit.toStringAsFixed(2)}/unit'),
+                  if (!item.isMatched)
+                    Text('⚠️ Unmatched',
+                        style: TextStyle(color: Colors.red)),
+                ],
+              ),
+              trailing: Text('R${item.totalValue.toStringAsFixed(2)}',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          );
+        },
+      );
+    }
+
+    // Desktop: full data table
+    return SizedBox(
+      height: math.max(200, _items.length * 52.0 + 56),
+      child: DataTable2(
+        columnSpacing: 12,
+        horizontalMargin: 12,
+        minWidth: 700,
+        headingRowColor: WidgetStateProperty.all(Colors.grey.shade100),
+        columns: const [
+          DataColumn2(label: Text('Status'), fixedWidth: 72),
+          DataColumn2(label: Text('PLU'), fixedWidth: 72),
+          DataColumn2(label: Text('Description'), size: ColumnSize.L),
+          DataColumn2(label: Text('Cases'), fixedWidth: 70, numeric: true),
+          DataColumn2(label: Text('Units'), fixedWidth: 70, numeric: true),
+          DataColumn2(label: Text('Price/Unit'), fixedWidth: 90, numeric: true),
+          DataColumn2(label: Text('Total'), fixedWidth: 100, numeric: true),
+          DataColumn2(label: Text(''), fixedWidth: 48),
+        ],
+        rows: List<DataRow>.generate(_items.length, (index) {
+          final item = _items[index];
+          return DataRow(
+            cells: [
+              // Status
+              DataCell(
+                Icon(
+                  item.isMatched ? Icons.check_circle : Icons.warning_amber,
+                  color: item.isMatched ? Colors.green : Colors.orange,
+                  size: 18,
+                ),
+              ),
+              // PLU
+              DataCell(Text(
+                item.plu ?? '—',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              )),
+              // Description
+              DataCell(Text(
+                item.description,
+                overflow: TextOverflow.ellipsis,
+              )),
+              // Cases
+              DataCell(Text(item.quantityCases.toString())),
+              // Units
+              DataCell(Text(item.unitsPerCase.toString())),
+              // Price per unit
+              DataCell(Text(
+                'R${item.pricePerUnit.toStringAsFixed(2)}',
+              )),
+              // Total
+              DataCell(Text(
+                'R${item.totalValue.toStringAsFixed(2)}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              )),
+              // Edit/delete actions
+              DataCell(
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert, size: 18),
+                  onSelected: (value) {
+                    if (value == 'edit') {
+                      _editItem(index);
+                    } else if (value == 'delete') {
+                      setState(() {
+                        _items.removeAt(index);
+                        _calculateTotal();
+                      });
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'edit', child: Text('Edit')),
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Text('Delete',
+                          style: TextStyle(color: Colors.red)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  void _editItem(int index) async {
+    final item = _items[index];
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GrvAddLineItemScreen(
+          invoiceDetailsID: widget.invoiceDetailsID,
+          supplierName: widget.supplierName,
+          deliveryDate: widget.deliveryDate,
+          initialItem: item, grvReference: '',
+        ),
+      ),
+    );
+
+    if (result is GrvLineItemDisplay) {
+      setState(() {
+        _items[index] = result;
+        _calculateTotal();
+      });
+    }
   }
 }

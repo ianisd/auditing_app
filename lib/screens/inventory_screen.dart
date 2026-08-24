@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/store_manager.dart';
+import '../services/network_ping_service.dart'; // ✅ ADDED: Import for connection check
 import '../widgets/inventory_list.dart';
-import 'product_detail_screen.dart'; // 1. IMPORT THE DETAIL SCREEN
+import 'product_detail_screen.dart';
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -49,8 +50,59 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
+  // ✅ NEW: Helper method to warn users about weak connections
+  Future<bool> _checkWeakConnection() async {
+    final pingService = context.read<NetworkPingService>();
+
+    // If connection is Strong or Average, proceed immediately
+    if (pingService.connectionQuality != 'Weak') {
+      return true;
+    }
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+        title: const Text('Poor Connection Detected'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Latency: ${pingService.latencyMs} ms'),
+            Text('Quality: ${pingService.connectionQuality}',
+                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            const Text(
+              'Sync operations may fail or take several minutes. Consider:\n'
+                  '• Switching to mobile data\n'
+                  '• Moving closer to your Wi-Fi router\n'
+                  '• Waiting for a better connection',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Continue Anyway'),
+          ),
+        ],
+      ),
+    );
+
+    return proceed ?? false;
+  }
+
   // --- SYNC ACTION ---
   Future<void> _syncInventory() async {
+    // ✅ ADDED: Check connection quality before syncing
+    final shouldProceed = await _checkWeakConnection();
+    if (!shouldProceed) return; // User cancelled due to weak connection
+
     setState(() => _isSyncing = true);
 
     try {
@@ -160,7 +212,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
         )
             : InventoryList(
           items: _filteredInventory,
-          // 2. ADD NAVIGATION ON TAP
           onTap: (item) {
             Navigator.push(
               context,

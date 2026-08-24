@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/sync_service.dart';
 import '../services/store_manager.dart';
 import 'count_screen.dart';
 import 'package:intl/intl.dart';
@@ -21,7 +20,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
 
   // --- FILTER STATE ---
   String _filterMode = 'All'; // 'All', 'Today', 'Custom'
-  Set<String> _customSelectedDates = {};
+  final Set<String> _customSelectedDates = {};
   String? _selectedLocationFilter; // THIS WAS MISSING
 
   Map<String, Map<String, List<Map<String, dynamic>>>> _groupedCounts = {};
@@ -184,8 +183,11 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                       value: isSelected,
                       onChanged: (bool? value) {
                         setDialogState(() {
-                          if (value == true) _customSelectedDates.add(dateKey);
-                          else _customSelectedDates.remove(dateKey);
+                          if (value == true) {
+                            _customSelectedDates.add(dateKey);
+                          } else {
+                            _customSelectedDates.remove(dateKey);
+                          }
                         });
                       },
                     );
@@ -409,7 +411,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Text('${(double.tryParse(item['total_bottles']?.toString() ?? '0') ?? 0).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              Text((double.tryParse(item['total_bottles']?.toString() ?? '0') ?? 0).toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.bold)),
                               if (item['syncStatus'] == 'pending') const Icon(Icons.cloud_upload, size: 12, color: Colors.orange)
                               else const Icon(Icons.check_circle, size: 12, color: Colors.green),
                             ],

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/logger_service.dart';
 import '../models/plu_mapping.dart';
 
 class PluMappingScreen extends StatefulWidget {

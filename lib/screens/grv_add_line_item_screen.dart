@@ -1,18 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../models/grv_models.dart';
+import 'add_product_screen.dart';
+import '../services/store_manager.dart';
 
 class GrvAddLineItemScreen extends StatefulWidget {
   final String invoiceDetailsID;
   final String supplierName;
   final DateTime deliveryDate;
+  final String grvReference;  // 🔥 ADD THIS
+  final GrvLineItemDisplay? initialItem;
 
   const GrvAddLineItemScreen({
     super.key,
     required this.invoiceDetailsID,
     required this.supplierName,
     required this.deliveryDate,
+    required this.grvReference,  // 🔥 ADD THIS
+    this.initialItem,
   });
 
   @override
@@ -20,38 +27,74 @@ class GrvAddLineItemScreen extends StatefulWidget {
 }
 
 class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
-  final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _quantityController = TextEditingController(
-      text: '1');
-  final TextEditingController _unitsPerCaseController = TextEditingController(
-      text: '24');
-  final TextEditingController _priceController = TextEditingController(
-      text: '0.00');
+  late TextEditingController _descriptionController;
+  late TextEditingController _quantityController;
+  late TextEditingController _unitsPerCaseController;
+  late TextEditingController _priceController;
 
   List<Map<String, dynamic>> _productSuggestions = [];
   Map<String, dynamic>? _selectedProduct;
   bool _isLoadingProducts = false;
-  bool _isDisposed = false; // 🔴 FIX 1: Add _isDisposed flag
+  bool _isDisposed = false;
+  bool _isEditMode = false; // ADD THIS
 
-  bool _isMounted() => mounted && !_isDisposed;
+  final FocusNode _productFocusNode = FocusNode();
 
   // Track selected pack size and auto-lookup cost
   String? _selectedPackSize;
   double? _autoCalculatedPrice;
 
+  bool _isMounted() => mounted && !_isDisposed;
+
   @override
   void initState() {
     super.initState();
+
+    // Initialize controllers
+    _descriptionController = TextEditingController();
+    _quantityController = TextEditingController(text: '1');
+    _unitsPerCaseController = TextEditingController(text: '24');
+    _priceController = TextEditingController(text: '0.00');
+
+    // Check if we're in edit mode
+    _isEditMode = widget.initialItem != null;
+
+    if (_isEditMode) {
+      _populateWithExistingData();
+    }
+
     _loadProducts();
+  }
+
+  // ADD THIS: Populate form with existing item data
+  void _populateWithExistingData() {
+    final item = widget.initialItem!;
+
+    _descriptionController.text = item.description;
+    _quantityController.text = item.quantityCases.toString();
+    _unitsPerCaseController.text = item.unitsPerCase.toString();
+    _priceController.text = item.pricePerUnit.toStringAsFixed(2);
+
+    // Set selected pack size based on units per case
+    _selectedPackSize = 'Case ${item.unitsPerCase}';
+    _autoCalculatedPrice = item.pricePerUnit;
+
+    // Create a pseudo product for the selected item
+    _selectedProduct = {
+      'Inventory Product Name': item.productName ?? item.description,
+      'bottleID': item.plu,
+      'Barcode': item.barcode,
+    };
   }
 
   @override
   void dispose() {
-    _isDisposed = true; // 🔴 FIX 2: Set disposed flag
+    _isDisposed = true;
     _descriptionController.dispose();
     _quantityController.dispose();
     _unitsPerCaseController.dispose();
     _priceController.dispose();
+    _productFocusNode.dispose();
     super.dispose();
   }
 
@@ -80,12 +123,54 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     }
   }
 
+  // Open Add Product Screen
+  Future<void> _openManualAdd() async {
+    final storeName = context.read<StoreManager>().activeStore?['name'] ?? 'Unknown Store';
+
+    final newProduct = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AddProductScreen(
+          initialName: _descriptionController.text,
+        ),
+      ),
+    );
+
+    if (newProduct != null && newProduct is Map<String, dynamic>) {
+      setState(() => _isLoadingProducts = true);
+
+      try {
+        newProduct['storeName'] = storeName;
+        await context.read<OfflineStorage>().saveNewLocalProduct(newProduct);
+        await _loadProducts();
+        _onProductSelected(newProduct);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✓ Added ${newProduct['Inventory Product Name']} to inventory'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error saving product: $e'), backgroundColor: Colors.red),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoadingProducts = false);
+      }
+    }
+  }
+
   // Enhanced cost lookup with feedback
   Future<void> _lookupCostWithFeedback(String productName, String supplierName,
       String supplierId) async {
     try {
       final price = await _lookupCost(productName, supplierName, supplierId);
-      if (!_isMounted()) return; // 🔴 ADD THIS AFTER AWAIT
+      if (!_isMounted()) return;
 
       if (price != null) {
         setState(() {
@@ -93,7 +178,6 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
           _priceController.text = price.toStringAsFixed(2);
         });
       } else {
-        // Show user that lookup failed
         if (_isMounted()) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -104,7 +188,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
         }
       }
     } catch (e) {
-      if (!_isMounted()) return; // 🔴 ADD THIS
+      if (!_isMounted()) return;
       print('Cost lookup error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -115,90 +199,36 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     }
   }
 
-  List<Map<String, dynamic>> _filterSuggestions(String query) {
-    if (query.isEmpty) return _productSuggestions.take(10).toList();
-    final q = query.toLowerCase();
-    return _productSuggestions.where((item) =>
-    (item['Inventory Product Name']?.toString()?.toLowerCase() ?? '').contains(
-        q) ||
-        (item['Barcode']?.toString()?.toLowerCase() ?? '').contains(q) ||
-        (item['bottleID']?.toString()?.toLowerCase() ?? '').contains(q)
-    ).take(10).toList();
-  }
-
   // Determine pack sizes based on category
   List<String> _getPackSizesForCategory(String? category) {
-    if (category == null)
+    if (category == null) {
       return ['Case 1', 'Case 6', 'Case 12', 'Case 24', 'Case 36', 'Case 48'];
+    }
 
     final cat = category.toLowerCase();
 
     // DRINKS GROUP
     if ([
-      'beer',
-      'cider',
-      'coolers',
-      'champagne',
-      'white wine',
-      'sparkling wine',
-      'rose',
-      'red wine',
-      'sparkling white wine',
-      'champagne xl',
-      'soft drinks',
-      'still water',
-      'sparkling water',
-      'whiskey',
-      'vodka',
-      'tequila',
-      'liqueurs',
-      'gin',
-      'aperatif',
-      'cognac',
-      'bourbon',
-      'rum',
-      'brandy',
-      'cordials',
-      'schnapps',
-      'coolers',
-      'cider',
-      'beer',
-      'coolers'
+      'beer', 'cider', 'coolers', 'champagne', 'white wine', 'sparkling wine',
+      'rose', 'red wine', 'sparkling white wine', 'champagne xl',
+      'soft drinks', 'still water', 'sparkling water',
+      'whiskey', 'vodka', 'tequila', 'liqueurs', 'gin', 'aperatif',
+      'cognac', 'bourbon', 'rum', 'brandy', 'cordials', 'schnapps'
     ].contains(cat)) {
       return [
-        'Case 1',
-        'Case 2',
-        'Case 4',
-        'Case 6',
-        'Case 12',
-        'Case 24',
-        'Case 36',
-        'Case 48'
+        'Case 1', 'Case 2', 'Case 4', 'Case 6', 'Case 12', 'Case 24',
+        'Case 36', 'Case 48'
       ];
     }
 
     // FOOD GROUP
     if ([
-      'meat',
-      'poultry',
-      'seafood',
-      'dairy',
-      'vegetables',
-      'fruit',
-      'dry goods',
-      'spices',
-      'bakery',
-      'prepared food',
-      'consumables'
+      'meat', 'poultry', 'seafood', 'dairy', 'vegetables', 'fruit',
+      'dry goods', 'spices', 'bakery', 'prepared food', 'consumables'
     ].contains(cat)) {
       return [
-        'Single',
-        'Pack 10',
-        'Pack 20',
-        'Keg 1',
-        '5 Ltr Cartons',
-        '10 Ltr Cartons',
-        'Each'
+        'Single', 'Pack 10', 'Pack 20', 'Keg 1', '5 Ltr Cartons',
+        '10 Ltr Cartons', 'Each'
       ];
     }
 
@@ -220,8 +250,6 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     return 1;
   }
 
-  // 🔴 FIX 4: Fix cost lookup to properly get supplier ID
-  // In grv_add_line_item_screen.dart
   Future<double?> _lookupCost(String productName, String supplierName,
       String supplierId) async {
     print('🔍 ===== COST LOOKUP START =====');
@@ -232,136 +260,83 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     try {
       final storage = context.read<OfflineStorage>();
 
-      // Check if suppliers exist
       final allSuppliers = await storage.getMasterSuppliers();
-      print('  📊 Total suppliers in DB: ${allSuppliers.length}');
-
-      // Check if this supplier exists
       final supplierMatch = allSuppliers.firstWhere(
-            (s) =>
-        s['Supplier']?.toString().toLowerCase().trim() ==
+            (s) => s['Supplier']?.toString().toLowerCase().trim() ==
             supplierName.toLowerCase().trim(),
         orElse: () => <String, dynamic>{},
       );
-      print('  🔎 Supplier exists in DB: ${supplierMatch.isNotEmpty}');
-      if (supplierMatch.isNotEmpty) {
-        print('  ✅ Supplier ID in DB: ${supplierMatch['supplierID']}');
-      }
 
-      // Get master costs
       final masterCosts = await storage.getMasterCosts();
-      print('  📊 Total master costs in DB: ${masterCosts.length}');
 
       if (masterCosts.isEmpty) {
-        print('  ⚠️ No master costs available - cannot lookup price');
         print('🔍 ===== COST LOOKUP END (NO COSTS) =====');
         return null;
       }
 
-      // Show sample costs for debugging
-      print('  📝 Sample costs (first 3):');
-      for (var i = 0; i < masterCosts.length && i < 3; i++) {
-        final cost = masterCosts[i];
-        print('    [${i +
-            1}] Product: "${cost['Product Name']}", Supplier: "${cost['Supplier']}", Price: ${cost['Cost Price']}');
-      }
-
-      // Try to find match
       String actualSupplierId = supplierId;
-      if (supplierId == supplierName) {
-        print('  ⚠️ supplierId looks like a name, attempting to resolve...');
-        if (supplierMatch.isNotEmpty) {
-          actualSupplierId = supplierMatch['supplierID']?.toString() ?? '';
-          print('  ✅ Resolved supplier ID to: $actualSupplierId');
-        }
+      if (supplierId == supplierName && supplierMatch.isNotEmpty) {
+        actualSupplierId = supplierMatch['supplierID']?.toString() ?? '';
       }
 
       // Try multiple matching strategies
       double? foundCost;
 
       // Strategy 1: Match by product name only
-      print('  🔎 Trying Strategy 1: Product name only match');
       final nameMatches = masterCosts.where((cost) {
-        final costName = (cost['Product Name']?.toString() ?? '')
-            .toLowerCase()
-            .trim();
+        final costName = (cost['Product Name']?.toString() ?? '').toLowerCase().trim();
         final searchName = productName.toLowerCase().trim();
         return costName.contains(searchName) || searchName.contains(costName);
       }).toList();
 
-      print('  📊 Found ${nameMatches.length} name matches');
       if (nameMatches.isNotEmpty) {
-        final firstMatch = nameMatches.first;
-        foundCost = _extractCost(firstMatch);
-        print(
-            '  ✅ Strategy 1 matched: ${firstMatch['Product Name']} @ R$foundCost');
+        foundCost = _extractCost(nameMatches.first);
         if (foundCost != null) return foundCost;
       }
 
       // Strategy 2: Match by product + supplier
       if (actualSupplierId.isNotEmpty) {
-        print('  🔎 Trying Strategy 2: Product + Supplier match');
         final supplierMatches = masterCosts.where((cost) {
-          final costName = (cost['Product Name']?.toString() ?? '')
-              .toLowerCase()
-              .trim();
+          final costName = (cost['Product Name']?.toString() ?? '').toLowerCase().trim();
           final costSupplierId = (cost['supplierID']?.toString() ?? '').trim();
           final searchName = productName.toLowerCase().trim();
 
-          return (costName.contains(searchName) ||
-              searchName.contains(costName)) &&
+          return (costName.contains(searchName) || searchName.contains(costName)) &&
               costSupplierId == actualSupplierId;
         }).toList();
 
-        print('  📊 Found ${supplierMatches.length} product+supplier matches');
         if (supplierMatches.isNotEmpty) {
-          final firstMatch = supplierMatches.first;
-          foundCost = _extractCost(firstMatch);
-          print(
-              '  ✅ Strategy 2 matched: ${firstMatch['Product Name']} @ R$foundCost');
+          foundCost = _extractCost(supplierMatches.first);
           if (foundCost != null) return foundCost;
         }
       }
 
-      print('  ❌ No matching cost found after all strategies');
       print('🔍 ===== COST LOOKUP END (FAILED) =====');
       return null;
     } catch (e) {
       print('🔍 ERROR in cost lookup: $e');
-      print('🔍 Stack trace: ${StackTrace.current}');
       return null;
     }
   }
 
-// Add helper method
   double? _extractCost(Map<String, dynamic> costEntry) {
     final costValue = costEntry['Cost Price'] ??
         costEntry['Unit Cost'] ??
         costEntry['Cost'] ??
         costEntry['avgCost'];
 
-    print('  💰 Extracting cost from: $costValue');
-
     if (costValue == null) return null;
 
-    if (costValue is num) {
-      final result = costValue.toDouble();
-      print('  ✅ Extracted number: $result');
-      return result;
-    }
+    if (costValue is num) return costValue.toDouble();
 
     if (costValue is String) {
       final cleaned = costValue.replaceAll(RegExp(r'[^\d.]'), '');
-      final result = double.tryParse(cleaned);
-      print('  ✅ Extracted from string: "$costValue" -> "$cleaned" -> $result');
-      return result;
+      return double.tryParse(cleaned);
     }
 
-    print('  ❌ Could not extract cost from type: ${costValue.runtimeType}');
     return null;
   }
 
-  // 🔴 FIX 5: Implement _getSupplierIdForName method
   Future<String> _getSupplierIdForName(String supplierName) async {
     try {
       final storage = context.read<OfflineStorage>();
@@ -377,88 +352,34 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     }
   }
 
-  // 🔴 FIX 6: Make createStandardPurchase async to handle supplier ID lookup
-  Future<Map<String, dynamic>> createStandardPurchase({
-    required String invoiceId,
-    required String supplierName,
-    required String productName,
-    required String plu,
-    required double price,
-    required int quantity,
-    required int unitsPerCase,
-    required String barcode,
-  }) async {
-    final supplierId = await _getSupplierIdForName(supplierName);
-
-    return {
-      'purchases_ID': 'purchase_${DateTime
-          .now()
-          .millisecondsSinceEpoch}_${quantity}_${plu}',
-      'invoiceDetailsID': invoiceId,
-      'supplierID': supplierId,
-      'Supplier': supplierName,
-      'Barcode': barcode,
-      'Purchased Product Name': productName,
-      'purSupplierBottleID': plu,
-      'Cost Per Bottle': price,
-      'Stock Delivery Date': widget.deliveryDate.toIso8601String(),
-      // 🔴 FIX 7: Use widget.deliveryDate
-      'Case/Pack Size': 'Case $unitsPerCase',
-      'Qty Purchased': quantity.toDouble(),
-      'Purchases Bottles': (quantity * unitsPerCase).toDouble(),
-      'Cost of Purchases': price * quantity * unitsPerCase,
-      'syncStatus': 'pending',
-    };
-  }
-
   void _onProductSelected(Map<String, dynamic> product) async {
     print('🔍 ===== PRODUCT SELECTED =====');
-    print('  📦 Product: ${product['Inventory Product Name']}');
-    print('  🆔 Barcode: ${product['Barcode']}');
-    print('  🏷️ Category: ${product['Category']}');
 
     setState(() {
       _selectedProduct = product;
-      _descriptionController.text =
-          product['Inventory Product Name']?.toString() ?? '';
+      _descriptionController.text = product['Inventory Product Name']?.toString() ?? '';
 
       final category = product['Category']?.toString();
       final packSizes = _getPackSizesForCategory(category);
 
       if (packSizes.isNotEmpty) {
         _selectedPackSize = packSizes.first;
-        _unitsPerCaseController.text =
-            _getUnitsPerCase(_selectedPackSize!).toString();
-        print('  📦 Selected pack size: $_selectedPackSize');
+        _unitsPerCaseController.text = _getUnitsPerCase(_selectedPackSize!).toString();
       }
     });
 
-    // Get supplier ID first
-    print('  🔎 Looking up supplier ID for: ${widget.supplierName}');
     final supplierId = await _getSupplierIdForName(widget.supplierName);
 
     if (supplierId.isNotEmpty) {
-      print('  ✅ Found supplier ID: $supplierId');
       await _lookupCostWithFeedback(
         product['Inventory Product Name']?.toString() ?? '',
         widget.supplierName,
         supplierId,
       );
-    } else {
-      print('  ❌ No supplier ID found for ${widget.supplierName}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('⚠️ Supplier not found in database'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
     }
     print('🔍 ===== PRODUCT SELECTION END =====');
   }
 
-  // Handle pack size selection
   void _showPackSizeSelection(String? category) {
     final packSizes = _getPackSizesForCategory(category);
 
@@ -478,8 +399,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                   onTap: () {
                     setState(() {
                       _selectedPackSize = packSizes[index];
-                      _unitsPerCaseController.text = _getUnitsPerCase(
-                          _selectedPackSize!).toString();
+                      _unitsPerCaseController.text = _getUnitsPerCase(_selectedPackSize!).toString();
                     });
                     Navigator.pop(context);
                   },
@@ -494,38 +414,49 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.macOS ||
+            defaultTargetPlatform == TargetPlatform.linux);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Add Line Item')),
-      body: SingleChildScrollView( // ✅ Wrap everything in SingleChildScrollView
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Product Search with Auto-populated Fields
+        appBar: AppBar(
+          title: Text(_isEditMode ? 'Edit Line Item' : 'Add Line Item'),
+        ),
+        body: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.all(isDesktop ? 32 : 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+            // Product Search
             Autocomplete<Map<String, dynamic>>(
               optionsBuilder: (TextEditingValue textEditingValue) {
                 if (textEditingValue.text.isEmpty) return [];
                 return _productSuggestions.where((item) =>
-                    (item['Inventory Product Name']
-                        ?.toString()
-                        ?.toLowerCase() ?? '')
+                    (item['Inventory Product Name']?.toString().toLowerCase() ?? '')
                         .contains(textEditingValue.text.toLowerCase())
                 ).toList();
               },
-              displayStringForOption: (
-                  option) => option['Inventory Product Name']?.toString() ?? '',
+              displayStringForOption: (option) => option['Inventory Product Name']?.toString() ?? '',
               onSelected: _onProductSelected,
-              fieldViewBuilder: (context, controller, focusNode,
-                  onFieldSubmitted) {
+              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                // Sync controller with our controller
+                controller.text = _descriptionController.text;
+
                 return TextFormField(
                   controller: controller,
                   focusNode: focusNode,
+                  onChanged: (value) {
+                    _descriptionController.text = value;
+                  },
                   decoration: InputDecoration(
                     labelText: 'Product Description *',
                     hintText: 'Search products...',
                     suffixIcon: _isLoadingProducts
-                        ? const CircularProgressIndicator.adaptive(
-                        strokeWidth: 2)
+                        ? const CircularProgressIndicator.adaptive(strokeWidth: 2)
                         : null,
                     border: const OutlineInputBorder(),
                   ),
@@ -544,10 +475,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                           final item = options.elementAt(i);
                           return ListTile(
                             dense: true,
-                            title: Text(
-                                item['Inventory Product Name'] ?? 'Unnamed'),
-                            subtitle: Text('${item['Barcode'] ??
-                                ''} • ${item['Category'] ?? ''}'),
+                            title: Text(item['Inventory Product Name'] ?? 'Unnamed'),
+                            subtitle: Text('${item['Barcode'] ?? ''} • ${item['Category'] ?? ''}'),
                             onTap: () => onSelected(item),
                           );
                         },
@@ -560,108 +489,204 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
             const SizedBox(height: 16),
 
-            // Pack Size Selection
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Pack Size',
-                    style: Theme
-                        .of(context)
-                        .textTheme
-                        .labelLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  GestureDetector(
-                    onTap: () {
-                      if (_selectedProduct != null) {
-                        _showPackSizeSelection(
-                            _selectedProduct!['Category']?.toString());
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text(
-                              'Please select a product first')),
-                        );
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 12),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(4),
-                        color: Colors.grey.shade50,
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    if (isDesktop) ...[
+                      // Desktop: Pack Size and Units Per Case side by side
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            _selectedPackSize ?? 'Select Pack Size',
-                            style: TextStyle(
-                              color: _selectedPackSize == null
-                                  ? Colors.grey
-                                  : Colors.black87,
+                          // Pack Size
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Pack Size',
+                                  style: Theme.of(context).textTheme.labelLarge,
+                                ),
+                                const SizedBox(height: 8),
+                                GestureDetector(
+                                  onTap: () {
+                                    if (_selectedProduct != null) {
+                                      _showPackSizeSelection(
+                                          _selectedProduct!['Category']?.toString());
+                                    } else {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content: Text(
+                                                'Please select a product first')),
+                                      );
+                                    }
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 12),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: Colors.grey.shade300),
+                                      borderRadius: BorderRadius.circular(4),
+                                      color: Colors.grey.shade50,
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          _selectedPackSize ?? 'Select Pack Size',
+                                          style: TextStyle(
+                                            color: _selectedPackSize == null
+                                                ? Colors.grey
+                                                : Colors.black87,
+                                          ),
+                                        ),
+                                        const Icon(Icons.arrow_drop_down),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          const Icon(Icons.arrow_drop_down),
+                          const SizedBox(width: 16),
+                          // Units Per Case
+                          Expanded(
+                            child: TextFormField(
+                              controller: _unitsPerCaseController,
+                              readOnly: true,
+                              decoration: InputDecoration(
+                                labelText: 'Units/Case',
+                                helperText: _selectedPackSize != null
+                                    ? 'Auto from: $_selectedPackSize'
+                                    : null,
+                              ),
+                              keyboardType: TextInputType.number,
+                            ),
+                          ),
                         ],
                       ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Units Per Case
-            TextFormField(
-              controller: _unitsPerCaseController,
-              readOnly: true,
-              decoration: InputDecoration(
-                labelText: 'Units/Case',
-                helperText: _selectedPackSize != null
-                    ? 'Auto from: $_selectedPackSize'
-                    : null,
-              ),
-              keyboardType: TextInputType.number,
-            ),
-
-            const SizedBox(height: 16),
-
-            // Quantity and Price
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _quantityController,
-                    decoration: const InputDecoration(labelText: 'Cases *'),
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: TextField(
-                    controller: _priceController,
-                    decoration: InputDecoration(
-                      labelText: 'Price per Unit *',
-                      helperText: _autoCalculatedPrice != null
-                          ? 'Auto: R${_autoCalculatedPrice!.toStringAsFixed(2)}'
-                          : null,
-                      prefixText: 'R ',
-                    ),
-                    keyboardType: TextInputType.numberWithOptions(
-                        decimal: true),
-                  ),
-                ),
-              ],
-            ),
+                      const SizedBox(height: 16),
+                      // Cases and Price side by side
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _quantityController,
+                              decoration:
+                              const InputDecoration(labelText: 'Cases *'),
+                              keyboardType: TextInputType.number,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: TextField(
+                              controller: _priceController,
+                              decoration: InputDecoration(
+                                labelText: 'Price per Unit *',
+                                helperText: _autoCalculatedPrice != null
+                                    ? 'Auto: R${_autoCalculatedPrice!.toStringAsFixed(2)}'
+                                    : null,
+                                prefixText: 'R ',
+                              ),
+                              keyboardType:
+                              TextInputType.numberWithOptions(decimal: true),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      // Mobile: original stacked layout
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Pack Size',
+                              style: Theme.of(context).textTheme.labelLarge,
+                            ),
+                            const SizedBox(height: 8),
+                            GestureDetector(
+                              onTap: () {
+                                if (_selectedProduct != null) {
+                                  _showPackSizeSelection(
+                                      _selectedProduct!['Category']?.toString());
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content:
+                                        Text('Please select a product first')),
+                                  );
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.grey.shade300),
+                                  borderRadius: BorderRadius.circular(4),
+                                  color: Colors.grey.shade50,
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      _selectedPackSize ?? 'Select Pack Size',
+                                      style: TextStyle(
+                                        color: _selectedPackSize == null
+                                            ? Colors.grey
+                                            : Colors.black87,
+                                      ),
+                                    ),
+                                    const Icon(Icons.arrow_drop_down),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _unitsPerCaseController,
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Units/Case',
+                          helperText: _selectedPackSize != null
+                              ? 'Auto from: $_selectedPackSize'
+                              : null,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _quantityController,
+                              decoration:
+                              const InputDecoration(labelText: 'Cases *'),
+                              keyboardType: TextInputType.number,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: TextField(
+                              controller: _priceController,
+                              decoration: InputDecoration(
+                                labelText: 'Price per Unit *',
+                                helperText: _autoCalculatedPrice != null
+                                    ? 'Auto: R${_autoCalculatedPrice!.toStringAsFixed(2)}'
+                                    : null,
+                                prefixText: 'R ',
+                              ),
+                              keyboardType:
+                              TextInputType.numberWithOptions(decimal: true),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
 
             const SizedBox(height: 24),
 
-            // Submit button
+            // Cancel and Add/Update buttons
             Row(
               children: [
                 Expanded(
@@ -674,7 +699,6 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                 Expanded(
                   child: ElevatedButton(
                     onPressed: () async {
-                      // Validation and submission logic
                       final desc = _descriptionController.text.trim();
                       final qty = int.tryParse(_quantityController.text) ?? 1;
                       final units = int.tryParse(_unitsPerCaseController.text) ?? 24;
@@ -687,39 +711,45 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                         return;
                       }
 
-                      print('DEBUG: _selectedProduct exists: ${_selectedProduct != null}');
-                      if (_selectedProduct != null) {
-                        print('DEBUG: Product name: ${_selectedProduct!['Inventory Product Name']}');
-                        print('DEBUG: Barcode: ${_selectedProduct!['Barcode']}');
-                        print('DEBUG: bottleID: ${_selectedProduct!['bottleID']}');
+                      if (_selectedProduct == null && !_isEditMode) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please select a product from the list')),
+                        );
+                        return;
                       }
 
-                      // Create the return object
-                      final newItem = GrvLineItemDisplay(
-                        plu: _selectedProduct?['bottleID']?.toString(),
+                      final lineItem = GrvLineItemDisplay(
+                        plu: _selectedProduct?['bottleID']?.toString() ?? widget.initialItem?.plu,
                         description: desc,
                         quantityCases: qty,
                         unitsPerCase: units,
                         pricePerUnit: price,
-                        productName: _selectedProduct?['Inventory Product Name']?.toString(),
-                        barcode: _selectedProduct?['Barcode']?.toString(),
-                        // supplierBottleID will be set during matching in the main screen
+                        productName: _selectedProduct?['Inventory Product Name']?.toString() ??
+                            widget.initialItem?.productName,
+                        barcode: _selectedProduct?['Barcode']?.toString() ?? widget.initialItem?.barcode,
                       );
 
-                      print('DEBUG: Returning item from add screen: ${newItem.description}'); // ADD THIS
-                      Navigator.pop(context, newItem); // ← THIS SHOULD RETURN THE ITEM
+                      Navigator.pop(context, lineItem);
                     },
-                    child: const Text('Add Item'),
-                  )
+                    child: Text(_isEditMode ? 'Update Item' : 'Add Item'),
+                  ),
                 ),
               ],
             ),
 
-            // ✅ Add bottom padding to prevent overflow
             const SizedBox(height: 32),
-          ],
+                  ],
+                ),
+              ),
+            ),
         ),
-      ),
-    );
-  }
+      floatingActionButton: FloatingActionButton.extended(
+                onPressed: _openManualAdd,
+                icon: const Icon(Icons.add),
+                label: const Text('Add New Product'),
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+              ),
+            );
+        }
 }

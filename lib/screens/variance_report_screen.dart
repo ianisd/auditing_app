@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -33,7 +34,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
   // View State
   bool _areCategoriesExpanded = true;
-  Key _listKey = UniqueKey(); // Used to force-refresh list state
+  Key _listKey = UniqueKey();
 
   final TextEditingController _searchController = TextEditingController();
 
@@ -62,16 +63,15 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   Future<void> _loadInitialData() async {
     final storage = context.read<OfflineStorage>();
 
-    // 1. Load Dates
-    final counts = await storage.getStockCounts();
-    final dates = counts.map((e) {
-      final raw = e['date'].toString();
+    // 🔥 CHANGED: pull selectable dates from StoreSalesData (matches Google Sheet behavior)
+    final salesData = await storage.getStoreSalesData();
+    final dates = salesData.map((e) {
+      final raw = e['Date']?.toString() ?? '';
       return raw.contains('T') ? raw.split('T')[0] : raw;
-    }).toSet().toList();
+    }).where((d) => d.isNotEmpty).toSet().toList();
 
     dates.sort((a, b) => b.compareTo(a));
 
-    // 2. Load Locations
     final locations = await storage.getLocations();
     final locNames = locations.map((e) => e['Location'].toString()).toList();
     locNames.sort();
@@ -89,7 +89,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
   }
 
-  // 🔥 MODIFIED: Now uses isolate for calculation
   Future<void> _runReport() async {
     if (_startDate == null || _endDate == null) return;
 
@@ -99,50 +98,73 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final logger = context.read<LoggerService>();
 
     try {
-      // 1. Fetch data on UI thread (fast)
+      await storage.debugStockIssues(); // 🔥 Add this
       final results = await Future.wait([
         storage.getStockCounts(),
         storage.getPurchases(),
+        storage.getItemsIssuedMap(),  // 🔥 Use ItemsIssuedMap (virtual)
+        storage.getStockIssues(),     // 🔥 Raw stock issues data
         storage.getStoreSalesData(),
         storage.getItemSalesMap(),
         storage.getAllInventory(),
       ]);
-
       logger.info('📊 Data fetched (${results[2].length} sales records), starting isolate calculation...');
 
-      // 2. Run heavy calculation in isolate with timeout
-      final jsonResults = await compute(
+      bool timedOut = false;
+
+      final result = await compute(
         calculateReportIsolate,
         {
           'stocks': results[0],
           'purchases': results[1],
-          'storeSalesData': results[2],
-          'itemSalesMap': results[3],
-          'inventory': results[4],
+          'itemsIssuedMap': results[2],  // 🔥 ItemsIssuedMap (mapping layer)
+          'stockIssues': results[3],     // 🔥 Raw stock issues data
+          'storeSalesData': results[4],
+          'itemSalesMap': results[5],
+          'inventory': results[6],
           'dateFromStr': _startDate!,
           'dateToStr': _endDate!,
         },
       ).timeout(
-        const Duration(seconds: 45), // Increased timeout for large datasets
+        const Duration(seconds: 45),
         onTimeout: () {
-          logger.error('⏱️ Report calculation timed out after 45 seconds');
-          return []; // Return empty list on timeout
+          timedOut = true;
+          // 🔥 CHANGE 1: Updated error message
+          logger.error('⏱️ Report calculation timed out after 45 seconds (isolate continues running in background)');
+          return {'items': <dynamic>[], 'diagnostics': <String, dynamic>{}};
         },
       );
 
-      // 3. Convert JSON back to VarianceItem objects
-      final reportItems = jsonResults.map((json) => VarianceItem.fromJson(json)).toList();
+      final jsonItems = result['items'] as List<dynamic>? ?? [];
+      final diagnostics = result['diagnostics'] as Map<String, dynamic>? ?? {};
+      final reportItems = jsonItems.map((json) => VarianceItem.fromJson(json)).toList();
 
-      logger.info('✅ Isolate calculation complete: ${reportItems.length} items');
+      if (timedOut) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          // 🔥 CHANGE 2 & 3: Updated text and color
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Calculation timed out. The report is still processing in the background. Try again in a moment.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+        return;
+      }
+
+      logger.info('✅ Isolate calculation complete: ${reportItems.length} items '
+          '(${diagnostics['salesInRange'] ?? 0} sales in range, '
+          '${diagnostics['ambiguousPluCollisions'] ?? 0} PLU collisions, '
+          '${diagnostics['parsingErrors'] ?? 0} parse errors)');
 
       if (mounted) {
         setState(() {
           _fullReport = reportItems;
 
-          // Extract Categories
           _availableMainCategories = reportItems.map((e) => e.mainCategory).toSet();
 
-          // Handle selection logic
           if (_selectedMainCategories.isEmpty) {
             _selectedMainCategories = Set.from(_availableMainCategories);
           } else {
@@ -158,11 +180,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       }
     } catch (e, stack) {
       logger.error('❌ Report Error', e);
-// The stack trace will be logged separately or you can combine them
-      logger.error('Stack: $stack');      if (mounted) {
+      logger.error('Stack: $stack');
+      if (mounted) {
         setState(() => _isLoading = false);
-
-        // Show user-friendly error message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error calculating report: ${e.toString().substring(0, min(100, e.toString().length))}'),
@@ -184,31 +204,21 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     double tempTotalRetail = 0;
 
     final filteredList = _fullReport.where((item) {
-      // 1. Balanced Filter
       if (!_showBalanced && item.variance.abs() <= 0.1) return false;
-
-      // 2. Search Filter
       if (query.isNotEmpty && !item.productName.toLowerCase().contains(query)) return false;
-
-      // 3. Location Filter
       if (_selectedLocations.isNotEmpty) {
         bool hasHistoryInLoc = item.allEntries.any((e) => _selectedLocations.contains(e['location']));
         if (!hasHistoryInLoc) return false;
       }
-
-      // 4. Category Filter
       if (!_selectedMainCategories.contains(item.mainCategory)) return false;
-
       return true;
     }).toList();
 
-    // Calculate Global Totals
     for (var item in filteredList) {
       tempTotalCost += item.varianceCost;
       tempTotalRetail += item.varianceRetail;
     }
 
-    // Grouping
     Map<String, Map<String, List<VarianceItem>>> grouping = {};
     for (var item in filteredList) {
       final main = item.mainCategory.isEmpty ? 'Uncategorized' : item.mainCategory;
@@ -220,7 +230,6 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       grouping[main]![cat]!.add(item);
     }
 
-    // Sorting
     final sortedGroup = Map.fromEntries(
         grouping.entries.toList()..sort((a, b) => a.key.compareTo(b.key))
     );
@@ -237,17 +246,13 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       _groupedReport = sortedGroup;
       _totalVarianceCost = tempTotalCost;
       _totalVarianceRetail = tempTotalRetail;
-      // Force rebuild of list when filters change
       _listKey = UniqueKey();
     });
   }
 
-  // --- ACTIONS ---
-
   void _toggleViewMode() {
     setState(() {
       _areCategoriesExpanded = !_areCategoriesExpanded;
-      // Force rebuild of list when toggle is pressed
       _listKey = UniqueKey();
     });
   }
@@ -355,6 +360,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(existingCount: count)));
     _runReport();
   }
+
   void _addNewCount(VarianceItem item) async {
     if (item.inventoryItem == null) return;
     await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(initialProduct: item.inventoryItem, initialDate: DateTime.parse(_endDate!))));
@@ -478,14 +484,16 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 : _groupedReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : ListView.builder(
-              key: _listKey, // Forces rebuild when toggled
+              key: _listKey,
               padding: const EdgeInsets.only(bottom: 40),
               itemCount: _groupedReport.keys.length,
               itemBuilder: (context, i) {
                 final mainCat = _groupedReport.keys.elementAt(i);
                 final subCats = _groupedReport[mainCat]!;
                 double mainCatRetail = 0;
-                for(var list in subCats.values) { for(var item in list) mainCatRetail += item.varianceRetail; }
+                for(var list in subCats.values) { for(var item in list) {
+                  mainCatRetail += item.varianceRetail;
+                } }
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -506,7 +514,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       final catName = entry.key;
                       final items = entry.value;
                       double subRetail = 0;
-                      for(var item in items) subRetail += item.varianceRetail;
+                      for(var item in items) {
+                        subRetail += item.varianceRetail;
+                      }
 
                       return ExpansionTile(
                         initiallyExpanded: _areCategoriesExpanded,
@@ -598,6 +608,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
               children: [
                 _buildDetailRow('Previous Count', item.previousCount),
                 _buildDetailRow('Purchases (+)', item.purchases),
+                _buildDetailRow('Issues (+)', item.issues),  // 🔥 NEW
                 _buildDetailRow('Sales (-)', item.sales),
                 const Divider(),
                 _buildDetailRow('Theoretical', item.theoreticalStock, isBold: true),

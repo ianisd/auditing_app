@@ -99,17 +99,18 @@ class ParsedGrvLineItem {
     required String supplierID,
     required String supplierName,
     required DateTime deliveryDate,
+    required String grvReference,  // 🔥 ADD THIS
   }) {
     return {
       'purchases_ID': DateTime.now().millisecondsSinceEpoch.toString(),
       'invoiceDetailsID': invoiceDetailsID,
+      'GRV Reference': grvReference,  // 🔥 ADD THIS - CRITICAL!
       'supplierID': supplierID,
       'Supplier': supplierName,
       'Barcode': barcode ?? '',
       'Purchased Product Name': productName ?? description,
-      // ✅ CORRECT: Use supplierBottleID from MasterCosts, NOT the PLU
       'supplierBottleID': supplierBottleID ?? '',
-      'purSupplierBottleID': supplierBottleID ?? '', // Keep both for compatibility
+      'purSupplierBottleID': supplierBottleID ?? '',
       'Cost Per Bottle': pricePerUnit,
       'Stock Delivery Date': deliveryDate.toIso8601String(),
       'Case/Pack Size': 'Case $unitsPerCase',
@@ -119,6 +120,22 @@ class ParsedGrvLineItem {
       'syncStatus': 'pending',
     };
   }
+}
+
+class GrvData {
+  final String supplierName;
+  final String invoiceNumber;
+  final String grvReference; // 🔥 Add this
+  final DateTime deliveryDate;
+  final List<ParsedGrvLineItem> lineItems;
+
+  GrvData({
+    required this.supplierName,
+    required this.invoiceNumber,
+    this.grvReference = '', // Default to empty
+    required this.deliveryDate,
+    required this.lineItems,
+  });
 }
 
 // ===========================================================================
@@ -154,7 +171,11 @@ class GrvLineItemDisplay {
 
   int get totalUnits => quantityCases * unitsPerCase;
   double get totalValue => costPerCase;
-  bool get isMatched => productName != null && productName!.isNotEmpty;
+  bool get isMatched =>
+      productName != null &&
+          productName!.isNotEmpty &&
+          barcode != null &&
+          barcode!.isNotEmpty;
 
   // Convert to ParsedGrvLineItem for saving
   ParsedGrvLineItem toParsedLineItem() {

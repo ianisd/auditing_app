@@ -2,14 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:flutter/foundation.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'services/offline_storage.dart';
 import 'services/store_manager.dart';
 import 'services/logger_service.dart';
+import 'services/network_ping_service.dart';
+import 'models/sync_model.dart';  // 🔥 ADD THIS
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
 
@@ -21,15 +24,30 @@ void main() async {
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   }
 
-  // 2. Initialize Hive
+  // 2. Window sizing (desktop only)
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    await windowManager.ensureInitialized();
+    const windowOptions = WindowOptions(
+      minimumSize: Size(960, 640),
+      size: Size(1280, 800),
+      title: 'Stock Counter',
+      center: true,
+    );
+    await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
+
+  // 3. Initialize Hive
   await Hive.initFlutter();
 
-  // 3. Init Logger
+  // 4. Init Logger
   final logger = LoggerService();
   await logger.init();
   logger.info("App Started (v1.7.0)");
 
-  // 4. Set up Global Error Catching
+  // 5. Set up Global Error Catching
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
     logger.error('UI Error', details.exception.toString());
@@ -40,12 +58,21 @@ void main() async {
     return true;
   };
 
-  // 5. Initialize Global Services
+  // 6. Initialize Global Services
   final offlineStorage = OfflineStorage();
+
+  // 🔥 Create SyncStatus first (single source of truth)
+  final syncStatus = SyncStatus();
+
   final storeManager = StoreManager(
     offlineStorage: offlineStorage,
     logger: logger,
+    syncStatus: syncStatus,  // 🔥 Pass it here
   );
+
+  // 7. Initialize Network Ping Service & Attach Lifecycle Observer
+  final networkPingService = NetworkPingService();
+  WidgetsBinding.instance.addObserver(AppLifecycleObserver(pingService: networkPingService));
 
   // ✅ CRITICAL: Check connectivity before initialization
   final hasInternet = await _checkConnectivity();
@@ -67,14 +94,16 @@ void main() async {
   runApp(
     MultiProvider(
       providers: [
+        // 🔥 Order matters! Providers can only see what's ABOVE them
         Provider<LoggerService>.value(value: logger),
-        ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: offlineStorage),
+        ChangeNotifierProvider.value(value: storeManager),
+        ChangeNotifierProvider.value(value: networkPingService),
+        ChangeNotifierProvider.value(value: syncStatus),  // 🔥 ADDED
         Provider<Connectivity>.value(value: Connectivity()),
-        // StreamProvider for connectivity status
         StreamProvider<List<ConnectivityResult>>(
           create: (_) => Connectivity().onConnectivityChanged,
-          initialData: const [],
+          initialData: const [ConnectivityResult.none],
         ),
       ],
       child: const MyApp(),
@@ -86,13 +115,37 @@ Future<bool> _checkConnectivity() async {
   try {
     final connectivity = Connectivity();
     final result = await connectivity.checkConnectivity();
-    return result.isNotEmpty &&
-        result.any((r) => r != ConnectivityResult.none);
+    return result.isNotEmpty && result.any((r) => r != ConnectivityResult.none);
   } catch (e) {
     return false;
   }
 }
 
+// ... rest of main.dart (AppLifecycleObserver, MyApp, RootSwitcher remain the same)
+
+// ---------------------------------------------------------
+// App Lifecycle Observer to pause/resume network pings
+// ---------------------------------------------------------
+class AppLifecycleObserver with WidgetsBindingObserver {
+  final NetworkPingService pingService;
+
+  AppLifecycleObserver({required this.pingService});
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      pingService.setAppBackground(true);
+    } else if (state == AppLifecycleState.resumed) {
+      pingService.setAppBackground(false);
+    }
+  }
+}
+
+// ---------------------------------------------------------
+// App Root
+// ---------------------------------------------------------
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -119,28 +172,23 @@ class RootSwitcher extends StatefulWidget {
 }
 
 class _RootSwitcherState extends State<RootSwitcher> {
-  String? _lastProcessedStoreId;
   bool _isOfflineBannerShowing = false;
-  bool _hasInitialSetup = false;
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
   @override
   void initState() {
     super.initState();
-    // ✅ FIXED: Only call once after build, no listener loop
     WidgetsBinding.instance.addPostFrameCallback((_) => _handleInitialStoreSetup());
 
-    // Subscribe to connectivity changes
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen(_handleConnectivityChange);
   }
 
   @override
   void dispose() {
-    _connectivitySubscription.cancel(); // Cancel subscription
+    _connectivitySubscription.cancel();
     super.dispose();
   }
 
-  // ✅ FIXED: Initial setup only
   void _handleInitialStoreSetup() {
     if (!mounted) return;
 
@@ -151,20 +199,16 @@ class _RootSwitcherState extends State<RootSwitcher> {
       final activeId = storeManager.activeStore!['id'];
 
       if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
-        print('DEBUG: Initial store setup - calling offlineStorage.switchStore($activeId)');
+        debugPrint('DEBUG: Initial store setup - calling offlineStorage.switchStore($activeId)');
         offlineStorage.switchStore(activeId);
-        _hasInitialSetup = true;
       }
     }
   }
 
-  // ✅ NEW: Handle connectivity changes
   void _handleConnectivityChange(List<ConnectivityResult> results) {
-    final hasInternet = results.isNotEmpty &&
-        results.any((r) => r != ConnectivityResult.none);
+    final hasInternet = results.isNotEmpty && results.any((r) => r != ConnectivityResult.none);
 
     if (hasInternet && _isOfflineBannerShowing) {
-      // Just came online - refresh data
       _refreshData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -174,16 +218,11 @@ class _RootSwitcherState extends State<RootSwitcher> {
             duration: Duration(seconds: 2),
           ),
         );
-        setState(() {
-          _isOfflineBannerShowing = false;
-        });
+        setState(() => _isOfflineBannerShowing = false);
       }
     } else if (!hasInternet && !_isOfflineBannerShowing) {
-      // Just went offline
       if (mounted) {
-        setState(() {
-          _isOfflineBannerShowing = true;
-        });
+        setState(() => _isOfflineBannerShowing = true);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('📴 Offline mode - using cached data'),
@@ -195,18 +234,15 @@ class _RootSwitcherState extends State<RootSwitcher> {
     }
   }
 
-  // ✅ FIXED: Refresh data when coming online
   Future<void> _refreshData() async {
     final offlineStorage = context.read<OfflineStorage>();
     final storeManager = context.read<StoreManager>();
 
     if (storeManager.activeStore != null && offlineStorage.isReady) {
       try {
-        // ✅ FIXED: Use correct method name
         await offlineStorage.loadMasterSuppliersFromSheet();
-        // Note: setState is already called in _handleConnectivityChange
       } catch (e) {
-        print('Failed to refresh data: $e');
+        debugPrint('Failed to refresh data: $e');
       }
     }
   }
@@ -215,8 +251,6 @@ class _RootSwitcherState extends State<RootSwitcher> {
   Widget build(BuildContext context) {
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
-
-    // Watch connectivity (this will trigger rebuilds when connectivity changes)
     final connectivityResults = context.watch<List<ConnectivityResult>>();
     final hasInternet = connectivityResults.isNotEmpty &&
         connectivityResults.any((r) => r != ConnectivityResult.none);
@@ -250,7 +284,6 @@ class _RootSwitcherState extends State<RootSwitcher> {
     return Stack(
       children: [
         const HomeScreen(),
-        // Offline banner
         if (_isOfflineBannerShowing)
           Positioned(
             top: 0,

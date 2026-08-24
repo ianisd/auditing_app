@@ -5,12 +5,14 @@ import '../models/grv_models.dart';
 class GrvData {
   final String supplierName;
   final String invoiceNumber;
+  final String grvReference;
   final DateTime deliveryDate;
   final List<ParsedGrvLineItem> lineItems;
 
   GrvData({
     required this.supplierName,
     required this.invoiceNumber,
+    this.grvReference = '',
     required this.deliveryDate,
     required this.lineItems,
   });
@@ -31,6 +33,7 @@ class GrvParser {
     String supplierName = 'Unknown Supplier';
     String invoiceNumber = '';
     String goodsReceivedNumber = '';
+    String grvReference = '';
     DateTime deliveryDate = DateTime.now();
     List<ParsedGrvLineItem> lineItems = [];
 
@@ -38,7 +41,6 @@ class GrvParser {
 
     // A. Extract Supplier (Target Row 5)
     if (rows.length > 4) {
-      // Join columns to merge split text: "DURB" | "AN" -> "DURBAN"
       String row5Content = rows[4].join('').trim();
       String upperLine = row5Content.toUpperCase();
       String cleaned = row5Content.replaceAll(RegExp(r'[,"]'), '').trim();
@@ -48,24 +50,18 @@ class GrvParser {
       }
     }
 
-    // B. Scan for Invoice & Date (First 20 rows)
+    // B. Scan for Invoice, GRV Reference & Date (First 20 rows)
     for (var i = 0; i < rows.length && i < 20; i++) {
       final row = rows[i];
       if (row.isEmpty) continue;
 
-      // 1. Normalize the row for searching labels
-      // Join all cells, remove spaces to fix "Refe rence" -> "REFERENCE"
       String rawJoined = row.join(' ').trim();
-      String condensed = row.join('').replaceAll(' ', '').toUpperCase(); // REFERENCE:INV123
+      String condensed = row.join('').replaceAll(' ', '').toUpperCase();
 
-      // 2. Extract Reference (Invoice Number)
+      // Extract Reference (Invoice Number)
       if (invoiceNumber.isEmpty && (condensed.contains('REFERENCE:') || condensed.contains('INV:'))) {
-        // Find the original text by looking for the colon in the raw joined string
-        // We use the raw string to preserve the casing of the invoice number (e.g. "inv181")
-        // Strategy: Split by colon, take the last part.
         List<String> parts = row.join('').split(':');
         if (parts.length > 1) {
-          // Take everything after the first colon
           String potentialInv = parts.sublist(1).join(':').trim();
           if (potentialInv.isNotEmpty) {
             invoiceNumber = potentialInv;
@@ -73,7 +69,38 @@ class GrvParser {
         }
       }
 
-      // 3. Extract Goods Received No (Fallback)
+      // Extract GRV Reference (Goods Received No)
+      if (grvReference.isEmpty && (condensed.contains('GOODSRECEIVEDNO:') ||
+          condensed.contains('GRV:') ||
+          condensed.contains('GOODS RECEIVED'))) {
+        List<String> parts = row.join('').split(':');
+        if (parts.length > 1) {
+          String val = parts.sublist(1).join(':').trim();
+          if (val.isNotEmpty) {
+            grvReference = val;
+            print('📋 Extracted GRV Reference: $grvReference');
+          }
+        }
+      }
+
+      // Also check for GRV in separate columns
+      if (grvReference.isEmpty) {
+        for (int c = 0; c < row.length; c++) {
+          String cell = row[c].toString().trim().toUpperCase();
+          if (cell.contains('GRV') || cell.contains('GOODS RECEIVED')) {
+            if (c + 1 < row.length) {
+              String val = row[c + 1].toString().trim();
+              if (val.isNotEmpty && val != cell) {
+                grvReference = val;
+                print('📋 Extracted GRV Reference from column: $grvReference');
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Extract Goods Received No (Fallback for invoice number)
       if (goodsReceivedNumber.isEmpty && condensed.contains('GOODSRECEIVEDNO:')) {
         List<String> parts = row.join('').split(':');
         if (parts.length > 1) {
@@ -84,29 +111,30 @@ class GrvParser {
         }
       }
 
-      // 4. Extract Date
-      final dateMatch = RegExp(r'(\d{2})[/-](\d{2})[/-](\d{4})').firstMatch(rawJoined);
-      if (dateMatch != null) {
-        try {
-          deliveryDate = DateTime(
-              int.parse(dateMatch.group(3)!),
-              int.parse(dateMatch.group(2)!),
-              int.parse(dateMatch.group(1)!)
-          );
-        } catch (_) {}
+      // 🔥 FIXED: Extract Date - Try multiple formats
+      DateTime? parsedDate = _parseDate(rawJoined);
+      if (parsedDate != null) {
+        deliveryDate = parsedDate;
+        print('📅 Parsed delivery date: $deliveryDate');
       }
     }
 
-    // --- PHASE 2: Finalize Invoice Number ---
+    // --- PHASE 2: Finalize Invoice Number & GRV Reference ---
+
+    // If no GRV reference found, use the invoice number as fallback
+    if (grvReference.isEmpty) {
+      grvReference = invoiceNumber;
+      print('📋 Using Invoice Number as GRV Reference: $grvReference');
+    }
+
     if (invoiceNumber.isEmpty) {
       if (goodsReceivedNumber.isNotEmpty) {
-        // If we found a GRV Number (e.g. "183"), use it + UUID suffix
-        // This ensures "183" from this year doesn't clash with "183" next year.
         String uuid = _generateHexId(4);
         invoiceNumber = '$goodsReceivedNumber-$uuid';
+        if (grvReference.isEmpty) grvReference = goodsReceivedNumber;
       } else {
-        // Absolute fallback if CSV is empty/broken
         invoiceNumber = _generateHexId(8);
+        if (grvReference.isEmpty) grvReference = invoiceNumber;
       }
     }
 
@@ -129,8 +157,9 @@ class GrvParser {
 
         for (int c = 0; c < row.length; c++) {
           String header = row[c].toString().toLowerCase().trim();
-          if (header == 'code') colIdxCode = c;
-          else if (header.contains('desc')) colIdxDesc = c;
+          if (header == 'code') {
+            colIdxCode = c;
+          } else if (header.contains('desc')) colIdxDesc = c;
           else if (header == 'qty' || header == 'quantity') colIdxQty = c;
           else if (header.contains('pack')) colIdxPack = c;
           else if (header.contains('price') || header.contains('cost')) {
@@ -149,6 +178,7 @@ class GrvParser {
       return GrvData(
         supplierName: supplierName,
         invoiceNumber: invoiceNumber,
+        grvReference: grvReference,
         deliveryDate: deliveryDate,
         lineItems: [],
       );
@@ -174,7 +204,6 @@ class GrvParser {
 
         if (packSize == 0) packSize = 1;
 
-        // Force 2 decimal places
         cost = _roundToTwoDecimal(cost);
 
         if (qty != 0) {
@@ -182,8 +211,8 @@ class GrvParser {
             plu: code,
             description: description,
             quantityCases: qty.toInt(),
-            unitsPerCase: packSize.toInt(),
-            pricePerUnit: cost,
+            unitsPerCase: packSize.toInt().abs(),
+            pricePerUnit: cost.abs(),
           ));
         }
       } catch (e) {
@@ -194,9 +223,56 @@ class GrvParser {
     return GrvData(
       supplierName: supplierName,
       invoiceNumber: invoiceNumber,
+      grvReference: grvReference,
       deliveryDate: deliveryDate,
       lineItems: lineItems,
     );
+  }
+
+  // 🔥 NEW: Robust date parser supporting multiple formats
+  DateTime? _parseDate(String rawJoined) {
+    // Try YYYY/MM/DD format first (your CSV format)
+    final ymdMatch = RegExp(r'(\d{4})[/-](\d{2})[/-](\d{2})').firstMatch(rawJoined);
+    if (ymdMatch != null) {
+      try {
+        final year = int.parse(ymdMatch.group(1)!);
+        final month = int.parse(ymdMatch.group(2)!);
+        final day = int.parse(ymdMatch.group(3)!);
+        // Validate the date is reasonable
+        if (year > 2000 && year < 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          return DateTime(year, month, day);
+        }
+      } catch (_) {}
+    }
+
+    // Try DD/MM/YYYY format as fallback
+    final dmyMatch = RegExp(r'(\d{2})[/-](\d{2})[/-](\d{4})').firstMatch(rawJoined);
+    if (dmyMatch != null) {
+      try {
+        final day = int.parse(dmyMatch.group(1)!);
+        final month = int.parse(dmyMatch.group(2)!);
+        final year = int.parse(dmyMatch.group(3)!);
+        // Validate the date is reasonable
+        if (year > 2000 && year < 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          return DateTime(year, month, day);
+        }
+      } catch (_) {}
+    }
+
+    // Try MM/DD/YYYY format as last resort
+    final mdyMatch = RegExp(r'(\d{2})[/-](\d{2})[/-](\d{4})').firstMatch(rawJoined);
+    if (mdyMatch != null) {
+      try {
+        final month = int.parse(mdyMatch.group(1)!);
+        final day = int.parse(mdyMatch.group(2)!);
+        final year = int.parse(mdyMatch.group(3)!);
+        if (year > 2000 && year < 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          return DateTime(year, month, day);
+        }
+      } catch (_) {}
+    }
+
+    return null; // No valid date found
   }
 
   double _getDataAt(List<dynamic> row, int index) {
@@ -204,16 +280,20 @@ class GrvParser {
     return _parseDouble(row[index]);
   }
 
+  // ROBUST NUMBER PARSER (Handles negative signs leading/trailing, spaces, and formatting)
   double _parseDouble(dynamic value) {
     if (value == null) return 0.0;
-    String s = value.toString();
-    bool isNegative = s.endsWith('-');
+    String s = value.toString().trim();
+    if (s.isEmpty) return 0.0;
 
-    s = s.replaceAll(RegExp(r'[^\d.-]'), '');
-    double val = double.tryParse(s) ?? 0.0;
+    // Check for negative indicators
+    bool isNegative = s.startsWith('-') || s.endsWith('-') || (s.startsWith('(') && s.endsWith(')'));
 
-    if (isNegative && val > 0) return -val;
-    return val;
+    // Strip spaces and all non-numeric characters except digits and '.'
+    String clean = s.replaceAll(RegExp(r'[^\d.]'), '');
+    double val = double.tryParse(clean) ?? 0.0;
+
+    return isNegative ? -val : val;
   }
 
   double _roundToTwoDecimal(double value) {

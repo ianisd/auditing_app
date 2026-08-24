@@ -1,3 +1,7 @@
+// ============================================================================
+// COMPLETE sync_service.dart - FIXED VERSION
+// ============================================================================
+
 import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -6,20 +10,48 @@ import 'google_sheets_service.dart';
 import 'logger_service.dart';
 
 // ==================== SYNC RESULT MODEL ====================
+// ==================== ENHANCED SYNC RESULT MODEL ====================
 class SyncResult {
   final bool hasInternet;
   final int syncedCount;
   final String message;
   final bool success;
-  final List<Map<String, dynamic>> duplicates; // 🔥 ADD THIS
+  final List<Map<String, dynamic>> duplicates;
+
+  // 🔥 NEW: Detailed sync breakdown
+  final int invoicesSynced;
+  final int purchasesSynced;
+  final int pluMappingsSynced;
+  final int stockCountsSynced;
+  final int locationsSynced;
+  final int productsSynced;
 
   SyncResult({
     required this.hasInternet,
     required this.syncedCount,
     required this.message,
     this.success = false,
-    this.duplicates = const [], // 🔥 ADD THIS
+    this.duplicates = const [],
+    this.invoicesSynced = 0,
+    this.purchasesSynced = 0,
+    this.pluMappingsSynced = 0,
+    this.stockCountsSynced = 0,
+    this.locationsSynced = 0,
+    this.productsSynced = 0,
   });
+
+  String get detailedMessage {
+    final parts = <String>[];
+    if (invoicesSynced > 0) parts.add('$invoicesSynced Invoice${invoicesSynced > 1 ? 's' : ''}');
+    if (purchasesSynced > 0) parts.add('$purchasesSynced Purchase${purchasesSynced > 1 ? 's' : ''}');
+    if (pluMappingsSynced > 0) parts.add('$pluMappingsSynced PLU Mapping${pluMappingsSynced > 1 ? 's' : ''}');
+    if (stockCountsSynced > 0) parts.add('$stockCountsSynced Stock Count${stockCountsSynced > 1 ? 's' : ''}');
+    if (locationsSynced > 0) parts.add('$locationsSynced Location${locationsSynced > 1 ? 's' : ''}');
+    if (productsSynced > 0) parts.add('$productsSynced Product${productsSynced > 1 ? 's' : ''}');
+
+    if (parts.isEmpty) return message;
+    return 'Synced: ${parts.join(', ')}';
+  }
 }
 
 // ==================== MAIN SYNC SERVICE ====================
@@ -30,6 +62,9 @@ class SyncService with ChangeNotifier {
   final Connectivity connectivity;
   final LoggerService? logger;
 
+  // 🔥 Single debounce timer for the entire app
+  Timer? _pendingCountDebounce;
+
   // ==================== STATE VARIABLES ====================
   bool _isDisposed = false;
   bool _isSyncing = false;
@@ -39,6 +74,10 @@ class SyncService with ChangeNotifier {
   String? _lastError;
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+
+  List<Map<String, dynamic>>? _cachedSuppliers;
+  DateTime? _suppliersCacheTime;
+  static const Duration _cacheDuration = Duration(minutes: 5);
 
   // ==================== GETTERS ====================
   bool get isDisposed => _isDisposed;
@@ -57,6 +96,20 @@ class SyncService with ChangeNotifier {
     _initConnectivity();
   }
 
+  // 🔥 Single storage change handler - app-wide!
+  void _onStorageChanged() {
+    _pendingCountDebounce?.cancel();
+    _pendingCountDebounce = Timer(const Duration(milliseconds: 300), _updatePendingCount);
+  }
+
+  Future<void> _updatePendingCount() async {
+    try {
+      final count = await offlineStorage.getTotalPendingItemsCount();
+    } catch (e) {
+      logger?.error('Failed to update pending count', e);
+    }
+  }
+
   void _initConnectivity() {
     _connectivitySubscription = connectivity.onConnectivityChanged.listen((results) {
       if (!_isDisposed) {
@@ -66,11 +119,11 @@ class SyncService with ChangeNotifier {
   }
 
   // ==================== LIFECYCLE METHODS ====================
-  // 🔴 Add disposal and cleanup helpers here
   @override
   void dispose() {
     _isDisposed = true;
-    _connectivitySubscription?.cancel();
+    _pendingCountDebounce?.cancel();
+    offlineStorage.removeListener(_onStorageChanged);
     googleSheets.dispose();
     super.dispose();
   }
@@ -83,8 +136,21 @@ class SyncService with ChangeNotifier {
     }
   }
 
+  // ==================== HELPER METHODS - CACHING ====================
+
+  Future<List<Map<String, dynamic>>> getMasterSuppliers() async {
+    if (_cachedSuppliers != null &&
+        _suppliersCacheTime != null &&
+        DateTime.now().difference(_suppliersCacheTime!) < _cacheDuration) {
+      return _cachedSuppliers!;
+    }
+
+    _cachedSuppliers = await offlineStorage.getMasterSuppliers();
+    _suppliersCacheTime = DateTime.now();
+    return _cachedSuppliers!;
+  }
+
   // ==================== HELPER METHODS - UTILITIES ====================
-  // 🔴 Add utility helpers here (formatting, type conversion, etc.)
   String _formatDateTime(DateTime dateTime) {
     return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')} ${dateTime.day}/${dateTime.month}/${dateTime.year}';
   }
@@ -96,8 +162,29 @@ class SyncService with ChangeNotifier {
     return double.tryParse(value.toString()) ?? 0.0;
   }
 
+  Future<Map<String, dynamic>> _syncWithRetry(
+      Future<Map<String, dynamic>> Function() syncFn, [
+        int maxRetries = 3,
+      ]) async {
+    int retries = 0;
+    while (retries < maxRetries) {
+      try {
+        final result = await syncFn().timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => throw TimeoutException('Sync timed out'),
+        );
+        return result;
+      } catch (e) {
+        retries++;
+        if (retries >= maxRetries) rethrow;
+        logger?.info('🔄 Retry $retries/$maxRetries after error: $e');
+        await Future.delayed(Duration(seconds: 2 * retries));
+      }
+    }
+    return {'success': false, 'message': 'Max retries exceeded'};
+  }
+
   // ==================== HELPER METHODS - CONNECTIVITY ====================
-  // 🔴 Add connectivity helpers here
   Future<bool> checkConnectivity() async {
     try {
       final connectivityResult = await connectivity.checkConnectivity();
@@ -109,7 +196,6 @@ class SyncService with ChangeNotifier {
   }
 
   // ==================== HELPER METHODS - DATA PROCESSING ====================
-  // 🔴 Add data processing helpers here (mapping, merging, etc.)
   Map<String, double> _buildCostMap(List<Map<String, dynamic>> masterCosts) {
     final costMap = <String, double>{};
     for (var c in masterCosts) {
@@ -128,7 +214,7 @@ class SyncService with ChangeNotifier {
 
   List<Map<String, dynamic>> _mergeCostsIntoInventory(
       List<Map<String, dynamic>> inventory,
-      Map<String, double> costMap
+      Map<String, double> costMap,
       ) {
     int costsUpdated = 0;
     final updatedInventory = inventory.map((item) {
@@ -157,7 +243,6 @@ class SyncService with ChangeNotifier {
   }
 
   // ==================== HELPER METHODS - SYNC OPERATIONS (UPLOAD) ====================
-  // 🔴 Add individual sync operation helpers here
   Future<void> _syncNewLocations() async {
     final newLocations = await offlineStorage.getPendingLocations();
     if (newLocations.isNotEmpty) {
@@ -176,8 +261,7 @@ class SyncService with ChangeNotifier {
       if (pendingInvoices.isNotEmpty) {
         logger?.info('📄 Found ${pendingInvoices.length} pending invoice headers...');
 
-        // Start with a small batch size to avoid timeout
-        const batchSize = 10;
+        const batchSize = 25;
         int totalProcessed = 0;
         int totalNew = 0;
         int totalUpdated = 0;
@@ -188,21 +272,17 @@ class SyncService with ChangeNotifier {
           final end = (i + batchSize < pendingInvoices.length) ? i + batchSize : pendingInvoices.length;
           final batch = pendingInvoices.sublist(i, end);
 
+          final syncedBatch = batch.map((invoice) {
+            final modified = Map<String, dynamic>.from(invoice);
+            modified['syncStatus'] = 'synced';
+            return modified;
+          }).toList();
+
           logger?.info('📄 Processing batch ${i ~/ batchSize + 1}/${(pendingInvoices.length / batchSize).ceil()} (${batch.length} invoices)');
 
-          // 🔴 VERIFY INVOICE NUMBERS BEFORE SENDING
-          for (var invoice in batch) {
-            final invoiceId = invoice['invoiceDetailsID']?.toString() ?? 'unknown';
-            final invoiceNumber = invoice['Invoice Number']?.toString() ?? '';
-
-            if (invoiceNumber.isEmpty) {
-              logger?.info('⚠️ WARNING: Invoice $invoiceId has NO invoice number!');
-            } else {
-              logger?.info('✅ Invoice $invoiceId has number: "$invoiceNumber"');
-            }
-          }
-
-          final result = await googleSheets.syncInvoiceDetailsWithResult(batch);
+          final result = await _syncWithRetry(
+                () => googleSheets.syncInvoiceDetailsWithResult(syncedBatch),
+          );
 
           if (result['success'] == true) {
             int newCount = result['newCount'] ?? 0;
@@ -221,21 +301,14 @@ class SyncService with ChangeNotifier {
             logger?.info('✅ Batch ${i ~/ batchSize + 1} complete: New=$newCount, Updated=$updatedCount, Dupes=$duplicateCount');
             logger?.info('📊 Progress: $totalProcessed/${pendingInvoices.length} invoices processed');
 
-            // Mark this batch's invoices as synced
-            for (var invoice in batch) {
-              final invoiceId = invoice['invoiceDetailsID']?.toString();
-              if (invoiceId != null) {
-                await offlineStorage.updateInvoiceDetails({
-                  ...invoice,
-                  'syncStatus': 'synced',
-                  'syncedAt': DateTime.now().toIso8601String(),
-                });
-              }
-            }
+            final invoiceIds = batch
+                .map((inv) => inv['invoiceDetailsID']?.toString())
+                .where((id) => id != null)
+                .cast<String>()
+                .toList();
 
-            // Small delay between batches to avoid rate limiting
-            await Future.delayed(const Duration(milliseconds: 500));
-
+            await offlineStorage.bulkMarkInvoicesAsSynced(invoiceIds);
+            await Future.delayed(const Duration(milliseconds: 150));
           } else {
             logger?.error('❌ Batch failed: ${result['message']}');
             return {
@@ -266,24 +339,41 @@ class SyncService with ChangeNotifier {
   Future<void> _syncPurchases() async {
     try {
       final pendingPurchases = await offlineStorage.getPendingPurchases();
-      if (pendingPurchases.isNotEmpty) {
-        logger?.info('📦 Uploading ${pendingPurchases.length} purchase items...');
+      if (pendingPurchases.isEmpty) return;
 
-        final success = await googleSheets.syncPurchases(pendingPurchases);
+      logger?.info('📦 Uploading ${pendingPurchases.length} purchase items in batches...');
 
-        if (success) {
-          final purchaseIds = pendingPurchases
+      const batchSize = 50;
+      int totalProcessed = 0;
+
+      for (int i = 0; i < pendingPurchases.length; i += batchSize) {
+        final end = (i + batchSize < pendingPurchases.length) ? i + batchSize : pendingPurchases.length;
+        final batch = pendingPurchases.sublist(i, end);
+
+        logger?.info('📦 Processing purchase batch ${i ~/ batchSize + 1} (${batch.length} items)');
+
+        final result = await _syncWithRetry(
+              () => googleSheets.syncPurchasesWithResult(batch),
+        );
+
+        if (result['success'] == true) {
+          final purchaseIds = batch
               .map((p) => p['purchases_ID']?.toString())
               .where((id) => id != null)
               .cast<String>()
               .toList();
 
-          await offlineStorage.markPurchasesAsSynced(purchaseIds);
-          logger?.info('✅ Purchase items synced successfully');
+          await offlineStorage.bulkMarkPurchasesAsSynced(purchaseIds);
+          totalProcessed += batch.length;
+          logger?.info('✅ Batch complete: ${purchaseIds.length} purchases marked as synced');
         } else {
-          logger?.error('❌ Failed to sync purchase items');
+          logger?.error('❌ Failed to sync purchase batch: ${result['message']}');
         }
+
+        await Future.delayed(const Duration(milliseconds: 150));
       }
+
+      logger?.info('✅ All $totalProcessed purchases synced successfully');
     } catch (e) {
       logger?.error('Error syncing purchases', e.toString());
     }
@@ -291,15 +381,42 @@ class SyncService with ChangeNotifier {
 
   Future<void> _syncPluMappings() async {
     try {
-      final allMappings = await offlineStorage.getAllPluMappings();
-      if (allMappings.isNotEmpty) {
-        logger?.info('🔗 Uploading ${allMappings.length} PLU mappings...');
-        final jsonList = allMappings.map((m) => m.toJson()).toList();
-        final success = await googleSheets.syncPluMappings(jsonList);
-        if (success) {
-          logger?.info('✅ PLU mappings backed up to cloud');
-        }
+      final pendingMappings = await offlineStorage.getPendingPluMappings();
+      if (pendingMappings.isEmpty) {
+        logger?.info('🔗 No pending PLU mappings to upload.');
+        return;
       }
+
+      logger?.info('🔗 Uploading ${pendingMappings.length} pending PLU mappings in batches...');
+
+      const batchSize = 50;
+      int totalProcessed = 0;
+
+      for (int i = 0; i < pendingMappings.length; i += batchSize) {
+        final end = (i + batchSize < pendingMappings.length) ? i + batchSize : pendingMappings.length;
+        final batch = pendingMappings.sublist(i, end);
+
+        logger?.info('🔗 Processing PLU mappings batch ${i ~/ batchSize + 1} (${batch.length} items)');
+
+        final jsonList = batch.map((m) => m.toJson()).toList();
+
+        final result = await _syncWithRetry(() async {
+          final success = await googleSheets.syncPluMappings(jsonList);
+          return {'success': success};
+        });
+
+        if (result['success'] == true) {
+          await offlineStorage.markPluMappingsAsSynced(batch);
+          totalProcessed += batch.length;
+          logger?.info('✅ Batch complete: ${batch.length} mappings backed up & marked as synced');
+        } else {
+          logger?.error('❌ Failed to sync PLU mappings batch');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+
+      logger?.info('✅ All $totalProcessed pending PLU mappings backed up to cloud');
     } catch (e) {
       logger?.error('Error syncing PLU mappings', e.toString());
     }
@@ -311,18 +428,20 @@ class SyncService with ChangeNotifier {
       if (deletedInvoices.isNotEmpty) {
         logger?.info('🗑️ Syncing ${deletedInvoices.length} deleted invoices...');
 
-        await Future.wait(deletedInvoices.map((invoice) async {
+        for (final invoice in deletedInvoices) {
           final invoiceId = invoice['invoiceDetailsID']?.toString();
-          if (invoiceId != null) {
-            final success = await googleSheets.deleteInvoice(invoiceId);
-            if (success) {
-              await offlineStorage.hardDeleteInvoice(invoiceId);
-              logger?.info('  ✅ Deleted invoice $invoiceId');
-            } else {
-              logger?.error('  ❌ Failed to delete invoice $invoiceId');
-            }
+          if (invoiceId == null) continue;
+
+          final success = await googleSheets.deleteInvoice(invoiceId);
+          if (success) {
+            await offlineStorage.hardDeleteInvoice(invoiceId);
+            logger?.info('  ✅ Deleted invoice $invoiceId');
+          } else {
+            logger?.error('  ❌ Failed to delete invoice $invoiceId');
           }
-        }));
+
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
       }
     } catch (e) {
       logger?.error('Error syncing deleted invoices', e.toString());
@@ -332,21 +451,44 @@ class SyncService with ChangeNotifier {
   Future<void> _syncDeletedPurchases() async {
     try {
       final deletedPurchases = await offlineStorage.getDeletedPurchases();
-      if (deletedPurchases.isNotEmpty) {
-        logger?.info('🗑️ Syncing ${deletedPurchases.length} deleted purchases...');
+      if (deletedPurchases.isEmpty) return;
 
-        await Future.wait(deletedPurchases.map((purchase) async {
+      logger?.info('🗑️ Syncing ${deletedPurchases.length} deleted purchases...');
+
+      final purchaseIds = deletedPurchases
+          .map((p) => p['purchases_ID']?.toString())
+          .where((id) => id != null)
+          .cast<String>()
+          .toList();
+
+      final batchSuccess = await googleSheets.deletePurchases(purchaseIds);
+
+      if (batchSuccess) {
+        for (final id in purchaseIds) {
+          await offlineStorage.hardDeletePurchase(id);
+        }
+        logger?.info('✅ Batch deleted ${purchaseIds.length} purchases');
+      } else {
+        logger?.info('⚠️ Batch delete not available, falling back to sequential...');
+        int successCount = 0;
+        int failCount = 0;
+
+        for (final purchase in deletedPurchases) {
           final purchaseId = purchase['purchases_ID']?.toString();
-          if (purchaseId != null) {
-            final success = await googleSheets.deletePurchase(purchaseId);
-            if (success) {
-              await offlineStorage.hardDeletePurchase(purchaseId);
-              logger?.info('  ✅ Deleted purchase $purchaseId');
-            } else {
-              logger?.error('  ❌ Failed to delete purchase $purchaseId');
-            }
+          if (purchaseId == null) continue;
+
+          final success = await googleSheets.deletePurchase(purchaseId);
+          if (success) {
+            await offlineStorage.hardDeletePurchase(purchaseId);
+            successCount++;
+          } else {
+            failCount++;
           }
-        }));
+
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+
+        logger?.info('🗑️ Sequential delete complete: $successCount succeeded, $failCount failed');
       }
     } catch (e) {
       logger?.error('Error syncing deleted purchases', e.toString());
@@ -354,22 +496,53 @@ class SyncService with ChangeNotifier {
   }
 
   Future<void> _syncNewProducts() async {
-    final newProducts = await offlineStorage.getPendingNewProducts();
-    if (newProducts.isNotEmpty) {
-      logger?.info('🆕 Uploading ${newProducts.length} new products...');
-      final success = await googleSheets.syncNewProducts(newProducts);
-      if (success) {
-        final barcodes = newProducts.map((e) => e['Barcode'].toString()).toList();
-        await offlineStorage.markNewProductsAsSynced(barcodes);
+    try {
+      final newProducts = await offlineStorage.getPendingNewProducts();
+      if (newProducts.isEmpty) return;
+
+      logger?.info('🆕 Uploading ${newProducts.length} new products in batches...');
+
+      const batchSize = 10;
+      int totalProcessed = 0;
+
+      for (int i = 0; i < newProducts.length; i += batchSize) {
+        final end = (i + batchSize < newProducts.length) ? i + batchSize : newProducts.length;
+        final batch = newProducts.sublist(i, end);
+
+        logger?.info('🆕 Processing new products batch ${i ~/ batchSize + 1} (${batch.length} items)');
+
+        final success = await googleSheets.syncNewProducts(batch);
+
+        if (success) {
+          final barcodes = batch.map((e) => e['Barcode'].toString()).toList();
+          await offlineStorage.markNewProductsAsSynced(barcodes);
+          totalProcessed += batch.length;
+          logger?.info('✅ Batch complete: ${barcodes.length} products marked as synced');
+        } else {
+          logger?.error('❌ Failed to sync new products batch');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 500));
       }
+
+      logger?.info('✅ All $totalProcessed new products synced successfully');
+    } catch (e) {
+      logger?.error('Error syncing new products', e.toString());
     }
   }
 
+  // 🔥 FIXED: Added _safeNotify() when pending.isEmpty
   Future<void> _syncStockCounts() async {
-    final pending = offlineStorage.pendingCounts;
+    // 🔥 FIX: Only get items that are truly pending (not synced)
+    final allCounts = offlineStorage.pendingCounts;
+    final pending = allCounts.where((c) =>
+    c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted'
+    ).toList();
+
     if (pending.isEmpty) {
       _lastSyncTime = _formatDateTime(DateTime.now());
       logger?.info('✨ Sync Complete: Up to date');
+      _safeNotify();
       return;
     }
 
@@ -382,28 +555,412 @@ class SyncService with ChangeNotifier {
       _lastSyncTime = _formatDateTime(DateTime.now());
       _lastSyncCount = pending.length;
       logger?.info('✅ Counts synced successfully');
+      _safeNotify();
+    }
+  }
+
+  // ============================================================================
+  // 🔥 ENHANCED SYNC WITH CHUNKING AND PROGRESS
+  // ============================================================================
+
+  Future<SyncResult> syncAllWithChunking({
+    Function(int processed, int total)? onProgress,
+    Function(String message)? onStatus,
+  }) async {
+    if (_isDisposed) {
+      logger?.error('SyncService: syncAllWithChunking() called after disposal');
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: 0,
+        message: 'Service disposed',
+        success: false,
+        duplicates: const [],
+      );
+    }
+
+    if (_isSyncing) {
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: 0,
+        message: 'Busy',
+        success: false,
+        duplicates: const [],
+      );
+    }
+
+    _isSyncing = true;
+    _lastError = null;
+    _safeNotify();
+
+    logger?.info('🚀 Sync with chunking started...');
+    onStatus?.call('Starting sync...');
+
+    final allDuplicates = <Map<String, dynamic>>[];
+    int totalSynced = 0;
+    bool allSuccessful = true;
+
+    // Track detailed counts
+    int invoicesSynced = 0;
+    int purchasesSynced = 0;
+    int pluMappingsSynced = 0;
+    int stockCountsSynced = 0;
+    int locationsSynced = 0;
+    int productsSynced = 0;
+
+    try {
+      final hasInternet = await checkConnectivity();
+      if (!hasInternet) {
+        logger?.info('Sync Aborted: No Internet');
+        return SyncResult(
+          hasInternet: false,
+          syncedCount: 0,
+          message: 'No internet',
+          success: false,
+          duplicates: const [],
+        );
+      }
+
+      // 1. Sync locations
+      final locations = await offlineStorage.getPendingLocations();
+      if (locations.isNotEmpty) {
+        onStatus?.call('Syncing ${locations.length} locations...');
+        final result = await googleSheets.syncNewLocationsWithChunking(
+          locations,
+          onProgress: (processed, total) {
+            onProgress?.call(processed, total);
+          },
+        );
+        if (result['success'] == true) {
+          final ids = locations.map((e) => e['locationID'].toString()).toList();
+          await offlineStorage.markLocationsAsSynced(ids);
+          locationsSynced = locations.length;
+          totalSynced += locations.length;
+          logger?.info('📍 Synced ${locations.length} locations');
+        } else {
+          allSuccessful = false;
+          logger?.error('❌ Location sync failed: ${result['message']}');
+        }
+      }
+
+      // 2. Sync invoices with chunking
+      final pendingInvoices = await offlineStorage.getPendingInvoiceDetails();
+      if (pendingInvoices.isNotEmpty) {
+        onStatus?.call('Syncing ${pendingInvoices.length} invoices...');
+
+        final syncedInvoices = pendingInvoices.map((invoice) {
+          final modified = Map<String, dynamic>.from(invoice);
+          modified['syncStatus'] = 'synced';
+          return modified;
+        }).toList();
+
+        final result = await googleSheets.syncInvoiceDetailsWithChunking(
+          syncedInvoices,
+          onProgress: (processed, total) {
+            onProgress?.call(processed, total);
+          },
+        );
+
+        if (result['success'] == true) {
+          final invoiceIds = pendingInvoices
+              .map((inv) => inv['invoiceDetailsID']?.toString())
+              .where((id) => id != null)
+              .cast<String>()
+              .toList();
+          await offlineStorage.bulkMarkInvoicesAsSynced(invoiceIds);
+          invoicesSynced = pendingInvoices.length;
+          totalSynced += pendingInvoices.length;
+          if (result['duplicates'] != null) {
+            allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
+          }
+          logger?.info('📄 Synced ${pendingInvoices.length} invoices');
+        } else {
+          allSuccessful = false;
+          logger?.error('❌ Invoice sync failed: ${result['message']}');
+        }
+      }
+
+      // 3. Sync purchases with chunking
+      final pendingPurchases = await offlineStorage.getPendingPurchases();
+      if (pendingPurchases.isNotEmpty) {
+        onStatus?.call('Syncing ${pendingPurchases.length} purchases...');
+        final result = await googleSheets.syncPurchasesWithChunking(
+          pendingPurchases,
+          onProgress: (processed, total) {
+            onProgress?.call(processed, total);
+          },
+        );
+
+        if (result['success'] == true) {
+          final purchaseIds = pendingPurchases
+              .map((p) => p['purchases_ID']?.toString())
+              .where((id) => id != null)
+              .cast<String>()
+              .toList();
+          await offlineStorage.bulkMarkPurchasesAsSynced(purchaseIds);
+          purchasesSynced = pendingPurchases.length;
+          totalSynced += pendingPurchases.length;
+          logger?.info('📦 Synced ${pendingPurchases.length} purchases');
+        } else {
+          allSuccessful = false;
+          logger?.error('❌ Purchase sync failed: ${result['message']}');
+        }
+      }
+
+      // 4. Sync PLU mappings with chunking
+      final pendingMappings = await offlineStorage.getPendingPluMappings();
+      if (pendingMappings.isNotEmpty) {
+        onStatus?.call('Syncing ${pendingMappings.length} PLU mappings...');
+        final jsonList = pendingMappings.map((m) => m.toJson()).toList();
+        final result = await googleSheets.syncPluMappingsWithChunking(
+          jsonList,
+          onProgress: (processed, total) {
+            onProgress?.call(processed, total);
+          },
+        );
+
+        if (result['success'] == true) {
+          await offlineStorage.markPluMappingsAsSynced(pendingMappings);
+          pluMappingsSynced = pendingMappings.length;
+          totalSynced += pendingMappings.length;
+          logger?.info('🔗 Synced ${pendingMappings.length} PLU mappings');
+        } else {
+          allSuccessful = false;
+          logger?.error('❌ PLU mapping sync failed: ${result['message']}');
+        }
+      }
+
+      // 5. Sync deleted items
+      await _syncDeletedInvoices();
+      await _syncDeletedPurchases();
+
+      // 6. Sync new products
+      final newProducts = await offlineStorage.getPendingNewProducts();
+      if (newProducts.isNotEmpty) {
+        productsSynced = newProducts.length;
+        await _syncNewProducts();
+      }
+
+      // 7. Sync stock counts - 🔥 FIX: Only sync truly pending items
+      final allCounts = offlineStorage.pendingCounts;
+      final pendingCounts = allCounts.where((c) =>
+      c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted'
+      ).toList();
+
+      if (pendingCounts.isNotEmpty) {
+        onStatus?.call('Syncing ${pendingCounts.length} stock counts...');
+        final result = await googleSheets.syncStockCountsWithChunking(
+          pendingCounts,
+          onProgress: (processed, total) {
+            onProgress?.call(processed, total);
+          },
+        );
+
+        if (result['success'] == true) {
+          final ids = pendingCounts
+              .where((c) => c['id'] != null)
+              .map((c) => c['id'].toString())
+              .toList();
+          await offlineStorage.markMultipleAsSynced(ids);
+          stockCountsSynced = pendingCounts.length;
+          totalSynced += pendingCounts.length;
+          logger?.info('📊 Synced ${pendingCounts.length} stock counts');
+        } else {
+          allSuccessful = false;
+          logger?.error('❌ Stock count sync failed: ${result['message']}');
+        }
+      }
+
+      _lastSyncTime = _formatDateTime(DateTime.now());
+      _lastSyncCount = totalSynced;
+      _safeNotify();
+
+      // Build detailed message
+      final parts = <String>[];
+      if (invoicesSynced > 0) parts.add('$invoicesSynced Invoice${invoicesSynced > 1 ? 's' : ''}');
+      if (purchasesSynced > 0) parts.add('$purchasesSynced Purchase${purchasesSynced > 1 ? 's' : ''}');
+      if (pluMappingsSynced > 0) parts.add('$pluMappingsSynced PLU Mapping${pluMappingsSynced > 1 ? 's' : ''}');
+      if (stockCountsSynced > 0) parts.add('$stockCountsSynced Stock Count${stockCountsSynced > 1 ? 's' : ''}');
+      if (locationsSynced > 0) parts.add('$locationsSynced Location${locationsSynced > 1 ? 's' : ''}');
+      if (productsSynced > 0) parts.add('$productsSynced Product${productsSynced > 1 ? 's' : ''}');
+
+      final dupMsg = allDuplicates.isNotEmpty ? ' (${allDuplicates.length} duplicates found)' : '';
+      final detailMsg = parts.isNotEmpty ? 'Synced: ${parts.join(", ")}$dupMsg' : 'No items to sync';
+
+      final message = allSuccessful
+          ? detailMsg
+          : 'Sync completed with errors: $detailMsg';
+
+      logger?.info('✨ $message');
+      onStatus?.call(message);
+
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: totalSynced,
+        message: message,
+        success: allSuccessful,
+        duplicates: allDuplicates,
+        invoicesSynced: invoicesSynced,
+        purchasesSynced: purchasesSynced,
+        pluMappingsSynced: pluMappingsSynced,
+        stockCountsSynced: stockCountsSynced,
+        locationsSynced: locationsSynced,
+        productsSynced: productsSynced,
+      );
+
+    } catch (e) {
+      _lastError = e.toString();
+      logger?.error('🔥 Sync Exception', e);
+      onStatus?.call('Error: $e');
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: totalSynced,
+        message: 'Error: $e',
+        success: false,
+        duplicates: allDuplicates,
+      );
+    } finally {
+      if (!_isDisposed) {
+        _isSyncing = false;
+        _safeNotify();
+      }
+    }
+  }
+
+  Future<SyncResult> syncPurchasesOnly({
+    Function(int processed, int total)? onProgress,
+  }) async {
+    if (_isDisposed || _isSyncing) {
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: 0,
+        message: _isDisposed ? 'Service disposed' : 'Sync in progress',
+        success: false,
+        duplicates: const [],
+      );
+    }
+
+    _isSyncing = true;
+    _lastError = null;
+    _safeNotify();
+
+    try {
+      final hasInternet = await checkConnectivity();
+      if (!hasInternet) {
+        return SyncResult(
+          hasInternet: false,
+          syncedCount: 0,
+          message: 'No internet',
+          success: false,
+          duplicates: const [],
+        );
+      }
+
+      final pendingPurchases = await offlineStorage.getPendingPurchases();
+      if (pendingPurchases.isEmpty) {
+        return SyncResult(
+          hasInternet: true,
+          syncedCount: 0,
+          message: 'No pending purchases',
+          success: true,
+          duplicates: const [],
+        );
+      }
+
+      final result = await googleSheets.syncPurchasesWithChunking(
+        pendingPurchases,
+        onProgress: onProgress,
+      );
+
+      if (result['success'] == true) {
+        final purchaseIds = pendingPurchases
+            .map((p) => p['purchases_ID']?.toString())
+            .where((id) => id != null)
+            .cast<String>()
+            .toList();
+        await offlineStorage.bulkMarkPurchasesAsSynced(purchaseIds);
+      }
+
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: pendingPurchases.length,
+        message: result['success']
+            ? 'Synced ${pendingPurchases.length} purchases'
+            : 'Sync failed: ${result['message']}',
+        success: result['success'] == true,
+        duplicates: const [],
+      );
+
+    } catch (e) {
+      return SyncResult(
+        hasInternet: true,
+        syncedCount: 0,
+        message: 'Error: $e',
+        success: false,
+        duplicates: const [],
+      );
+    } finally {
+      if (!_isDisposed) {
+        _isSyncing = false;
+        _safeNotify();
+      }
+    }
+  }
+
+  Future<Map<String, int>> getPendingCounts() async {
+    try {
+      final invoices = await offlineStorage.getPendingInvoiceDetails();
+      final purchases = await offlineStorage.getPendingPurchases();
+      final locations = await offlineStorage.getPendingLocations();
+      final products = await offlineStorage.getPendingNewProducts();
+      final mappings = await offlineStorage.getPendingPluMappings();
+      final counts = offlineStorage.pendingCounts;
+
+      return {
+        'invoices': invoices.length,
+        'purchases': purchases.length,
+        'locations': locations.length,
+        'products': products.length,
+        'pluMappings': mappings.length,
+        'stockCounts': counts.length,
+        'total': invoices.length + purchases.length + locations.length +
+            products.length + mappings.length + counts.length,
+      };
+    } catch (e) {
+      logger?.error('Error getting pending counts', e);
+      return {
+        'invoices': 0,
+        'purchases': 0,
+        'locations': 0,
+        'products': 0,
+        'pluMappings': 0,
+        'stockCounts': 0,
+        'total': 0,
+      };
     }
   }
 
   // ==================== HELPER METHODS - DOWNLOAD OPERATIONS ====================
-  // 🔴 Add download operation helpers here
   Future<List<Map<String, dynamic>>> downloadInvoices() async {
     try {
       final remoteInvoices = await googleSheets.fetchInvoices();
 
-      // Mark all downloaded invoices as synced
-      final invoiceIds = remoteInvoices
+      final syncedInvoices = remoteInvoices.map((inv) {
+        final map = Map<String, dynamic>.from(inv);
+        map['syncStatus'] = 'synced';
+        map['syncedAt'] = DateTime.now().toIso8601String();
+        return map;
+      }).toList();
+
+      final invoiceIds = syncedInvoices
           .map((inv) => inv['invoiceDetailsID']?.toString())
           .where((id) => id != null)
           .cast<String>()
           .toList();
 
       await _markInvoicesAsSynced(invoiceIds);
+      await offlineStorage.saveInvoices(syncedInvoices);
 
-      // Save to local storage
-      await offlineStorage.saveInvoices(remoteInvoices);
-
-      return remoteInvoices;
+      return syncedInvoices;
     } catch (e) {
       logger?.error('Failed to download invoices', e);
       return [];
@@ -421,48 +978,74 @@ class SyncService with ChangeNotifier {
   }
 
   // ==================== HELPER METHODS - DATA FETCHING ====================
-  // 🔴 Add data fetching helpers here
-// In sync_service.dart, modify _fetchAllMasterData:
   Future<List<List<Map<String, dynamic>>>> _fetchAllMasterData() async {
-    logger?.info('📥 Fetching all master data with batched loading for large tables...');
+    logger?.info('📥 Refreshing master data tables...');
 
-    // Fetch small tables in parallel
-    final futures = await Future.wait([
-      googleSheets.fetchInventory(),           // 0
-      googleSheets.fetchLocations(),           // 1
-      googleSheets.fetchAudits(),              // 2
-      googleSheets.fetchPurchases(),           // 3
-      googleSheets.fetchItemSales(),           // 4
-      googleSheets.fetchComputedCosts(),       // 5
-      googleSheets.fetchInvoices(),            // 6
-      googleSheets.fetchItemsIssued(),         // 7
-      googleSheets.fetchStockIssues(),         // 8
-      googleSheets.fetchItemsIssuedMap(),      // 9
-      googleSheets.fetchPluMappings(),         // 10 🔴 DOWNLOAD CLOUD MAPPINGS
-    ]);
+    final inventory = await googleSheets.fetchInventory();
+    await Future.delayed(const Duration(milliseconds: 150));
 
-    // Fetch large StoreSalesData separately with batching
-    logger?.info('📦 Fetching StoreSalesData in batches (estimated 32,000 records)...');
-    final storeSales = await googleSheets.fetchLargeTableInBatches(
-      'StoreSalesData',
-      batchSize: 5000,
-      timeoutSeconds: 30,
-    );
+    final locations = await googleSheets.fetchLocations();
+    await Future.delayed(const Duration(milliseconds: 150));
 
-    // Combine results
+    final audits = await googleSheets.fetchAudits();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final purchases = await googleSheets.fetchPurchases();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final storeSales = await googleSheets.fetchStoreSalesData();
+
+    final filteredStoreSales = storeSales.where((item) {
+      final date = item['Date'];
+      if (date == null) return false;
+      if (date is String && date.isEmpty) return false;
+      if (date is String) {
+        try {
+          DateTime.parse(date);
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+      return true;
+    }).toList();
+
+    logger?.info('📊 StoreSalesData: ${storeSales.length} total, ${filteredStoreSales.length} valid dates');
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final itemSales = await googleSheets.fetchItemSales();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final costs = await googleSheets.fetchComputedCosts();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final invoices = await googleSheets.fetchInvoices();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final itemsIssued = await googleSheets.fetchItemsIssued();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final stockIssues = await googleSheets.fetchStockIssues();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final itemsIssuedMap = await googleSheets.fetchItemsIssuedMap();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    final pluMappings = await googleSheets.fetchPluMappings();
+
     return [
-      futures[0], // Inventory
-      futures[1], // Locations
-      futures[2], // Audits
-      futures[3], // Purchases
-      storeSales, // Store Sales (batched) - POSITION 4
-      futures[4], // Item Sales - POSITION 5
-      futures[5], // Costs - POSITION 6
-      futures[6], // Invoices - POSITION 7
-      futures[7], // Items Issued - POSITION 8
-      futures[8], // Stock Issues - POSITION 9
-      futures[9], // Items Issued Map - POSITION 10
-      futures[10],// Plu Mappings - 11 🔴
+      inventory,
+      locations,
+      audits,
+      purchases,
+      filteredStoreSales,
+      itemSales,
+      costs,
+      invoices,
+      itemsIssued,
+      stockIssues,
+      itemsIssuedMap,
+      pluMappings,
     ];
   }
 
@@ -494,22 +1077,20 @@ class SyncService with ChangeNotifier {
       for (var invoice in invoices) {
         final invoiceId = invoice['invoiceDetailsID']?.toString();
         if (invoiceId != null) {
-          // 🔴 CRITICAL: Force syncStatus to 'synced'
-          invoice['syncStatus'] = 'synced';  // This is correct
+          invoice['syncStatus'] = 'synced';
           invoice['syncedAt'] = DateTime.now().toIso8601String();
 
           await offlineStorage.updateInvoiceDetails({
             'invoiceDetailsID': invoiceId,
             'syncStatus': 'synced',
             'syncedAt': DateTime.now().toIso8601String(),
-            ...invoice, // Include all invoice data
+            ...invoice,
           });
         }
       }
     }
   }
 
-  // FIXED: Using the helper methods instead of inline code
   Future<void> _saveAllMasterDataToDatabase(List<List<Map<String, dynamic>>> results) async {
     final inventory = results[0];
     final locations = results[1];
@@ -522,48 +1103,38 @@ class SyncService with ChangeNotifier {
     final itemsIssued = results[8];
     final stockIssues = results[9];
     final itemsIssuedMap = results[10];
-    final pluMappings = results[11]; // 🔴 GET MAPPINGS
+    final pluMappings = results[11];
 
-
-
-    // Save master costs first
     await _saveMasterCatalog(masterCosts);
 
-    // FIXED: Use _buildCostMap and _mergeCostsIntoInventory helpers
     final costMap = _buildCostMap(masterCosts);
     final updatedInventory = _mergeCostsIntoInventory(inventory, costMap);
 
-    // Clear existing data
     await offlineStorage.clearInventory();
     await offlineStorage.clearLocations();
     await offlineStorage.clearAudits();
 
-    // Save all data
     await offlineStorage.bulkSaveInventory(updatedInventory);
     await offlineStorage.bulkSaveLocations(locations);
     await offlineStorage.savePurchases(purchases);
-    await offlineStorage.saveStoreSalesData(storeSalesData);  // ✅ FIXED: Save StoreSalesData
-    await offlineStorage.saveItemSalesMap(itemSalesMap);       // ✅ FIXED: Save ItemSalesMap correctly
+    await offlineStorage.saveStoreSalesData(storeSalesData);
+    await offlineStorage.saveItemSalesMap(itemSalesMap);
     await offlineStorage.saveItemsIssuedMap(itemsIssuedMap);
-    await offlineStorage.saveServerPluMappings(pluMappings); // 🔴 SAVE TO HIVE
+    await offlineStorage.saveServerPluMappings(pluMappings);
 
     for (final audit in audits) {
       await offlineStorage.saveAudit(audit);
     }
-    // Save invoices
+
     if (invoices.isNotEmpty) {
       await offlineStorage.saveServerInvoices(invoices);
     }
 
-    //SaveItemsIssued
     await offlineStorage.saveItemsIssued(itemsIssued);
     await offlineStorage.saveStockIssues(stockIssues);
-
   }
 
   // ==================== CORE BUSINESS LOGIC ====================
-  // --- SYNC ALL (UPLOAD) ---
-  // --- SYNC ALL (UPLOAD) ---
   Future<SyncResult> syncAll() async {
     if (_isDisposed) {
       logger?.error('SyncService: syncAll() called after disposal');
@@ -591,8 +1162,8 @@ class SyncService with ChangeNotifier {
     _safeNotify();
     logger?.info('🚀 Sync Started...');
 
-    // 🔥 NEW: Track duplicates across all operations
     final allDuplicates = <Map<String, dynamic>>[];
+    int totalSynced = 0;
 
     try {
       final hasInternet = await checkConnectivity();
@@ -607,33 +1178,37 @@ class SyncService with ChangeNotifier {
         );
       }
 
-      // Execute all sync operations and collect duplicates
       await _syncNewLocations();
 
-      // 🔥 Capture invoice duplicates
       final invoiceResult = await _syncInvoiceHeaders();
       if (invoiceResult['success'] == true && invoiceResult['duplicates'] != null) {
         allDuplicates.addAll(List<Map<String, dynamic>>.from(invoiceResult['duplicates']));
       }
 
       await _syncPurchases();
-      await _syncPluMappings(); // 🔴 BACKUP LOCAL MAPPINGS TO CLOUD
+      await _syncPluMappings();
       await _syncDeletedInvoices();
       await _syncDeletedPurchases();
       await _syncNewProducts();
       await _syncStockCounts();
 
-      // Check if any pending counts remain
-      final pending = offlineStorage.pendingCounts;
+      // 🔥 FIX: Only count truly pending items
+      final allCounts = offlineStorage.pendingCounts;
+      final pending = allCounts.where((c) =>
+      c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted'
+      ).toList();
+
+      // Always update last sync time on success
+      _lastSyncTime = _formatDateTime(DateTime.now());
+      _lastSyncCount = totalSynced;
+      _safeNotify();
+
       if (pending.isEmpty) {
-        _lastSyncTime = _formatDateTime(DateTime.now());
-        _safeNotify();
         logger?.info('✨ Sync Complete: Up to date');
 
-        // 🔥 Return with duplicates if any
         return SyncResult(
           hasInternet: true,
-          syncedCount: 0,
+          syncedCount: totalSynced,
           message: allDuplicates.isEmpty
               ? 'Up to date'
               : 'Up to date (${allDuplicates.length} duplicates found)',
@@ -641,11 +1216,12 @@ class SyncService with ChangeNotifier {
           duplicates: allDuplicates,
         );
       } else {
+        logger?.info('⚠️ Sync Complete with ${pending.length} items still pending');
         return SyncResult(
           hasInternet: true,
-          syncedCount: 0,
-          message: 'Sync failed',
-          success: false,
+          syncedCount: totalSynced,
+          message: 'Sync completed, ${pending.length} items still pending',
+          success: true,
           duplicates: allDuplicates,
         );
       }
@@ -654,9 +1230,10 @@ class SyncService with ChangeNotifier {
         _lastError = e.toString();
         logger?.error('🔥 Sync Exception', e);
       }
+      _safeNotify();
       return SyncResult(
         hasInternet: true,
-        syncedCount: 0,
+        syncedCount: totalSynced,
         message: 'Error: $e',
         success: false,
         duplicates: allDuplicates,
@@ -665,16 +1242,15 @@ class SyncService with ChangeNotifier {
       if (!_isDisposed) {
         _isSyncing = false;
         _safeNotify();
+        logger?.info('✅ Sync finished, _isSyncing: $_isSyncing');
       }
     }
   }
 
-  // --- DOWNLOAD (STRICT SAFEGUARD) ---
   Future<int> downloadExistingCounts() async {
     if (_isDisposed) return 0;
     if (_isSyncing) return 0;
 
-    // SAFEGUARD: Block download if there are ANY pending changes
     if (offlineStorage.pendingCounts.isNotEmpty) {
       const msg = 'Cannot download: You have unsynced changes. Please press "Sync Data" (Upload) first.';
       logger?.error(msg);
@@ -690,7 +1266,6 @@ class SyncService with ChangeNotifier {
       logger?.info('📥 Downloading clean list from server...');
       final remoteCounts = await googleSheets.fetchStockCounts();
 
-      // Wipe & Replace (Safe now because we checked for pending items above)
       await offlineStorage.overwriteLocalCounts(remoteCounts);
 
       return remoteCounts.length;
@@ -705,8 +1280,6 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  // --- REFRESH MASTER DATA ---
-  // --- REFRESH MASTER DATA ---
   Future<SyncResult> refreshMasterData() async {
     if (_isDisposed || _isSyncing) {
       return SyncResult(
@@ -720,6 +1293,7 @@ class SyncService with ChangeNotifier {
 
     _isSyncing = true;
     _lastError = null;
+    _safeNotify(); // 🔥 Notify UI that sync started
 
     try {
       if (!await checkConnectivity()) {
@@ -732,15 +1306,11 @@ class SyncService with ChangeNotifier {
         );
       }
 
-      // Fetch ALL data in parallel
       final results = await _fetchAllMasterData();
-
-      // Log what we received
       await _logFetchedDataCounts(results);
 
       final remoteInvoices = results[7];
 
-      // 🔴 FIX: Mark them as synced before any processing
       final syncedInvoices = remoteInvoices.map((invoice) {
         return {
           ...invoice,
@@ -748,7 +1318,6 @@ class SyncService with ChangeNotifier {
         };
       }).toList();
 
-      // 🔥 Detect duplicates before saving
       final existingInvoices = await offlineStorage.getAllInvoiceDetails();
       final duplicates = <Map<String, dynamic>>[];
       final uniqueInvoices = <Map<String, dynamic>>[];
@@ -764,24 +1333,25 @@ class SyncService with ChangeNotifier {
         }
       }
 
-      // Save downloaded invoices and mark as synced
       if (uniqueInvoices.isNotEmpty) {
         await _saveDownloadedInvoices(uniqueInvoices);
         logger?.info('📄 Saved ${uniqueInvoices.length} unique invoices (${duplicates.length} duplicates skipped)');
       }
 
-      // Save all master data to database
       await _saveAllMasterDataToDatabase(results);
 
-      // 🔥 ADD DEBUG HERE - Check what was saved
       logger?.info('🔍 Verifying saved data:');
       final storeSalesCount = await offlineStorage.getStoreSalesDataCount();
       logger?.info('  - StoreSalesData count: $storeSalesCount');
 
-      // Call the debug method if you want more details
       await offlineStorage.debugSalesData();
 
       _inventoryLoaded = true;
+
+      // 🔥 FIX: Update last sync time and notify UI
+      _lastSyncTime = _formatDateTime(DateTime.now());
+      _lastSyncCount = uniqueInvoices.length;
+      _safeNotify();
 
       return SyncResult(
         hasInternet: true,
@@ -792,10 +1362,10 @@ class SyncService with ChangeNotifier {
         success: true,
         duplicates: duplicates,
       );
-
     } catch (e) {
       _lastError = e.toString();
       logger?.error('❌ Master Refresh Failed', e);
+      _safeNotify(); // 🔥 Notify UI of error state
       return SyncResult(
         hasInternet: true,
         syncedCount: 0,
@@ -805,12 +1375,12 @@ class SyncService with ChangeNotifier {
       );
     } finally {
       _isSyncing = false;
-      _safeNotify();
+      _safeNotify(); // 🔥 Always notify when done
+      logger?.info('✅ Refresh finished, _isSyncing: $_isSyncing');
     }
   }
 
   // ==================== PUBLIC API METHODS ====================
-  // 🔴 Add public-facing methods here
   Future<void> loadInventory() async {
     if (!_isDisposed) {
       await refreshMasterData();

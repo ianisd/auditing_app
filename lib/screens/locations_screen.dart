@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/sync_service.dart';
 import '../services/store_manager.dart';
+import '../services/network_ping_service.dart'; // ✅ ADDED: Import for connection check
 import 'location_history_screen.dart';
 
 class LocationsScreen extends StatefulWidget {
@@ -33,7 +33,6 @@ class _LocationsScreenState extends State<LocationsScreen> {
   }
 
   Future<void> _loadLocations() async {
-    // Safety check before starting
     if (!mounted) return;
     setState(() => _isLoading = true);
 
@@ -41,12 +40,10 @@ class _LocationsScreenState extends State<LocationsScreen> {
       final storage = context.read<OfflineStorage>();
       final locations = await storage.getLocations();
 
-      // --- CRITICAL FIX: Check mounted after async gap ---
       if (!mounted) return;
 
       setState(() {
         _locations = locations;
-        // Re-apply filter if text exists
         if (_searchController.text.isNotEmpty) {
           _filterLocations();
         } else {
@@ -73,7 +70,58 @@ class _LocationsScreenState extends State<LocationsScreen> {
     });
   }
 
+  // ✅ NEW: Helper method to warn users about weak connections
+  Future<bool> _checkWeakConnection() async {
+    final pingService = context.read<NetworkPingService>();
+
+    // If connection is Strong or Average, proceed immediately
+    if (pingService.connectionQuality != 'Weak') {
+      return true;
+    }
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+        title: const Text('Poor Connection Detected'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Latency: ${pingService.latencyMs} ms'),
+            Text('Quality: ${pingService.connectionQuality}',
+                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            const Text(
+              'Sync operations may fail or take several minutes. Consider:\n'
+                  '• Switching to mobile data\n'
+                  '• Moving closer to your Wi-Fi router\n'
+                  '• Waiting for a better connection',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Continue Anyway'),
+          ),
+        ],
+      ),
+    );
+
+    return proceed ?? false;
+  }
+
   Future<void> _refreshLocations() async {
+    // ✅ ADDED: Check connection quality before syncing
+    final shouldProceed = await _checkWeakConnection();
+    if (!shouldProceed) return; // User cancelled due to weak connection
+
     setState(() => _isRefreshing = true);
     try {
       final syncService = context.read<StoreManager>().syncService;
@@ -92,8 +140,6 @@ class _LocationsScreenState extends State<LocationsScreen> {
       if (mounted) setState(() => _isRefreshing = false);
     }
   }
-
-  // --- CRUD OPERATIONS ---
 
   Future<void> _showAddEditDialog([Map<String, dynamic>? existingLocation]) async {
     final nameController = TextEditingController(text: existingLocation?['Location']);
@@ -122,7 +168,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
               };
 
               await storage.saveLocation(locData);
-              if (!context.mounted) return; // Safety check
+              if (!context.mounted) return;
               Navigator.pop(ctx);
               _loadLocations();
 
@@ -157,13 +203,11 @@ class _LocationsScreenState extends State<LocationsScreen> {
     }
   }
 
-  // --- HELPERS ---
-
   Widget _buildLocationImage(String? imageUrl) {
     if (imageUrl == null || imageUrl.isEmpty) return const CircleAvatar(child: Icon(Icons.location_on));
     bool isValidUrl = imageUrl.startsWith('http');
     if (!isValidUrl) return const CircleAvatar(backgroundColor: Colors.grey, child: Icon(Icons.broken_image, color: Colors.white));
-    return CircleAvatar(backgroundImage: NetworkImage(imageUrl), onBackgroundImageError: (_, __) {}, radius: 20);
+    return CircleAvatar(backgroundImage: NetworkImage(imageUrl), onBackgroundImageError: (_, _) {}, radius: 20);
   }
 
   @override
@@ -213,8 +257,6 @@ class _LocationsScreenState extends State<LocationsScreen> {
             child: ListTile(
               leading: _buildLocationImage(image),
               title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-
-              // Drill Down on Tap
               onTap: () {
                 Navigator.push(
                   context,
@@ -223,8 +265,6 @@ class _LocationsScreenState extends State<LocationsScreen> {
                   ),
                 );
               },
-
-              // Edit/Delete Menu
               trailing: PopupMenuButton<String>(
                 onSelected: (value) {
                   if (value == 'edit') _showAddEditDialog(loc);

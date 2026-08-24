@@ -15,6 +15,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
   final _formKey = GlobalKey<FormState>();
   late String _supplierName;
   late String _invoiceNumber;
+  late String _grvReference;  // 🔥 ADDED
   late DateTime _deliveryDate;
   String? _selectedSupplierId;
   bool _isLoadingSuppliers = true;
@@ -22,10 +23,13 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
   List<Map<String, dynamic>> _suppliers = [];
   bool _isDisposed = false;
   final TextEditingController _invoiceNumberController = TextEditingController();
+  final TextEditingController _grvController = TextEditingController();  // 🔥 ADDED
 
   @override
   void dispose() {
     _isDisposed = true;
+    _invoiceNumberController.dispose();
+    _grvController.dispose();  // 🔥 ADDED
     super.dispose();
   }
 
@@ -42,6 +46,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     super.initState();
     _supplierName = '';
     _invoiceNumber = '';
+    _grvReference = '';  // 🔥 ADDED
     _deliveryDate = DateTime.now();
     _loadSuppliers();
   }
@@ -72,17 +77,15 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
 
     if (!_formKey.currentState!.validate()) return;
 
-    // 🔴 NEW: Try to find supplier by name if not selected
+    // Try to find supplier by name if not selected
     if (_selectedSupplierId == null && _supplierName.isNotEmpty) {
       print('DEBUG: Attempting to find supplier by name: $_supplierName');
       final foundId = await context.read<OfflineStorage>()
           .findSupplierIdByAnyName(_supplierName);
 
       if (foundId != null) {
-        // Update the selected supplier ID
         _selectedSupplierId = foundId;
 
-        // Update to canonical supplier name
         final suppliers = await context.read<OfflineStorage>().getMasterSuppliers();
         final supplier = suppliers.firstWhere(
               (s) => s['supplierID']?.toString() == foundId,
@@ -117,8 +120,10 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
       final invoiceId = DateTime.now().millisecondsSinceEpoch.toString();
       print('DEBUG: Creating invoice with ID: $invoiceId');
 
-      // 🔴 CRITICAL: Use _invoiceNumber (the String variable) instead of _invoiceNumberController
-      String rawInvoiceNumber = _invoiceNumber;  // ← FIXED: Use _invoiceNumber
+      // Get GRV Reference from controller
+      _grvReference = _grvController.text.trim();  // 🔥 ADDED
+
+      String rawInvoiceNumber = _invoiceNumber;
       String invoiceNumber = rawInvoiceNumber.trim();
 
       // Debug the invoice number thoroughly
@@ -136,25 +141,25 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
         }
       }
 
-      // 🔴 CRITICAL: Create invoice with ALL fields as proper types
+      // 🔥 CRITICAL: Create invoice with ALL fields including GRV Reference
       final invoice = <String, dynamic>{
         'invoiceDetailsID': invoiceId,
-        'Invoice Number': invoiceNumber,  // This is a String, will preserve leading zeros
+        'Invoice Number': invoiceNumber,
+        'GRV Reference': _grvReference,  // 🔥 ADDED
         'supplierID': _selectedSupplierId!,
         'Supplier': _supplierName.trim(),
         'Date of Purchase': _deliveryDate.toIso8601String(),
         'Delivery Date': _deliveryDate.toIso8601String(),
-        'Total Cost Ex Vat': 0.0,  // This should remain a number
+        'Total Cost Ex Vat': 0.0,
         'syncStatus': 'pending',
       };
 
-      // Verify the invoice number is still a string with correct value
       print('✅ FINAL INVOICE DATA:');
       print('  - Invoice ID: ${invoice['invoiceDetailsID']}');
-      print('  - Invoice Number: "${invoice['Invoice Number']}" (${invoice['Invoice Number'].runtimeType})');
+      print('  - Invoice Number: "${invoice['Invoice Number']}"');
+      print('  - GRV Reference: "${invoice['GRV Reference']}"');  // 🔥 ADDED
       print('  - Supplier: ${invoice['Supplier']}');
       print('  - Supplier ID: ${invoice['supplierID']}');
-      print('  - Date: ${invoice['Date of Purchase']}');
 
       print('DEBUG: Saving invoice details to storage...');
       await context.read<OfflineStorage>().saveInvoiceDetails(invoice);
@@ -167,13 +172,13 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
             invoiceDetailsID: invoiceId,
             supplierName: _supplierName,
             deliveryDate: _deliveryDate,
-            preloadedItems: null, // No preloaded items for manual entry
+            grvReference: _grvReference,  // 🔥 ADDED - PASS GRV
+            preloadedItems: null,
           ),
         ),
       );
 
       if (navigationResult == true && mounted) {
-        // Return success to parent screen if needed
         Navigator.pop(context, true);
       }
 
@@ -196,49 +201,76 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
       appBar: AppBar(
         title: const Text('Manual GRV Entry'),
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _buildSupplierField(),
-            TextFormField(
-              controller: _invoiceNumberController,
-              decoration: const InputDecoration(
-                labelText: 'Invoice Number *',
-                prefixIcon: Icon(Icons.description),
-              ),
-              validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
-              keyboardType: TextInputType.text,  // 🔴 Use text, not number!
-              // Don't use TextInputType.number as it might strip leading zeros
-              onChanged: (v) => setState(() => _invoiceNumber = v),
-            ),
-            const SizedBox(height: 16),
-            _buildDateField('Delivery Date *', _deliveryDate, (date) => setState(() => _deliveryDate = date)),
-            const SizedBox(height: 24),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Form(
+            key: _formKey,
+            child: ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                _buildSupplierField(),
 
-            // Manual Entry Only Button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isLoading ? null : _saveInvoiceAndNavigate,
-                icon: _isLoading
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
-                    : const Icon(Icons.add),
-                label: Text(_isLoading ? 'Creating...' : 'Create Invoice & Add Items'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: Colors.green,
-                  disabledBackgroundColor: Colors.green.shade200,
+                // 🔥 ADDED: GRV Reference Field
+                TextFormField(
+                  controller: _grvController,
+                  decoration: const InputDecoration(
+                    labelText: 'GRV Reference *',
+                    prefixIcon: Icon(Icons.receipt_long),
+                    helperText: 'Goods Received Voucher number',
+                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                  onChanged: (v) => setState(() => _grvReference = v),
                 ),
-              ),
+                const SizedBox(height: 16),
+
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _invoiceNumberController,
+                        decoration: const InputDecoration(
+                          labelText: 'Invoice Number *',
+                          prefixIcon: Icon(Icons.description),
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                        keyboardType: TextInputType.text,
+                        onChanged: (v) => setState(() => _invoiceNumber = v),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _buildDateField('Delivery Date *', _deliveryDate, (date) => setState(() => _deliveryDate = date)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+
+                // Manual Entry Only Button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _saveInvoiceAndNavigate,
+                    icon: _isLoading
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
+                        : const Icon(Icons.add),
+                    label: Text(_isLoading ? 'Creating...' : 'Create Invoice & Add Items'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Colors.green,
+                      disabledBackgroundColor: Colors.green.shade200,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'ℹ️ Delivery Date will be used for:\n• Date of Purchase\n• Delivery Date\n• Stock Delivery Date',
+                  style: TextStyle(color: Colors.blueGrey, fontSize: 12),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            const Text(
-              'ℹ️ Delivery Date will be used for:\n• Date of Purchase\n• Delivery Date\n• Stock Delivery Date',
-              style: TextStyle(color: Colors.blueGrey, fontSize: 12),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -258,7 +290,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
         const Text('Supplier *', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         DropdownButtonFormField<String>(
-          value: _selectedSupplierId,
+          initialValue: _selectedSupplierId,
           decoration: const InputDecoration(
             labelText: 'Select supplier',
             border: OutlineInputBorder(),

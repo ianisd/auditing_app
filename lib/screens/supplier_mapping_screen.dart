@@ -102,7 +102,7 @@ class _SupplierMappingScreenState extends State<SupplierMappingScreen> {
                         labelText: 'Select Supplier',
                         border: OutlineInputBorder(),
                       ),
-                      value: _selectedSupplierId,
+                      initialValue: _selectedSupplierId,
                       items: _suppliers.map((s) {
                         return DropdownMenuItem(
                           value: s['supplierID']?.toString(),

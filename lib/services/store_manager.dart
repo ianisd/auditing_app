@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'sync_service.dart';
 import 'google_sheets_service.dart';
 import 'logger_service.dart';
 import 'offline_storage.dart';
+import '../models/sync_model.dart';  // 🔥 ADD THIS
 
 class StoreManager with ChangeNotifier {
   static const String _globalBoxName = 'global_app_config';
@@ -11,17 +13,21 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbx262dF2LJDSMrt2OLnDvaKtGD5VDTlByGk0AP9R79jZgkuvmP2-0nXWlGriplx8aI/exec';
+      'https://script.google.com/macros/s/AKfycbxIUmH-SiYpdRdSKgApXI1Le8uHe7MApDoEe06-8REECfXLxLkW5XjKBm3cCLwzTmMW/exec';
 
   late Box _box;
   bool _initialized = false;
   final LoggerService? _logger;
   final OfflineStorage offlineStorage;
+  final SyncStatus syncStatus;  // 🔥 ADDED - Required
 
   Map<String, dynamic>? _activeStore;
   List<Map<String, dynamic>> _stores = [];
 
   SyncService? _syncService;
+
+  // 🔥 Single debounce timer for the entire app
+  Timer? _pendingCountDebounce;
 
   static const int _currentStoreVersion = 2;
   static const String _storeVersionKey = 'store_version';
@@ -53,6 +59,7 @@ class StoreManager with ChangeNotifier {
         logger: _logger,
       );
 
+      // 🔥 SyncService no longer needs syncStatus - listener is in StoreManager
       _syncService = SyncService(
         offlineStorage: offlineStorage,
         googleSheets: googleSheets,
@@ -64,8 +71,30 @@ class StoreManager with ChangeNotifier {
     return _syncService!;
   }
 
-  StoreManager({required this.offlineStorage, LoggerService? logger})
-      : _logger = logger;
+  // 🔥 UPDATED CONSTRUCTOR - syncStatus is now required
+  StoreManager({
+    required this.offlineStorage,
+    required this.syncStatus,  // 🔥 Required
+    LoggerService? logger,
+  }) : _logger = logger {
+    // 🔥 CRITICAL: Listen to OfflineStorage changes ONCE, app-wide
+    offlineStorage.addListener(_onStorageChanged);
+  }
+
+  // 🔥 Single storage change handler - app-wide!
+  void _onStorageChanged() {
+    _pendingCountDebounce?.cancel();
+    _pendingCountDebounce = Timer(const Duration(milliseconds: 300), _updatePendingCount);
+  }
+
+  Future<void> _updatePendingCount() async {
+    try {
+      final counts = await offlineStorage.getDetailedPendingCounts();
+      syncStatus.setPendingCounts(counts);
+    } catch (e) {
+      _logger?.error('Failed to update pending count', e.toString());
+    }
+  }
 
   Future<void> init() async {
     if (_initialized) return;
@@ -77,12 +106,22 @@ class StoreManager with ChangeNotifier {
     _loadActiveStore();
     _initialized = true;
 
+    // 🔥 Seed initial count on cold start
+    await _updatePendingCount();
+
     _logger?.info('✅ StoreManager initialized. Found ${_stores.length} stores');
     if (_activeStore != null) {
       _logger?.info('📌 Active store: ${_activeStore!['name']}');
     }
 
     notifyListeners();
+  }
+
+  void _disposeSyncService() {
+    if (_syncService != null) {
+      _syncService!.dispose();
+      _syncService = null;
+    }
   }
 
   void _loadStores() {
@@ -111,8 +150,10 @@ class StoreManager with ChangeNotifier {
   String _getStoreIdentifier() {
     if (_activeStore == null) return '';
 
+    // 🔥 FORCE sheetId first
     String identifier = _activeStore!['sheetId']?.toString() ?? '';
 
+    // Only fallback to scriptId if sheetId is empty
     if (identifier.isEmpty) {
       identifier = _activeStore!['scriptId']?.toString() ?? '';
     }
@@ -120,6 +161,9 @@ class StoreManager with ChangeNotifier {
     if (identifier.isEmpty) {
       identifier = extractSheetIdFromUrl(_activeStore!['url'] ?? '');
     }
+
+    // 🔥 Log what we're using
+    _logger?.info('  🔑 Using store identifier: $identifier (sheetId: ${_activeStore!['sheetId']}, scriptId: ${_activeStore!['scriptId']})');
 
     return identifier;
   }
@@ -229,16 +273,15 @@ class StoreManager with ChangeNotifier {
     _logger?.info('🔄 StoreManager.setActiveStore() called with storeId: $storeId');
 
     try {
-      if (_syncService != null) {
-        _syncService!.dispose();
-        _syncService = null;
-      }
+      // 🔥 Use shared disposal helper
+      _disposeSyncService();
 
       final store = _stores.firstWhere((s) => s['id'] == storeId);
       _activeStore = store;
       await _box.put(_activeStoreKey, storeId);
 
       _logger?.info('  ✅ Active store set to: ${store['name']}');
+      _logger?.info('  📋 Store data: sheetId=${store['sheetId']}, scriptId=${store['scriptId']}, url=${store['url']}');
 
       String storeIdentifier = store['sheetId']?.toString() ?? '';
 
@@ -316,8 +359,8 @@ class StoreManager with ChangeNotifier {
       await _box.put(_storesKey, _stores);
 
       if (_activeStore?['id'] == storeId) {
-        _syncService?.dispose();
-        _syncService = null;
+        // 🔥 Use shared disposal helper
+        _disposeSyncService();
         _activeStore = null;
         await _box.delete(_activeStoreKey);
 
@@ -357,7 +400,10 @@ class StoreManager with ChangeNotifier {
 
   @override
   void dispose() {
-    _syncService?.dispose();
+    // 🔥 Clean up the listener and timer
+    _pendingCountDebounce?.cancel();
+    offlineStorage.removeListener(_onStorageChanged);
+    _disposeSyncService();
     _box.close();
     super.dispose();
   }
