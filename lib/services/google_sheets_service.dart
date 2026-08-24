@@ -3,434 +3,1265 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart'; // For kDebugMode
+import 'package:flutter/foundation.dart';
 import 'logger_service.dart';
 
+// ============================================================================
+// UTILITY: Safe Date Handling
+// ============================================================================
+
+class SafeDateUtils {
+  /// Safe date parsing from various formats
+  static DateTime? parseDate(dynamic value) {
+    if (value == null) return null;
+
+    if (value is DateTime) {
+      return value;
+    }
+
+    if (value is String) {
+      try {
+        return DateTime.parse(value);
+      } catch (e) {
+        // Try alternative formats
+        try {
+          // Handle ISO format with timezone
+          final cleaned = value.replaceAll('Z', '').replaceAll('+00:00', '');
+          return DateTime.parse(cleaned);
+        } catch (e2) {
+          return null;
+        }
+      }
+    }
+
+    if (value is int) {
+      try {
+        return DateTime.fromMillisecondsSinceEpoch(value);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  /// Safely sort a list by date field
+  static void sortByDate<T>(
+      List<T> items,
+      DateTime? Function(T item) dateGetter,
+      ) {
+    items.sort((a, b) {
+      final dateA = dateGetter(a);
+      final dateB = dateGetter(b);
+
+      if (dateA == null && dateB == null) return 0;
+      if (dateA == null) return 1; // nulls last
+      if (dateB == null) return -1; // nulls last
+
+      return dateA.compareTo(dateB);
+    });
+  }
+
+  /// Get valid dates (non-null) from a list
+  static List<DateTime> getValidDates<T>(
+      List<T> items,
+      DateTime? Function(T item) dateGetter,
+      ) {
+    return items
+        .map(dateGetter)
+        .where((d) => d != null)
+        .cast<DateTime>()
+        .toList();
+  }
+
+  /// Get the earliest valid date
+  static DateTime? getEarliestDate<T>(
+      List<T> items,
+      DateTime? Function(T item) dateGetter,
+      ) {
+    final dates = getValidDates(items, dateGetter);
+    if (dates.isEmpty) return null;
+    return dates.reduce((a, b) => a.isBefore(b) ? a : b);
+  }
+
+  /// Get the latest valid date
+  static DateTime? getLatestDate<T>(
+      List<T> items,
+      DateTime? Function(T item) dateGetter,
+      ) {
+    final dates = getValidDates(items, dateGetter);
+    if (dates.isEmpty) return null;
+    return dates.reduce((a, b) => a.isAfter(b) ? a : b);
+  }
+
+  /// Get date range as string
+  static String getDateRangeString<T>(
+      List<T> items,
+      DateTime? Function(T item) dateGetter, {
+        String format = 'yyyy-MM-dd',
+        String fallback = 'No dates available',
+      }) {
+    final dates = getValidDates(items, dateGetter);
+    if (dates.isEmpty) return fallback;
+
+    dates.sort();
+    final first = dates.first;
+    final last = dates.last;
+
+    if (first == last) {
+      return _formatDate(first, format);
+    }
+    return '${_formatDate(first, format)} - ${_formatDate(last, format)}';
+  }
+
+  static String _formatDate(DateTime date, String format) {
+    switch (format) {
+      case 'yyyy-MM-dd':
+        return '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+      case 'dd/MM/yyyy':
+        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+      case 'MM/dd/yyyy':
+        return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}/${date.year}';
+      default:
+        return date.toIso8601String().split('T').first;
+    }
+  }
+}
+
+// ============================================================================
+// Top-level functions for compute() isolate
+// ============================================================================
+
+List<Map<String, dynamic>> _parseBatchData(List<dynamic> data) {
+  return data.map((item) => Map<String, dynamic>.from(item)).toList();
+}
+
+// ============================================================================
+// GoogleSheetsService
+// ============================================================================
+
 class GoogleSheetsService {
-  final http.Client _client = http.Client();
+  late http.Client _client;
   final String masterScriptUrl;
   final String storeIdentifier;
   final LoggerService? logger;
-
-  // Cache for master suppliers to avoid repeated network calls
   List<Map<String, dynamic>>? _cachedMasterSuppliers;
+
+  // Cache for frequently accessed data
+  final Map<String, _CacheEntry> _cache = {};
+  static const Duration cacheDuration = Duration(minutes: 5);
+
+  // Cancellation support
+  bool _isCancelled = false;
+
+  // 🔥 Circuit breaker for failure tracking
+  int _consecutiveFailures = 0;
+  DateTime? _lastFailureTime;
+  static const int failureThreshold = 5;
+  static const Duration resetTimeout = Duration(minutes: 1);
+
+  // 🔥 Track active clients to prevent memory leaks
+  final List<http.Client> _activeClients = [];
+  bool _isDisposed = false;
+
+  // 🔥 Redirect tracking
+  int _redirectCount = 0;
+  static const int maxRedirects = 3;
+  DateTime? _lastRecreateTime;
+
+  // Constants
+  static const int defaultBatchSize = 2000;
+  static const int largeBatchSize = 3000;
+  static const int defaultTimeoutSeconds = 120;
+  static const int largeTableTimeoutSeconds = 180;
+  static const int countTimeoutSeconds = 45;
+  static const int maxRetries = 3;
+  static const int chunkSize = 500;
+  static const int computeThreshold = 500;
 
   GoogleSheetsService({
     required this.masterScriptUrl,
     required this.storeIdentifier,
     this.logger,
-  });
+  }) {
+    _client = _createClient();
+    _activeClients.add(_client);
+  }
+
+  // 🔥 Centralized client creation
+  http.Client _createClient() {
+    return http.Client();
+  }
+
+  // 🔥 Proper client cleanup - removed isClosed check
+  void _closeClient(http.Client client) {
+    try {
+      client.close();
+    } catch (e) {
+      // Ignore errors during cleanup
+    }
+  }
+
+  // 🔥 Recreate client with proper cleanup and rate limiting
+  void _recreateClient() {
+    if (_isDisposed) return;
+
+    // Don't recreate if we just recreated (within 5 seconds)
+    if (_lastRecreateTime != null &&
+        DateTime.now().difference(_lastRecreateTime!) < const Duration(seconds: 5)) {
+      print('⏳ Skipping recreate - too soon (${DateTime.now().difference(_lastRecreateTime!).inSeconds}s ago)');
+      return;
+    }
+
+    _lastRecreateTime = DateTime.now();
+
+    try {
+      _client.close();
+      _activeClients.remove(_client);
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+
+    _client = _createClient();
+    _activeClients.add(_client);
+    print('🔄 Client recreated (${_activeClients.length} active)');
+  }
 
   void dispose() {
-    _client.close();
+    if (_isDisposed) return;
+    _isDisposed = true;
+
+    print('🧹 Disposing GoogleSheetsService...');
+    _cache.clear();
+
+    // Close all tracked clients
+    for (var client in _activeClients) {
+      _closeClient(client);
+    }
+    _activeClients.clear();
+    print('✅ All clients closed');
   }
 
   // ---------------------------------------------------------------------------
-  // 核心 CORE: POST Request with "Follow as POST" Redirect Handling & Retry
+  // Circuit Breaker Methods
+  // ---------------------------------------------------------------------------
+
+  bool get _circuitBreakerOpen {
+    if (_consecutiveFailures >= failureThreshold) {
+      if (_lastFailureTime != null &&
+          DateTime.now().difference(_lastFailureTime!) > resetTimeout) {
+        _resetCircuitBreaker();
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void _recordFailure() {
+    _consecutiveFailures++;
+    _lastFailureTime = DateTime.now();
+    if (_consecutiveFailures >= failureThreshold) {
+      print('⛔ Circuit breaker OPEN - too many failures');
+    }
+  }
+
+  void _recordSuccess() {
+    if (_consecutiveFailures > 0) {
+      _consecutiveFailures = 0;
+      _lastFailureTime = null;
+      print('✅ Circuit breaker RESET - success recorded');
+    }
+  }
+
+  void _resetCircuitBreaker() {
+    _consecutiveFailures = 0;
+    _lastFailureTime = null;
+    print('🔄 Circuit breaker manually RESET');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Adaptive Parse - Uses compute() only for large payloads
+  // ---------------------------------------------------------------------------
+
+  Future<List<Map<String, dynamic>>> _parseSmart(List<dynamic> data) async {
+    if (data.length > computeThreshold) {
+      return compute(_parseBatchData, data);
+    }
+    return _parseBatchData(data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // CORE: POST Request with Redirect Handling & Circuit Breaker
   // ---------------------------------------------------------------------------
 
   Future<Map<String, dynamic>> _sendPostRequest(
       String tag,
-      Map<String, dynamic> jsonData, {
-        int maxRetries = 2,
-      }) async {
+      Map<String, dynamic> jsonData,
+      ) async {
     int attempt = 0;
 
     while (attempt <= maxRetries) {
       attempt++;
       try {
+        if (_circuitBreakerOpen) {
+          print('⏳ Circuit breaker OPEN, waiting 1 minute...');
+          await Future.delayed(const Duration(minutes: 1));
+          _resetCircuitBreaker();
+        }
+
+        // 🔥 Build payload with all required fields
         final payload = {
           'data': jsonData['data'],
           'storeIdentifier': storeIdentifier,
           'endpoint': jsonData['endpoint'] ?? tag,
+          'table': jsonData['table'] ?? '',  // 🔥 Include table if provided
         };
 
         final body = json.encode(payload);
         final uri = Uri.parse(masterScriptUrl);
 
         if (kDebugMode) {
-          print('📤 [Attempt $attempt] POST: $tag | Endpoint: ${jsonData['endpoint']}');
+          print('📤 [Attempt $attempt] POST: ${jsonData['endpoint'] ?? tag}');
+          print('📦 Payload keys: ${payload.keys.join(', ')}');
+          if (payload['table'] != null && payload['table'].isNotEmpty) {
+            print('📋 Table: ${payload['table']}');
+          }
         }
 
-        // 1. Initial POST Request
-        var request = http.Request('POST', uri);
-        request.headers['Content-Type'] = 'application/json';
-        request.body = body;
-        request.followRedirects = false;
+        var response = await _client.post(
+          uri,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: body,
+        ).timeout(Duration(seconds: defaultTimeoutSeconds));
 
-        var streamedResponse = await _client
-            .send(request)
-            .timeout(const Duration(seconds: 30));
-
-        var response = await http.Response.fromStream(streamedResponse);
-
-        // 2. Handle Redirects - SWITCH TO GET for the redirect URL!
+        // 🔥 MANUAL REDIRECT HANDLING - The proven GAS workaround
         if (response.statusCode == 302 || response.statusCode == 303) {
           final location = response.headers['location'];
           if (location != null) {
-            if (kDebugMode) print('🔄 Redirecting to: $location');
-
-            // ✅ FIX: Use GET, not POST
-            final redirectRequest = http.Request('GET', Uri.parse(location));
-            redirectRequest.followRedirects = false;
-
-            final redirectStream = await _client
-                .send(redirectRequest)
-                .timeout(const Duration(seconds: 30));
-
-            response = await http.Response.fromStream(redirectStream);
+            if (kDebugMode) print('🔄 Following redirect with 500ms delay');
+            await Future.delayed(const Duration(milliseconds: 500));
+            response = await _client.get(
+              Uri.parse(location),
+              headers: {'Accept': 'application/json'},
+            ).timeout(Duration(seconds: defaultTimeoutSeconds));
           }
         }
 
         if (response.statusCode == 200) {
-          if (response.body.trim().toUpperCase().startsWith('<HTML')) {
+          final responseBody = response.body.trim();
+          if (responseBody.toUpperCase().startsWith('<HTML')) {
             logger?.error('❌ POST Failed: Received HTML response');
+            _recordFailure();
             return {
               'success': false,
-              'message': 'Server returned HTML instead of JSON. Check Script deployment.'
+              'message': 'Server returned HTML instead of JSON.'
             };
           }
-          return _parseSyncResponse(response.body);
+          _recordSuccess();
+          return _parseSyncResponse(responseBody);
+        }
+
+        if (response.statusCode == 404 || response.statusCode >= 500) {
+          logger?.error('⚠️ HTTP Error ${response.statusCode} (Attempt $attempt)');
+          _recordFailure();
         } else {
           logger?.error('❌ HTTP Error: ${response.statusCode}');
-          if (response.statusCode >= 400 && response.statusCode < 500) {
-            return {'success': false, 'message': 'HTTP Error: ${response.statusCode}'};
-          }
+          _recordFailure();
+          return {'success': false, 'message': 'HTTP Error: ${response.statusCode}'};
         }
+
       } on SocketException catch (e) {
         logger?.error('⚠️ Network Error (Attempt $attempt)', e);
-        if (attempt > maxRetries) return {'success': false, 'message': 'Network error: $e'};
-      } on TimeoutException {
-        logger?.error('⚠️ Timeout (Attempt $attempt)');
-        if (attempt > maxRetries) return {'success': false, 'message': 'Connection timed out'};
+        _recordFailure();
+      } on TimeoutException catch (e) {
+        logger?.error('⚠️ Timeout (Attempt $attempt)', e);
+        _recordFailure();
       } catch (e) {
-        logger?.error('❌ Exception in $tag', e);
+        logger?.error('❌ Exception in $tag (Attempt $attempt)', e);
+        _recordFailure();
         return {'success': false, 'message': 'Exception: $e'};
       }
 
-      // Delay before retry
       if (attempt <= maxRetries) {
-        await Future.delayed(Duration(seconds: attempt));
+        final int delaySeconds = attempt * 3;
+        await Future.delayed(Duration(seconds: delaySeconds));
       }
     }
 
     return {'success': false, 'message': 'Request failed after $maxRetries retries'};
   }
 
-  // Helper to standardize sync responses
-
   Map<String, dynamic> _parseSyncResponse(String responseBody) {
+    print('🔍 Parsing response: ${responseBody.substring(0, responseBody.length > 100 ? 100 : responseBody.length)}');
+
     try {
       final result = json.decode(responseBody);
       if (result is Map<String, dynamic>) {
+        print('✅ Parsed JSON: ${result.keys.join(', ')}');
+
+        // 🔥 FIXED: Handle error responses properly
+        if (result.containsKey('error') ||
+            (result.containsKey('status') && result['status'] == 'error')) {
+          return {
+            'success': false,
+            'message': result['message'] ?? result['error'] ?? 'Server returned an error',
+            'newCount': 0,
+            'updatedCount': 0,
+            'duplicateCount': 0,
+            'duplicates': [],
+            'count': 0,
+            'updated': 0,
+            'deleted': 0,
+          };
+        }
+
+        // 🔥 FIXED: Handle ALL status types (success, partial_success)
+        final bool isSuccess = result['status'] == 'success' ||
+            result['status'] == 'partial_success' ||
+            result['success'] == true;
+
+        // 🔥 FIXED: Extract ALL possible field names from server response
+        // Stock count endpoints return: count, updated, deleted
+        // Invoice endpoints return: newCount, updatedCount, duplicateCount
+        // Location endpoints return: count
+        // Product endpoints return: added, storeAdded
+
+        final count = result['count'] ?? result['newCount'] ?? result['added'] ?? 0;
+        final updated = result['updated'] ?? result['updatedCount'] ?? 0;
+        final deleted = result['deleted'] ?? 0;
+        final duplicates = result['duplicates'] ?? [];
+        final duplicateCount = result['duplicateCount'] ?? duplicates.length ?? 0;
+
+        print('📊 Extracted: count=$count, updated=$updated, deleted=$deleted, duplicates=$duplicateCount');
+
         return {
-          'success': result['status'] == 'success' || result['success'] == true,
-          'newCount': result['newCount'] ?? 0,
-          'updatedCount': result['updatedCount'] ?? 0,  // 🔴 ADD THIS
-          'duplicateCount': result['duplicateCount'] ?? 0,
-          'duplicates': result['duplicates'] ?? [],
-          'message': result['message'] ?? 'Sync operation completed',
+          'success': isSuccess,
+          // For invoice/purchase compatibility
+          'newCount': count,
+          'updatedCount': updated,
+          'duplicateCount': duplicateCount,
+          // 🔥 For stock count compatibility
+          'count': count,
+          'updated': updated,
+          'deleted': deleted,
+          'duplicates': duplicates,
+          'message': result['message'] ?? 'Sync completed',
+          'raw': result, // 🔥 Pass through raw for debugging
         };
       }
     } catch (e) {
       logger?.error('Error parsing sync response', e);
+      print('❌ JSON parse error: $e');
     }
-    return {'success': false, 'message': 'Invalid server response format'};
+
+    return {
+      'success': false,
+      'message': 'Invalid server response format',
+      'newCount': 0,
+      'updatedCount': 0,
+      'duplicateCount': 0,
+      'duplicates': [],
+      'count': 0,
+      'updated': 0,
+      'deleted': 0,
+    };
   }
-
   // ---------------------------------------------------------------------------
-  // 核心 CORE: GET Request
+  // 🔥 GENERIC: Fetch ANY table with pagination (The Main Method)
   // ---------------------------------------------------------------------------
 
-  Future<List<Map<String, dynamic>>> _fetchTable(String tableName) async {
-    print('DEBUG: Fetching table: "$tableName"');
-    StackTrace.current.toString().split('\n').take(5).forEach((line) => print('  $line'));
-    // Validate table name
-    if (tableName.isEmpty) {
-      logger?.error('❌ _fetchTable called with EMPTY table name');
-      return [];
-    }
-
-    try {
-      final url = Uri.parse(masterScriptUrl).replace(
-        queryParameters: {
-          'table': tableName,
-          'storeIdentifier': storeIdentifier,
-        },
-      );
-
-      if (kDebugMode) {
-        print('📤 GET Request: $tableName');
-        print('   URL: $url');
-      }
-
-      final response = await _client.get(url).timeout(const Duration(seconds: 20));
-
-      if (kDebugMode) {
-        print('📥 Response Status: ${response.statusCode}');
-        print('📥 Response Size: ${response.body.length} bytes');
-      }
-
-      if (response.statusCode == 200) {
-        // Check for HTML response (error page)
-        if (response.body.trim().startsWith('<')) {
-          logger?.error('❌ GET $tableName Failed: Received HTML response');
-          if (kDebugMode) {
-            final previewLength = response.body.length > 200 ? 200 : response.body.length;
-            print('   HTML Preview: ${response.body.substring(0, previewLength)}...');
-          }
-          return [];
-        }
-
-        try {
-          final dynamic decoded = json.decode(response.body);
-
-          // Handle case where API returns { "data": [...] }
-          if (decoded is Map) {
-            // Check for error response
-            if (decoded.containsKey('error')) {
-              logger?.error('❌ Server error for $tableName: ${decoded['error']}');
-              return [];
-            }
-
-            // Handle wrapped data
-            if (decoded.containsKey('data') && decoded['data'] is List) {
-              final dataList = decoded['data'] as List;
-              if (kDebugMode) {
-                print('   ✅ Found ${dataList.length} items (wrapped in data field)');
-              }
-              return dataList.map((item) {
-                if (item is Map) return Map<String, dynamic>.from(item);
-                return <String, dynamic>{};
-              }).toList();
-            }
-          }
-
-          // Handle direct array response
-          if (decoded is List) {
-            if (kDebugMode) {
-              print('   ✅ Found ${decoded.length} items');
-            }
-            return decoded.map((item) {
-              if (item is Map) return Map<String, dynamic>.from(item);
-              return <String, dynamic>{};
-            }).toList();
-          }
-
-          // Unexpected response format
-          logger?.error('⚠️ Unexpected response format for $tableName: ${decoded.runtimeType}');
-          return [];
-
-        } catch (e) {
-          logger?.error('❌ JSON parse error for $tableName', e);
-          if (kDebugMode) {
-            final previewLength = response.body.length > 200 ? 200 : response.body.length;
-            print('   Body preview: ${response.body.substring(0, previewLength)}...');
-          }
-          return [];
-        }
-      } else if (response.statusCode == 404) {
-        logger?.error('❌ Table not found: $tableName (404)');
-        return [];
-      } else if (response.statusCode == 302 || response.statusCode == 303) {
-        // Handle redirect for GET requests (rare but possible)
-        final location = response.headers['location'];
-        if (location != null) {
-          if (kDebugMode) {
-            print('🔄 Redirecting GET to: $location');
-          }
-
-          try {
-            final redirectResponse = await _client.get(Uri.parse(location)).timeout(const Duration(seconds: 20));
-
-            if (redirectResponse.statusCode == 200 && !redirectResponse.body.trim().startsWith('<')) {
-              final decoded = json.decode(redirectResponse.body);
-              if (decoded is List) {
-                return decoded.map((item) {
-                  if (item is Map) return Map<String, dynamic>.from(item);
-                  return <String, dynamic>{};
-                }).toList();
-              }
-            }
-          } catch (e) {
-            logger?.error('❌ Error following redirect for $tableName', e);
-          }
-        }
-        return [];
-      } else {
-        logger?.error('❌ HTTP Error ${response.statusCode} for $tableName');
-        return [];
-      }
-    } on TimeoutException catch (e) {
-      logger?.error('⏱️ Timeout fetching $tableName', e);
-      return [];
-    } on SocketException catch (e) {
-      logger?.error('📡 Network error fetching $tableName', e);
-      return [];
-    } catch (e) {
-      logger?.error('❌ Exception fetching $tableName', e);
-      return [];
-    }
-  }
-
-  // Update the fetchLargeTableInBatches method to include timeoutSeconds
-  Future<List<Map<String, dynamic>>> fetchLargeTableInBatches(
+  Future<List<Map<String, dynamic>>> fetchTableWithPagination(
       String tableName, {
-        int batchSize = 2000, // REDUCE from 5000 to 2000
-        int timeoutSeconds = 60, // INCREASE from 30 to 60
-        Function(int received, int total)? onProgress,
+        int batchSize = defaultBatchSize,
+        int timeoutSeconds = defaultTimeoutSeconds,
+        Function(int received, int? total)? onProgress,
+        Function(String message)? onStatus,
       }) async {
-    print('🔍 FETCHING $tableName in batches of $batchSize with ${timeoutSeconds}s timeout');
+    // Check if disposed
+    if (_isDisposed) {
+      throw Exception('Service is disposed');
+    }
+
+    // Reset cancellation
+    _isCancelled = false;
+
+    // Check cache first
+    final cachedEntry = _cache[tableName];
+    if (cachedEntry != null && DateTime.now().difference(cachedEntry.timestamp) < cacheDuration) {
+      if (kDebugMode) {
+        print('✅ Using cached data for $tableName (${cachedEntry.data.length} records)');
+      }
+      return cachedEntry.data;
+    }
+
+    if (kDebugMode) {
+      print('🔍 FETCHING $tableName with pagination');
+    }
+
+    // Get total count with retry
+    int? totalRecords;
+    int countAttempt = 0;
+    while (countAttempt < 3) {
+      countAttempt++;
+      try {
+        onStatus?.call('Getting total record count...');
+        totalRecords = await getTableRowCount(tableName);
+        if (totalRecords > 0) {
+          print('📊 Total records: $totalRecords');
+
+          // Adaptive batch sizing
+          if (totalRecords > 50000 && batchSize < largeBatchSize) {
+            batchSize = largeBatchSize;
+            print('📦 Large dataset, increased batch size to $batchSize');
+            if (timeoutSeconds < largeTableTimeoutSeconds) {
+              timeoutSeconds = largeTableTimeoutSeconds;
+              print('⏱️ Large table, using ${timeoutSeconds}s timeout');
+            }
+          } else if (totalRecords < 500 && batchSize > 500) {
+            batchSize = 500;
+            print('📦 Small dataset, using batch size: $batchSize');
+          }
+          break;
+        } else if (countAttempt < 3) {
+          print('⚠️ Count returned 0 for $tableName, retrying (attempt $countAttempt)...');
+          await Future.delayed(Duration(seconds: countAttempt * 2));
+        }
+      } catch (e) {
+        print('⚠️ Could not get total count (attempt $countAttempt): $e');
+        if (countAttempt < 3) {
+          await Future.delayed(Duration(seconds: countAttempt * 2));
+        }
+      }
+    }
 
     List<Map<String, dynamic>> allResults = [];
     int offset = 0;
     int batchNumber = 1;
-    int maxRetries = 3; // Add retry logic
+    int consecutiveFailures = 0;
+    int totalFetched = 0;
+    int consecutive404Count = 0;
+    bool useAlternativeUrl = false;
 
     while (true) {
+      if (_isCancelled) {
+        print('🛑 Fetch cancelled');
+        break;
+      }
+
+      if (totalRecords != null && totalFetched >= totalRecords) {
+        print('✅ Reached expected total: $totalRecords');
+        break;
+      }
+
+      if (consecutiveFailures >= 3) {
+        print('❌ 3 consecutive failures. Aborting.');
+        break;
+      }
+
+      // Check circuit breaker
+      if (_circuitBreakerOpen) {
+        print('⏳ Circuit breaker OPEN, waiting 1 minute...');
+        await Future.delayed(const Duration(minutes: 1));
+        _resetCircuitBreaker();
+      }
+
       int retryCount = 0;
       List<Map<String, dynamic>>? batch;
 
       while (retryCount < maxRetries) {
         try {
-          print('📦 Fetching batch $batchNumber (offset: $offset, limit: $batchSize, attempt: ${retryCount + 1})');
+          onStatus?.call('Fetching batch $batchNumber (offset: $offset)');
+          if (kDebugMode) {
+            print('📦 Batch $batchNumber (offset: $offset, limit: $batchSize)');
+          }
 
-          batch = await fetchTableBatch(
+          batch = await fetchBatchWithPagination(
             tableName,
             offset: offset,
             limit: batchSize,
             timeoutSeconds: timeoutSeconds,
+            useAlternativeUrl: useAlternativeUrl,
+            attempt: retryCount + 1,
           );
 
-          break; // Success, exit retry loop
+          // Reset 404 counter on success
+          consecutive404Count = 0;
+          consecutiveFailures = 0;
+          _recordSuccess();
+          break;
+
         } catch (e) {
           retryCount++;
+          final bool is404 = e.toString().contains('404');
+
           print('⚠️ Batch $batchNumber failed (attempt $retryCount): $e');
 
-          if (retryCount >= maxRetries) {
-            print('❌ Batch $batchNumber failed after $maxRetries attempts, aborting');
-            return allResults; // Return what we have so far
+          if (is404) {
+            consecutive404Count++;
+            print('⚠️ 404 count: $consecutive404Count');
+
+            // Try alternative URL after first 404
+            if (consecutive404Count == 1 && !useAlternativeUrl) {
+              print('🔄 First 404 - trying alternative URL...');
+              useAlternativeUrl = true;
+              await Future.delayed(const Duration(milliseconds: 500));
+              continue;
+            }
+
+            // If it's the first batch and we get 404, try again with delay
+            if (allResults.isEmpty && retryCount < maxRetries) {
+              print('⚠️ First batch 404 - retrying with delay...');
+              await Future.delayed(Duration(seconds: retryCount * 2));
+              continue;
+            }
+
+            // If we still get 404 after alternative URL, stop
+            if (useAlternativeUrl && consecutive404Count >= 2) {
+              print('⚠️ 404 even with alternative URL. Stopping.');
+              batch = [];
+              break;
+            }
           }
 
-          // Wait before retrying (exponential backoff)
-          await Future.delayed(Duration(seconds: retryCount * 2));
+          _recordFailure();
+
+          if (e.toString().contains('Redirect loop')) {
+            print('⚠️ Redirect loop. Recreating client...');
+            _recreateClient();
+            await Future.delayed(const Duration(seconds: 2));
+            continue;
+          }
+
+          final bool isRateLimit = e.toString().contains('429') ||
+              e.toString().contains('Too Many Requests');
+
+          if (retryCount >= maxRetries) {
+            print('❌ Failed after $maxRetries attempts');
+            consecutiveFailures++;
+            batch = [];
+            break;
+          }
+
+          // Exponential backoff with jitter
+          final int baseDelay = isRateLimit ? 5 : retryCount * 2;
+          final int jitter = math.Random().nextInt(500);
+          final int totalDelayMs = baseDelay * 1000 + jitter;
+          await Future.delayed(Duration(milliseconds: totalDelayMs));
         }
       }
 
-      if (batch == null || batch.isEmpty) {
-        break; // No more data
+      if (batch == null) {
+        consecutiveFailures++;
+        offset += batchSize;
+        batchNumber++;
+        continue;
+      }
+
+      if (batch.isEmpty) {
+        if (totalRecords == null || totalFetched > 0) {
+          print('✅ Reached end of data');
+        } else {
+          print('⚠️ Table may be empty');
+        }
+        break;
       }
 
       allResults.addAll(batch);
-      onProgress?.call(allResults.length, allResults.length + batchSize); // Approximate
+      totalFetched += batch.length;
+      onProgress?.call(totalFetched, totalRecords);
+
+      if (totalFetched % 10000 == 0) {
+        final String percent = totalRecords != null
+            ? (totalFetched / totalRecords * 100).toStringAsFixed(1)
+            : '?';
+        print('📊 Progress: $totalFetched/${totalRecords ?? '?'} ($percent%)');
+      }
 
       if (batch.length < batchSize) {
-        break; // Last batch
+        print('✅ Last batch: ${batch.length} records');
+        break;
       }
 
       offset += batchSize;
       batchNumber++;
 
-      // Small delay between batches
-      await Future.delayed(const Duration(milliseconds: 1000));
+      final int delayMs = totalRecords != null && totalRecords > 50000 ? 500 : 300;
+      await Future.delayed(Duration(milliseconds: delayMs));
     }
 
-    print('✅ Completed fetching $tableName: ${allResults.length} records');
+    if (allResults.isNotEmpty) {
+      _cache[tableName] = _CacheEntry(
+        data: allResults,
+        timestamp: DateTime.now(),
+      );
+      print('💾 Cached $tableName (${allResults.length} records)');
+    }
+
+    print('✅ Completed $tableName: ${allResults.length} records');
     return allResults;
   }
 
-// Update fetchTableBatch to accept timeoutSeconds
-  Future<List<Map<String, dynamic>>> fetchTableBatch(
+  // 🔥 Extract response processing to a separate method
+  Future<List<Map<String, dynamic>>> _processBatchResponse(
+      http.Response response,
+      String tableName,
+      int offset,
+      int attempt,
+      ) async {
+    if (response.statusCode == 200 && response.body.trim().startsWith('<')) {
+      throw Exception('GAS returned HTML instead of JSON');
+    }
+
+    if (response.statusCode == 404) {
+      throw Exception('HTTP 404: Not Found');
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+
+    final decoded = json.decode(response.body);
+
+    if (decoded is Map && decoded.containsKey('data')) {
+      final data = decoded['data'];
+      if (data is List) {
+        final bool hasMore = decoded['hasMore'] ?? false;
+        final int total = ((decoded['total'] ?? 0) as num).toInt();
+        if (kDebugMode) {
+          print('📦 Received ${data.length} records (total: $total, hasMore: $hasMore)');
+        }
+        return await _parseSmart(data);
+      }
+      return [];
+    }
+
+    if (decoded is List) {
+      if (kDebugMode) print('📦 Received ${decoded.length} records');
+      return await _parseSmart(decoded);
+    }
+
+    if (decoded is Map && decoded.containsKey('error')) {
+      throw Exception('GAS Error: ${decoded['error']}');
+    }
+
+    print('⚠️ Unexpected response format');
+    return [];
+  }
+
+  // ---------------------------------------------------------------------------
+// 🔥 Fetch a single batch with pagination & retry
+// ---------------------------------------------------------------------------
+
+  Future<List<Map<String, dynamic>>> fetchBatchWithPagination(
       String tableName, {
         int offset = 0,
-        int limit = 2000,
-        int timeoutSeconds = 60,
+        int limit = defaultBatchSize,
+        int timeoutSeconds = defaultTimeoutSeconds,
+        bool useAlternativeUrl = false,
+        int attempt = 1,
       }) async {
-    try {
-      final url = Uri.parse(masterScriptUrl).replace(
+    // Check if disposed
+    if (_isDisposed) {
+      throw Exception('Service is disposed');
+    }
+
+    // Reset redirect counter for new requests
+    if (offset == 0) {
+      _redirectCount = 0;
+    }
+
+    String urlString;
+
+    if (useAlternativeUrl) {
+      final uri = Uri.parse(masterScriptUrl);
+      final scriptId = uri.pathSegments.length > 1
+          ? uri.pathSegments[uri.pathSegments.length - 2]
+          : uri.pathSegments.last;
+
+      urlString = 'https://script.google.com/macros/s/$scriptId/exec?' 'table=$tableName&storeIdentifier=$storeIdentifier&offset=$offset&limit=$limit' '&_t=${DateTime.now().millisecondsSinceEpoch}';
+    } else {
+      urlString = Uri.parse(masterScriptUrl).replace(
         queryParameters: {
           'table': tableName,
           'storeIdentifier': storeIdentifier,
           'offset': offset.toString(),
           'limit': limit.toString(),
+          '_t': DateTime.now().millisecondsSinceEpoch.toString(),
         },
-      );
+      ).toString();
+    }
 
-      final response = await _client
-          .get(url)
-          .timeout(Duration(seconds: timeoutSeconds));
+    try {
+      final response = await _client.get(
+        Uri.parse(urlString),
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(Duration(seconds: timeoutSeconds));
 
-      if (response.statusCode == 200) {
-        final decoded = json.decode(response.body);
+      // Check for redirect (301, 302, 303, 307, 308)
+      if (response.statusCode >= 300 && response.statusCode < 400) {
+        _redirectCount++;
+        print('🔄 Redirect $_redirectCount/$maxRedirects for $tableName');
 
-        // Handle paginated response
-        if (decoded is Map && decoded.containsKey('data')) {
-          final data = decoded['data'] as List;
-          return data.map((item) => Map<String, dynamic>.from(item)).toList();
+        if (_redirectCount > maxRedirects) {
+          // Too many redirects - try alternative URL or throw
+          if (!useAlternativeUrl && attempt < 3) {
+            print('⚠️ Too many redirects, trying alternative URL...');
+            return fetchBatchWithPagination(
+              tableName,
+              offset: offset,
+              limit: limit,
+              timeoutSeconds: timeoutSeconds,
+              useAlternativeUrl: true,
+              attempt: attempt + 1,
+            );
+          }
+          throw Exception('Redirect loop detected after $_redirectCount redirects');
         }
 
-        // Handle direct array response
-        if (decoded is List) {
-          return decoded.map((item) => Map<String, dynamic>.from(item)).toList();
+        // Follow redirect manually with a delay
+        final location = response.headers['location'];
+        if (location != null) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          print('🔄 Following redirect to: $location');
+          final redirectResponse = await _client.get(
+            Uri.parse(location),
+            headers: {
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache',
+            },
+          ).timeout(Duration(seconds: timeoutSeconds));
+
+          return _processBatchResponse(redirectResponse, tableName, offset, attempt);
         }
       }
-    } on TimeoutException catch (e) {
-      print('⏱️ Timeout fetching batch $tableName at offset $offset');
-      rethrow; // Rethrow to trigger retry
+
+      return _processBatchResponse(response, tableName, offset, attempt);
+
     } catch (e) {
-      print('Error fetching batch $tableName: $e');
+      // Only recreate client for redirect loops, and do it properly
+      if (e.toString().contains('Redirect loop')) {
+        print('⚠️ Redirect loop detected. Recreating client...');
+        _recreateClient();
+        await Future.delayed(const Duration(seconds: 2));
+        return fetchBatchWithPagination(
+          tableName,
+          offset: offset,
+          limit: limit,
+          timeoutSeconds: timeoutSeconds,
+          useAlternativeUrl: useAlternativeUrl,
+          attempt: attempt,
+        );
+      }
+
+      if (!useAlternativeUrl && attempt < 3 &&
+          (e.toString().contains('404') || e.toString().contains('TimeoutException'))) {
+        print('⚠️ Attempting alternative URL format (attempt $attempt)...');
+        await Future.delayed(Duration(seconds: attempt));
+        return fetchBatchWithPagination(
+          tableName,
+          offset: offset,
+          limit: limit,
+          timeoutSeconds: timeoutSeconds,
+          useAlternativeUrl: true,
+          attempt: attempt + 1,
+        );
+      }
       rethrow;
     }
-
-    return [];
-  }
-
-// Also update getTableRowCount to be more robust
-  Future<int> getTableRowCount(String tableName) async {
-    try {
-      final url = Uri.parse(masterScriptUrl).replace(
-        queryParameters: {
-          'table': tableName,
-          'storeIdentifier': storeIdentifier,
-          'countOnly': 'true',
-        },
-      );
-
-      final response = await _client.get(url).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final decoded = json.decode(response.body);
-        if (decoded is Map && decoded.containsKey('total')) {
-          return decoded['total'] as int;
-        }
-        // If it's a direct array, return its length
-        if (decoded is List) {
-          return decoded.length;
-        }
-      }
-    } catch (e) {
-      logger?.error('Error getting row count for $tableName', e);
-    }
-
-    // If we can't get count, return a large number to trigger batching anyway
-    // The loop will stop when batches return fewer than batchSize
-    return 999999;
   }
 
   // ---------------------------------------------------------------------------
-  // SYNC OPERATIONS
+  // 🔥 CONVENIENCE: fetchLargeTableInBatches (Backward Compatible)
+  // ---------------------------------------------------------------------------
+
+  /// Kept for backward compatibility with existing code
+  Future<List<Map<String, dynamic>>> fetchLargeTableInBatches(
+      String tableName, {
+        int batchSize = defaultBatchSize,
+        int timeoutSeconds = defaultTimeoutSeconds,
+        Function(int received, int total)? onProgress,
+      }) async {
+    return fetchTableWithPagination(
+      tableName,
+      batchSize: batchSize,
+      timeoutSeconds: timeoutSeconds,
+      onProgress: (received, total) {
+        if (onProgress != null && total != null) {
+          onProgress(received, total);
+        }
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 🔥 CONVENIENCE: fetchTableBatch (Backward Compatible)
+  // ---------------------------------------------------------------------------
+
+  /// Kept for backward compatibility with existing code
+  Future<List<Map<String, dynamic>>> fetchTableBatch(
+      String tableName, {
+        int offset = 0,
+        int limit = defaultBatchSize,
+        int timeoutSeconds = defaultTimeoutSeconds,
+      }) async {
+    return fetchBatchWithPagination(
+      tableName,
+      offset: offset,
+      limit: limit,
+      timeoutSeconds: timeoutSeconds,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Get Total Row Count with Retry
+  // ---------------------------------------------------------------------------
+
+  Future<int> getTableRowCount(String tableName) async {
+    int attempt = 0;
+    while (attempt < 3) {
+      attempt++;
+      try {
+        final url = Uri.parse(masterScriptUrl).replace(
+          queryParameters: {
+            'table': '_count',
+            'targetTable': tableName,
+            'storeIdentifier': storeIdentifier,
+          },
+        );
+
+        final response = await _client.get(url).timeout(
+            Duration(seconds: countTimeoutSeconds)
+        );
+
+        if (response.statusCode == 200 && !response.body.trim().startsWith('<')) {
+          final decoded = json.decode(response.body);
+          final int count = ((decoded['count'] ?? 0) as num).toInt();
+          if (kDebugMode) print('📊 Count for $tableName: $count');
+          _recordSuccess();
+          return count;
+        }
+
+        if (response.statusCode == 404 && attempt < 3) {
+          print('⚠️ Count 404 for $tableName, retrying (attempt $attempt)...');
+          await Future.delayed(Duration(seconds: attempt * 2));
+          continue;
+        }
+
+        return 0;
+
+      } on TimeoutException catch (e) {
+        if (attempt < 3) {
+          print('⚠️ Count timeout for $tableName, retrying (attempt $attempt)...');
+          await Future.delayed(Duration(seconds: attempt * 2));
+          continue;
+        }
+        logger?.error('Could not get count for $tableName after 3 attempts', e);
+        return 0;
+      } catch (e) {
+        if (attempt < 3) {
+          print('⚠️ Count error for $tableName (attempt $attempt): $e');
+          await Future.delayed(Duration(seconds: attempt * 2));
+          continue;
+        }
+        logger?.error('Could not get count for $tableName', e);
+        return 0;
+      }
+    }
+    return 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Health Check
+  // ---------------------------------------------------------------------------
+
+  Future<bool> checkGASHealth() async {
+    try {
+      print('🏥 Checking GAS health...');
+      final url = Uri.parse(masterScriptUrl).replace(
+        queryParameters: {
+          'table': 'Locations',
+          'storeIdentifier': storeIdentifier,
+          'limit': '1',
+        },
+      );
+
+      final response = await _client.get(url).timeout(
+          const Duration(seconds: 10)
+      );
+
+      if (response.statusCode == 200 && !response.body.trim().startsWith('<')) {
+        print('✅ GAS is healthy');
+        _recordSuccess();
+        return true;
+      } else {
+        print('⚠️ GAS returned ${response.statusCode}');
+        _recordFailure();
+        return false;
+      }
+    } catch (e) {
+      print('⚠️ GAS health check failed: $e');
+      _recordFailure();
+      return false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cancellation & Cache Management
+  // ---------------------------------------------------------------------------
+
+  void cancelFetch() {
+    _isCancelled = true;
+    print('🛑 Cancellation requested');
+  }
+
+  void clearCache({String? tableName}) {
+    if (tableName != null) {
+      _cache.remove(tableName);
+      print('🗑️ Cleared cache for $tableName');
+    } else {
+      _cache.clear();
+      print('🗑️ Cleared all cache');
+    }
+  }
+
+  void resetCircuitBreaker() {
+    _resetCircuitBreaker();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Table Fetch Methods - ALL use the generic pagination system
+  // ---------------------------------------------------------------------------
+
+  // Small tables
+  Future<List<Map<String, dynamic>>> fetchLocations() async =>
+      fetchTableWithPagination('Locations', batchSize: 100);
+
+  Future<List<Map<String, dynamic>>> fetchInventory() async =>
+      fetchTableWithPagination('Inventory', batchSize: 500);
+
+  Future<List<Map<String, dynamic>>> fetchAudits() async =>
+      fetchTableWithPagination('AuditCalendar', batchSize: 100);
+
+  // Large tables
+  Future<List<Map<String, dynamic>>> fetchPurchases({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'Purchases',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchStoreSalesData({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'StoreSalesData',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchItemSales({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'ItemSales',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchItemsIssued({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'ItemsIssued',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchInvoices({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'InvoiceDetails',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchStockCounts({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'StockCounts',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchPluMappings({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'PluMappings',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  // Master tables
+  Future<List<Map<String, dynamic>>> fetchMasterProducts() async =>
+      fetchTableWithPagination('MasterProducts', batchSize: 500);
+
+  Future<List<Map<String, dynamic>>> fetchMasterBarcodes() async =>
+      fetchTableWithPagination('MasterBarcodes', batchSize: 500);
+
+  /// 🔥 FIXED: Fetch computed costs directly (bypasses pagination)
+  /// MasterCostsComputed is a computed table, not a physical sheet
+  Future<List<Map<String, dynamic>>> fetchComputedCosts({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async {
+    if (kDebugMode) print('🔍 FETCH COMPUTED COSTS');
+
+    // Check cache first
+    final cachedEntry = _cache['MasterCostsComputed'];
+    if (cachedEntry != null && DateTime.now().difference(cachedEntry.timestamp) < cacheDuration) {
+      if (kDebugMode) {
+        print('✅ Using cached data for MasterCostsComputed (${cachedEntry.data.length} records)');
+      }
+      return cachedEntry.data;
+    }
+
+    try {
+      onStatus?.call('Fetching computed costs...');
+
+      // Direct GET - bypasses pagination
+      final url = Uri.parse(masterScriptUrl).replace(
+        queryParameters: {
+          'table': 'MasterCostsComputed',
+          'storeIdentifier': storeIdentifier,
+        },
+      );
+
+      final response = await _client.get(url).timeout(
+          const Duration(seconds: 60)
+      );
+
+      if (response.statusCode == 200) {
+        if (response.body.trim().startsWith('<')) {
+          throw Exception('GAS returned HTML instead of JSON');
+        }
+
+        final decoded = json.decode(response.body);
+        List<Map<String, dynamic>> result = [];
+
+        // Handle wrapped response
+        if (decoded is Map && decoded.containsKey('data')) {
+          final data = decoded['data'];
+          if (data is List) {
+            result = data.map((item) => Map<String, dynamic>.from(item)).toList();
+          }
+        } else if (decoded is List) {
+          result = decoded.map((item) => Map<String, dynamic>.from(item)).toList();
+        }
+
+        print('📊 Fetched ${result.length} computed costs');
+
+        // Cache the result
+        if (result.isNotEmpty) {
+          _cache['MasterCostsComputed'] = _CacheEntry(
+            data: result,
+            timestamp: DateTime.now(),
+          );
+          print('💾 Cached MasterCostsComputed (${result.length} records)');
+          onProgress?.call(result.length, result.length);
+        }
+
+        return result;
+      } else {
+        throw Exception('HTTP ${response.statusCode}: ${response.reasonPhrase}');
+      }
+    } catch (e) {
+      print('⚠️ Error fetching computed costs: $e');
+      return [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> fetchMasterSuppliers({
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh && _cachedMasterSuppliers != null && _cachedMasterSuppliers!.isNotEmpty) {
+      return _cachedMasterSuppliers!;
+    }
+
+    final suppliers = await fetchTableWithPagination(
+      'MasterSuppliers',
+      batchSize: 2000,
+    );
+
+    _cachedMasterSuppliers = suppliers;
+    print('✅ Fetched ${suppliers.length} suppliers');
+    return suppliers;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchStockIssues() async =>
+      fetchTableWithPagination('StockIssues', batchSize: 500);
+
+  Future<List<Map<String, dynamic>>> fetchItemsIssuedMap() async =>
+      fetchTableWithPagination('ItemsIssuedMap', batchSize: 500);
+
+  // Invoice methods
+  Future<List<Map<String, dynamic>>> fetchInvoiceDetails({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'InvoiceDetails',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  Future<List<Map<String, dynamic>>> fetchAllInvoices({
+    Function(int received, int? total)? onProgress,
+    Function(String message)? onStatus,
+  }) async =>
+      fetchTableWithPagination(
+        'InvoiceDetails',
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+
+  // ---------------------------------------------------------------------------
+  // Sync Operations (with chunking for large datasets)
   // ---------------------------------------------------------------------------
 
   Future<bool> syncStockCounts(List<Map<String, dynamic>> counts) async {
     final payload = counts.map((c) {
       final item = Map<String, dynamic>.from(c);
-      // Ensure logic required by script
       item['deleted'] = (c['syncStatus'] == 'deleted');
       if (item['stock_id'] == null && item['id'] != null) {
         item['stock_id'] = item['id'];
       }
       return item;
     }).toList();
+
+    // 🔥 FIXED: Use the chunking method
+    if (payload.length > chunkSize) {
+      final result = await syncStockCountsWithChunking(payload);
+      return result['success'] == true;
+    }
 
     final result = await _sendPostRequest(
         'syncStockCounts',
@@ -440,6 +1271,11 @@ class GoogleSheetsService {
   }
 
   Future<bool> syncNewProducts(List<Map<String, dynamic>> products) async {
+    if (products.length > chunkSize) {
+      final result = await syncNewProductsWithChunking(products);
+      return result['success'] == true;
+    }
+
     final result = await _sendPostRequest(
         'syncNewProducts',
         {'data': products, 'endpoint': 'syncNewProducts'}
@@ -448,6 +1284,12 @@ class GoogleSheetsService {
   }
 
   Future<bool> syncNewLocations(List<Map<String, dynamic>> locations) async {
+    // 🔥 FIXED: Use the chunking method
+    if (locations.length > chunkSize) {
+      final result = await syncNewLocationsWithChunking(locations);
+      return result['success'] == true;
+    }
+
     final result = await _sendPostRequest(
         'syncNewLocations',
         {'data': locations, 'endpoint': 'syncNewLocations'}
@@ -455,86 +1297,86 @@ class GoogleSheetsService {
     return result['success'] == true;
   }
 
-  // Standardized Invoice Sync with Field Mapping
-  // In google_sheets_service.dart
-  Future<Map<String, dynamic>> syncInvoiceDetailsWithResult(List<Map<String, dynamic>> invoices) async {
-    // Apply critical field mapping fixes
+  Future<Map<String, dynamic>> syncInvoiceDetailsWithResult(
+      List<Map<String, dynamic>> invoices,
+      ) async {
     final mappedInvoices = invoices.map(_mapInvoiceFields).toList();
 
-    // 🔴 LOG THE FIRST MAPPED INVOICE TO VERIFY
-    if (mappedInvoices.isNotEmpty) {
-      print('📋 First mapped invoice: ${mappedInvoices.first}');
-      print('  - Invoice Number field: "${mappedInvoices.first['Invoice Number']}"');
-      print('  - Invoice Nr. field: "${mappedInvoices.first['Invoice Nr.']}"');
+    // 🔥 Force syncStatus to 'synced' before uploading
+    final syncedInvoices = mappedInvoices.map((inv) {
+      final modified = Map<String, dynamic>.from(inv);
+      modified['syncStatus'] = 'synced';
+      return modified;
+    }).toList();
+
+    // 🔥 FIXED: Use the chunking method
+    if (syncedInvoices.length > chunkSize) {
+      return syncInvoiceDetailsWithChunking(syncedInvoices);
     }
 
-    final result = await _sendPostRequest('syncInvoiceDetails', {
-      'endpoint': 'syncInvoiceDetails',
-      'data': mappedInvoices,
-    });
+    final result = await _sendPostRequest(
+        'syncInvoiceDetails',
+        {
+          'endpoint': 'syncInvoiceDetails',
+          'data': syncedInvoices,
+          'table': 'InvoiceDetails',
+        }
+    );
 
     print('📥 Raw syncInvoiceDetails result: $result');
-
     return result;
   }
 
-  // Wrapper for backward compatibility
   Future<bool> syncInvoiceDetails(List<Map<String, dynamic>> invoices) async {
     final result = await syncInvoiceDetailsWithResult(invoices);
     return result['success'] == true;
   }
 
-  Future<bool> syncPurchases(List<Map<String, dynamic>> purchases) async {
-    // Ensure IDs exist
+  Future<Map<String, dynamic>> syncPurchasesWithResult(
+      List<Map<String, dynamic>> purchases,
+      ) async {
     final sanitized = purchases.map((p) {
       final item = Map<String, dynamic>.from(p);
       if (item['purchases_ID'] == null || item['purchases_ID'].toString().isEmpty) {
         item['purchases_ID'] = _generateUuid();
       }
+      if (item['syncStatus'] == null) {
+        item['syncStatus'] = 'synced';
+      }
       return item;
     }).toList();
 
+    // 🔥 FIXED: Use the chunking method
+    if (sanitized.length > chunkSize) {
+      return syncPurchasesWithChunking(sanitized);
+    }
+
     final result = await _sendPostRequest(
         'syncPurchases',
-        {'endpoint': 'syncPurchases', 'data': sanitized}
+        {
+          'endpoint': 'syncPurchases',
+          'data': sanitized,
+          'table': 'Purchases',
+        }
     );
-    return result['success'] == true;
+
+    print('📥 Raw syncPurchases result: $result');
+    return result;
   }
 
-  // Single Item Operations
-  Future<bool> deleteInvoice(String invoiceId) async {
-    final result = await _sendPostRequest('deleteInvoice', {
-      'endpoint': 'deleteInvoice',
-      'data': {'invoiceId': invoiceId}
-    });
-    return result['success'] == true;
-  }
 
-  Future<bool> deletePurchase(String purchaseId) async {
-    final result = await _sendPostRequest('deletePurchase', {
-      'endpoint': 'deletePurchase',
-      'data': {'purchaseId': purchaseId}
-    });
-    return result['success'] == true;
-  }
-
-  Future<bool> updateInvoice(Map<String, dynamic> invoice) async {
-    final result = await _sendPostRequest('updateInvoice', {
-      'endpoint': 'updateInvoice',
-      'data': _mapInvoiceFields(invoice)
-    });
-    return result['success'] == true;
-  }
-
-  Future<bool> updatePurchase(Map<String, dynamic> purchase) async {
-    final result = await _sendPostRequest('updatePurchase', {
-      'endpoint': 'updatePurchase',
-      'data': purchase
-    });
+  Future<bool> syncPurchases(List<Map<String, dynamic>> purchases) async {
+    final result = await syncPurchasesWithResult(purchases);
     return result['success'] == true;
   }
 
   Future<bool> syncPluMappings(List<Map<String, dynamic>> mappings) async {
+    // 🔥 FIXED: Use the chunking method
+    if (mappings.length > chunkSize) {
+      final result = await syncPluMappingsWithChunking(mappings);
+      return result['success'] == true;
+    }
+
     final result = await _sendPostRequest(
         'syncPluMappings',
         {'endpoint': 'syncPluMappings', 'data': mappings}
@@ -542,125 +1384,669 @@ class GoogleSheetsService {
     return result['success'] == true;
   }
 
-  // ---------------------------------------------------------------------------
-// FETCH OPERATIONS
-// ---------------------------------------------------------------------------
+  // ============================================================================
+// 🔥 CHUNKED SYNC METHODS WITH RETRY AND PROGRESS
+// ============================================================================
 
-  Future<List<Map<String, dynamic>>> fetchLocations() async => _fetchTable('Locations');
-  Future<List<Map<String, dynamic>>> fetchInventory() async => _fetchTable('Inventory');
-  Future<List<Map<String, dynamic>>> fetchAudits() async => _fetchTable('AuditCalendar');
-  Future<List<Map<String, dynamic>>> fetchPurchases() async => _fetchTable('Purchases');
-  Future<List<Map<String, dynamic>>> fetchStoreSalesData() async => _fetchTable('StoreSalesData');
-  Future<List<Map<String, dynamic>>> fetchItemSales() async => _fetchTable('ItemSales');
-  Future<List<Map<String, dynamic>>> fetchMasterProducts() async => _fetchTable('MasterProducts');
-  Future<List<Map<String, dynamic>>> fetchMasterBarcodes() async => _fetchTable('MasterBarcodes');
-
-  Future<List<Map<String, dynamic>>> fetchInvoices() async {
-    if (kDebugMode) print('🔍 FETCHING INVOICES');
-    return _fetchTable('InvoiceDetails');
-  }
-
-// 🔥 NEW: Fetch invoice details
-  Future<List<Map<String, dynamic>>> fetchInvoiceDetails() async {
-    if (kDebugMode) print('🔍 FETCH INVOICE DETAILS');
-    return _fetchTable('InvoiceDetails');
-  }
-
-// 🔥 NEW: Alias for fetchInvoiceDetails (if needed)
-  Future<List<Map<String, dynamic>>> fetchAllInvoices() async {
-    if (kDebugMode) print('🔍 FETCH ALL INVOICES');
-    return _fetchTable('InvoiceDetails');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchStockCounts() async {
-    if (kDebugMode) print('🔍 FETCH STOCK COUNTS');
-    return _fetchTable('StockCounts');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchComputedCosts() async {
-    if (kDebugMode) print('🔍 FETCH COMPUTED COSTS');
-    return _fetchTable('MasterCostsComputed');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchMasterSuppliers() async {
-    if (_cachedMasterSuppliers != null && _cachedMasterSuppliers!.isNotEmpty) {
-      return _cachedMasterSuppliers!;
+  /// Sync invoices with chunking, retry, and progress reporting
+  Future<Map<String, dynamic>> syncInvoiceDetailsWithChunking(
+      List<Map<String, dynamic>> invoices, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 25,
+      }) async {
+    if (invoices.isEmpty) {
+      return {
+        'success': true,
+        'newCount': 0,
+        'updatedCount': 0,
+        'duplicateCount': 0,
+        'duplicates': [],
+        'message': 'No invoices to sync'
+      };
     }
 
-    const maxRetries = 3;
-    int attempt = 0;
+    print('📄 Syncing ${invoices.length} invoices in chunks of $chunkSize');
 
-    while (attempt < maxRetries) {
+    final mappedInvoices = invoices.map(_mapInvoiceFields).toList();
+
+    final syncedInvoices = mappedInvoices.map((inv) {
+      final modified = Map<String, dynamic>.from(inv);
+      modified['syncStatus'] = 'synced';
+      return modified;
+    }).toList();
+
+    int totalNew = 0;
+    int totalUpdated = 0;
+    int totalDuplicates = 0;
+    bool allSuccessful = true;
+    List<Map<String, dynamic>> allDuplicates = [];
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < syncedInvoices.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'newCount': totalNew,
+          'updatedCount': totalUpdated,
+          'duplicateCount': totalDuplicates,
+          'duplicates': allDuplicates,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, syncedInvoices.length);
+      final chunk = syncedInvoices.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (syncedInvoices.length / chunkSize).ceil();
+
+      print('📤 Syncing invoice chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
       try {
-        attempt++;
-        final url = Uri.parse(masterScriptUrl).replace(
-          queryParameters: {
-            'table': 'MasterSuppliers',
-            'storeIdentifier': 'MASTER',
+        final result = await _sendPostRequest(
+          'syncInvoiceDetails',
+          {
+            'endpoint': 'syncInvoiceDetails',
+            'data': chunk,
+            'table': 'InvoiceDetails',
           },
         );
 
-        final response = await _client.get(url).timeout(const Duration(seconds: 15));
-
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          if (data is List) {
-            _cachedMasterSuppliers = data.cast<Map<String, dynamic>>();
-            return _cachedMasterSuppliers!;
+        if (result['success'] == true) {
+          totalNew += (result['newCount'] ?? 0) as int;
+          totalUpdated += (result['updatedCount'] ?? 0) as int;
+          totalDuplicates += (result['duplicateCount'] ?? 0) as int;
+          if (result['duplicates'] != null) {
+            allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
           }
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, syncedInvoices.length);
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+        } else {
+          allSuccessful = false;
+          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+          print('⚠️ Chunk $chunkNumber failed: $lastError');
         }
       } catch (e) {
-        logger?.error('fetchMasterSuppliers Attempt $attempt failed', e);
-        if (attempt == maxRetries) break;
-        await Future.delayed(Duration(seconds: attempt));
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < syncedInvoices.length) {
+        await Future.delayed(const Duration(milliseconds: 500));
       }
     }
-    return [];
+
+    return {
+      'success': allSuccessful,
+      'newCount': totalNew,
+      'updatedCount': totalUpdated,
+      'duplicateCount': totalDuplicates,
+      'duplicates': allDuplicates,
+      'message': allSuccessful
+          ? 'Synced ${syncedInvoices.length} invoices successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
   }
 
-  Future<List<Map<String, dynamic>>> fetchItemsIssued() async {
-    if (kDebugMode) print('🔍 FETCHING ITEMS ISSUED');
-    return _fetchTable('ItemsIssued');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchStockIssues() async {
-    if (kDebugMode) print('🔍 FETCHING STOCK ISSUES');
-    return _fetchTable('StockIssues');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchItemsIssuedMap() async {
-    if (kDebugMode) print('🔍 FETCHING ITEMS ISSUED MAP');
-    return _fetchTable('ItemsIssuedMap');
-  }
-
-  Future<List<Map<String, dynamic>>> fetchPluMappings() async {
-    if (kDebugMode) print('🔍 FETCH PLU MAPPINGS');
-    return _fetchTable('PluMappings');
-  }
-
-  // ---------------------------------------------------------------------------
-  // HELPERS
-  // ---------------------------------------------------------------------------
-
-  // Maps app-side field names to Google Sheets column headers
-  Map<String, dynamic> _mapInvoiceFields(Map<String, dynamic> invoice) {
-    // Create a copy without renaming fields
-    final newMap = Map<String, dynamic>.from(invoice);
-
-    // 🔴 CRITICAL: Ensure Invoice Number is a string with leading zeros
-    if (newMap.containsKey('Invoice Number')) {
-      // Convert to string explicitly
-      newMap['Invoice Number'] = newMap['Invoice Number'].toString();
-      print('📋 Sending invoice number to GAS: "${newMap['Invoice Number']}"');
+  /// Sync purchases with chunking, retry, and progress reporting
+  Future<Map<String, dynamic>> syncPurchasesWithChunking(
+      List<Map<String, dynamic>> purchases, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 50,
+      }) async {
+    if (purchases.isEmpty) {
+      return {
+        'success': true,
+        'newCount': 0,
+        'updatedCount': 0,
+        'duplicateCount': 0,
+        'message': 'No purchases to sync'
+      };
     }
 
-    // Only map supplierBottleID if needed
+    print('📦 Syncing ${purchases.length} purchases in chunks of $chunkSize');
+
+    final sanitized = purchases.map((p) {
+      final item = Map<String, dynamic>.from(p);
+      if (item['purchases_ID'] == null || item['purchases_ID'].toString().isEmpty) {
+        item['purchases_ID'] = _generateUuid();
+      }
+      if (item['syncStatus'] == null) {
+        item['syncStatus'] = 'synced';
+      }
+      return item;
+    }).toList();
+
+    int totalNew = 0;
+    int totalUpdated = 0;
+    int totalDuplicates = 0;
+    bool allSuccessful = true;
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < sanitized.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'newCount': totalNew,
+          'updatedCount': totalUpdated,
+          'duplicateCount': totalDuplicates,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, sanitized.length);
+      final chunk = sanitized.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (sanitized.length / chunkSize).ceil();
+
+      print('📤 Syncing purchase chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
+      try {
+        final result = await _sendPostRequest(
+          'syncPurchases',
+          {
+            'endpoint': 'syncPurchases',
+            'data': chunk,
+            'table': 'Purchases',
+          },
+        );
+
+        if (result['success'] == true) {
+          totalNew += (result['newCount'] ?? 0) as int;
+          totalUpdated += (result['updatedCount'] ?? 0) as int;
+          totalDuplicates += (result['duplicateCount'] ?? 0) as int;
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, sanitized.length);
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+        } else {
+          allSuccessful = false;
+          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+          print('⚠️ Chunk $chunkNumber failed: $lastError');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < sanitized.length) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+    }
+
+    return {
+      'success': allSuccessful,
+      'newCount': totalNew,
+      'updatedCount': totalUpdated,
+      'duplicateCount': totalDuplicates,
+      'message': allSuccessful
+          ? 'Synced ${sanitized.length} purchases successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
+  }
+
+  /// Sync stock counts with chunking, retry, and progress reporting
+  Future<Map<String, dynamic>> syncStockCountsWithChunking(
+      List<Map<String, dynamic>> counts, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 500,
+      }) async {
+    if (counts.isEmpty) {
+      return {
+        'success': true,
+        'count': 0,
+        'updated': 0,
+        'deleted': 0,
+        'message': 'No stock counts to sync'
+      };
+    }
+
+    print('📊 Syncing ${counts.length} stock counts in chunks of $chunkSize');
+
+    final payload = counts.map((c) {
+      final item = Map<String, dynamic>.from(c);
+      item['deleted'] = (c['syncStatus'] == 'deleted');
+      if (item['stock_id'] == null && item['id'] != null) {
+        item['stock_id'] = item['id'];
+      }
+      return item;
+    }).toList();
+
+    int totalInserted = 0;
+    int totalUpdated = 0;
+    int totalDeleted = 0;
+    bool allSuccessful = true;
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < payload.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'count': totalInserted,
+          'updated': totalUpdated,
+          'deleted': totalDeleted,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, payload.length);
+      final chunk = payload.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (payload.length / chunkSize).ceil();
+
+      print('📊 Syncing stock count chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
+      try {
+        final result = await _sendPostRequest(
+          'syncStockCounts',
+          {
+            'endpoint': 'syncStockCounts',
+            'data': chunk,
+          },
+        );
+
+        if (result['success'] == true || result['status'] == 'success' || result['status'] == 'partial_success') {
+          // 🔥 FIXED: Use both old and new field names
+          totalInserted += (result['count'] ?? result['newCount'] ?? 0) as int;
+          totalUpdated += (result['updated'] ?? result['updatedCount'] ?? 0) as int;
+          totalDeleted += (result['deleted'] ?? 0) as int;
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, payload.length);
+          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? result['newCount'] ?? 0} inserted, ${result['updated'] ?? result['updatedCount'] ?? 0} updated');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < payload.length) {
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+
+    return {
+      'success': allSuccessful,
+      'count': totalInserted,
+      'updated': totalUpdated,
+      'deleted': totalDeleted,
+      'message': allSuccessful
+          ? 'Synced ${payload.length} stock counts successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
+  }
+
+  /// Sync PLU mappings with chunking
+  Future<Map<String, dynamic>> syncPluMappingsWithChunking(
+      List<Map<String, dynamic>> mappings, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 50,
+      }) async {
+    if (mappings.isEmpty) {
+      return {
+        'success': true,
+        'newCount': 0,
+        'updatedCount': 0,
+        'message': 'No mappings to sync'
+      };
+    }
+
+    print('🔗 Syncing ${mappings.length} PLU mappings in chunks of $chunkSize');
+
+    int totalNew = 0;
+    int totalUpdated = 0;
+    bool allSuccessful = true;
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < mappings.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'newCount': totalNew,
+          'updatedCount': totalUpdated,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, mappings.length);
+      final chunk = mappings.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (mappings.length / chunkSize).ceil();
+
+      print('🔗 Syncing PLU chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
+      try {
+        final result = await _sendPostRequest(
+          'syncPluMappings',
+          {
+            'endpoint': 'syncPluMappings',
+            'data': chunk,
+          },
+        );
+
+        if (result['success'] == true) {
+          totalNew += (result['newCount'] ?? 0) as int;
+          totalUpdated += (result['updatedCount'] ?? 0) as int;
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, mappings.length);
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+        } else {
+          allSuccessful = false;
+          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+          print('⚠️ Chunk $chunkNumber failed: $lastError');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < mappings.length) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+    }
+
+    return {
+      'success': allSuccessful,
+      'newCount': totalNew,
+      'updatedCount': totalUpdated,
+      'message': allSuccessful
+          ? 'Synced ${mappings.length} mappings successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
+  }
+
+  /// Sync locations with chunking
+  Future<Map<String, dynamic>> syncNewLocationsWithChunking(
+      List<Map<String, dynamic>> locations, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 50,
+      }) async {
+    if (locations.isEmpty) {
+      return {
+        'success': true,
+        'count': 0,
+        'message': 'No locations to sync'
+      };
+    }
+
+    print('📍 Syncing ${locations.length} locations in chunks of $chunkSize');
+
+    int totalAdded = 0;
+    bool allSuccessful = true;
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < locations.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'count': totalAdded,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, locations.length);
+      final chunk = locations.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (locations.length / chunkSize).ceil();
+
+      print('📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
+      try {
+        final result = await _sendPostRequest(
+          'syncNewLocations',
+          {
+            'endpoint': 'syncNewLocations',
+            'data': chunk,
+          },
+        );
+
+        if (result['success'] == true) {
+          totalAdded += (result['count'] ?? 0) as int;
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, locations.length);
+          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? 0} locations');
+        } else {
+          allSuccessful = false;
+          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+          print('⚠️ Chunk $chunkNumber failed: $lastError');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < locations.length) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+    }
+
+    return {
+      'success': allSuccessful,
+      'count': totalAdded,
+      'message': allSuccessful
+          ? 'Synced ${locations.length} locations successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
+  }
+
+  /// Sync new products with chunking
+  Future<Map<String, dynamic>> syncNewProductsWithChunking(
+      List<Map<String, dynamic>> products, {
+        Function(int processed, int total)? onProgress,
+        int chunkSize = 10,
+      }) async {
+    if (products.isEmpty) {
+      return {
+        'success': true,
+        'count': 0,
+        'message': 'No products to sync'
+      };
+    }
+
+    print('🆕 Syncing ${products.length} products in chunks of $chunkSize');
+
+    int totalAdded = 0;
+    bool allSuccessful = true;
+    String lastError = '';
+    int processedCount = 0;
+
+    for (var i = 0; i < products.length; i += chunkSize) {
+      if (_isDisposed) {
+        return {
+          'success': false,
+          'count': totalAdded,
+          'message': 'Service disposed during sync'
+        };
+      }
+
+      final end = (i + chunkSize).clamp(0, products.length);
+      final chunk = products.sublist(i, end);
+      final chunkNumber = (i ~/ chunkSize) + 1;
+      final totalChunks = (products.length / chunkSize).ceil();
+
+      print('🆕 Syncing product chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+
+      try {
+        final result = await _sendPostRequest(
+          'syncNewProducts',
+          {
+            'endpoint': 'syncNewProducts',
+            'data': chunk,
+          },
+        );
+
+        if (result['success'] == true) {
+          totalAdded += (result['added'] ?? 0) as int;
+          processedCount += chunk.length;
+          onProgress?.call(processedCount, products.length);
+          print('✅ Chunk $chunkNumber complete: +${result['added'] ?? 0} products');
+        } else {
+          allSuccessful = false;
+          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+          print('⚠️ Chunk $chunkNumber failed: $lastError');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        lastError = e.toString();
+        print('❌ Chunk $chunkNumber exception: $e');
+      }
+
+      if (i + chunkSize < products.length) {
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+
+    return {
+      'success': allSuccessful,
+      'count': totalAdded,
+      'message': allSuccessful
+          ? 'Synced ${products.length} products successfully'
+          : 'Completed with errors: $lastError',
+      'lastError': lastError,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Delete Operations
+  // ---------------------------------------------------------------------------
+
+  Future<bool> deleteInvoice(String invoiceId) async {
+    final result = await _sendPostRequest(
+        'deleteInvoice',
+        {'endpoint': 'deleteInvoice', 'data': {'invoiceId': invoiceId}}
+    );
+    return result['success'] == true;
+  }
+
+  Future<bool> deletePurchase(String purchaseId) async {
+    final result = await _sendPostRequest(
+        'deletePurchase',
+        {'endpoint': 'deletePurchase', 'data': {'purchaseId': purchaseId}}
+    );
+    return result['success'] == true;
+  }
+
+  Future<bool> deleteInvoices(List<String> invoiceIds) async {
+    if (invoiceIds.isEmpty) return true;
+
+    print('📦 Deleting ${invoiceIds.length} invoices sequentially');
+    bool allSuccessful = true;
+    int failedCount = 0;
+
+    for (var i = 0; i < invoiceIds.length; i++) {
+      final id = invoiceIds[i];
+      try {
+        final result = await deleteInvoice(id);
+        if (!result) {
+          allSuccessful = false;
+          failedCount++;
+          print('⚠️ Failed to delete invoice $id');
+        }
+
+        if ((i + 1) % 10 == 0) {
+          print('📊 Deleted ${i + 1}/${invoiceIds.length} invoices');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 100));
+      } catch (e) {
+        allSuccessful = false;
+        failedCount++;
+        print('❌ Error deleting invoice $id: $e');
+      }
+    }
+
+    print('✅ Invoice deletion: ${invoiceIds.length - failedCount} succeeded, $failedCount failed');
+    return allSuccessful;
+  }
+
+  Future<bool> deletePurchases(List<String> purchaseIds) async {
+    if (purchaseIds.isEmpty) return true;
+
+    if (purchaseIds.length > 100) {
+      print('📦 Deleting ${purchaseIds.length} purchases in chunks');
+      bool allSuccessful = true;
+      int failedCount = 0;
+
+      for (var i = 0; i < purchaseIds.length; i += 100) {
+        final int end = (i + 100).clamp(0, purchaseIds.length).toInt();
+        final chunk = purchaseIds.sublist(i, end);
+
+        try {
+          final result = await _sendPostRequest(
+              'deletePurchases',
+              {'endpoint': 'deletePurchases', 'data': {'purchaseIds': chunk}}
+          );
+
+          if (result['success'] != true) {
+            allSuccessful = false;
+            failedCount += chunk.length;
+            print('⚠️ Delete chunk ${(i ~/ 100) + 1} failed');
+          }
+        } catch (e) {
+          allSuccessful = false;
+          failedCount += chunk.length;
+          print('❌ Delete chunk ${(i ~/ 100) + 1} error: $e');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+
+      print('✅ Purchase deletion: ${purchaseIds.length - failedCount} succeeded, $failedCount failed');
+      return allSuccessful;
+    }
+
+    final result = await _sendPostRequest(
+        'deletePurchases',
+        {'endpoint': 'deletePurchases', 'data': {'purchaseIds': purchaseIds}}
+    );
+    return result['success'] == true;
+  }
+
+  Future<bool> updateInvoice(Map<String, dynamic> invoice) async {
+    final result = await _sendPostRequest(
+        'updateInvoice',
+        {'endpoint': 'updateInvoice', 'data': _mapInvoiceFields(invoice)}
+    );
+    return result['success'] == true;
+  }
+
+  Future<bool> updatePurchase(Map<String, dynamic> purchase) async {
+    final result = await _sendPostRequest(
+        'updatePurchase',
+        {'endpoint': 'updatePurchase', 'data': purchase}
+    );
+    return result['success'] == true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  Map<String, dynamic> _mapInvoiceFields(Map<String, dynamic> invoice) {
+    final newMap = Map<String, dynamic>.from(invoice);
+
+    if (newMap.containsKey('Invoice Number')) {
+      newMap['Invoice Number'] = newMap['Invoice Number'].toString();
+    }
+
     if (newMap.containsKey('supplierBottleID')) {
       newMap['purSupplierBottleID'] = newMap['supplierBottleID'];
       newMap.remove('supplierBottleID');
     }
 
-    // Ensure ID generation if missing
     if (newMap['invoiceDetailsID'] == null || newMap['invoiceDetailsID'].toString().isEmpty) {
       newMap['invoiceDetailsID'] = _generateUuid();
     }
@@ -668,19 +2054,24 @@ class GoogleSheetsService {
     return newMap;
   }
 
-  // Simple V4-like UUID generator to avoid external dependencies
-  // Replace the current _generateUuid with this
   String _generateUuid() {
-    // Match server's 8-character hex format
     final rnd = math.Random.secure();
     final bytes = List<int>.generate(4, (_) => rnd.nextInt(256));
-
-    // Format as 8 hex characters
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
-// Optional: Add validation to ensure format matches
   bool isValidServerId(String id) {
     return RegExp(r'^[a-f0-9]{8}$').hasMatch(id);
   }
+}
+
+// Cache Entry Class
+class _CacheEntry {
+  final List<Map<String, dynamic>> data;
+  final DateTime timestamp;
+
+  _CacheEntry({
+    required this.data,
+    required this.timestamp,
+  });
 }
