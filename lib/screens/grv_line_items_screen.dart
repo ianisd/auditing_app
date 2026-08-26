@@ -1511,7 +1511,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     print('DEBUG: _saveAllItems() called');
     print('  - Total items to save: ${_items.length}');
     print('  - Current invoice ID: ${_currentInvoiceId ?? widget.invoiceDetailsID}');
-    print('  - GRV Reference: ${widget.grvReference}');  // 🔥 DEBUG
+    print('  - GRV Reference: ${widget.grvReference}');
 
     if (!_isMounted()) return;
 
@@ -1553,10 +1553,14 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
         // Try to create the invoice if it doesn't exist
         final supplierId = await _getSupplierId();
+
+        // 🔥 FIX: Ensure GRV Reference is never empty
+        final grvRef = widget.grvReference.isNotEmpty ? widget.grvReference : 'NO_GRV';
+
         final invoiceData = {
           'invoiceDetailsID': effectiveInvoiceId,
           'Invoice Number': _extractInvoiceNumber(),
-          'GRV Reference': widget.grvReference,  // 🔥 ADD GRV TO INVOICE
+          'GRV Reference': grvRef,
           'supplierID': supplierId,
           'Supplier Name': widget.supplierName,
           'Date of Purchase': widget.deliveryDate.toIso8601String(),
@@ -1588,7 +1592,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         if (grvToUse.isNotEmpty) {
           print('✅ Using GRV from invoice: "$grvToUse"');
         } else {
-          print('⚠️ WARNING: No GRV found anywhere! Purchases will be created without GRV.');
+          // 🔥 FIX: Use 'NO_GRV' as final fallback
+          grvToUse = 'NO_GRV';
+          print('⚠️ WARNING: No GRV found anywhere! Using "$grvToUse"');
         }
       }
 
@@ -1615,23 +1621,13 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             ? item.plu!
             : (item.barcode?.isNotEmpty == true ? item.barcode! : 'unknown');
 
-        // 🔥 DEBUG: Check what grvToUse actually contains
-        print('🔥🔥🔥 CRITICAL CHECK: grvToUse = "$grvToUse"');
-        print('🔥🔥🔥 grvToUse.isEmpty = ${grvToUse.isEmpty}');
-
-        if (grvToUse.isEmpty) {
-          // 🔥 Force a value
-          grvToUse = 'NOGRV';
-          print('⚠️ Forcing grvToUse to "$grvToUse"');
-        }
-
         final String purchaseId = 'purchase_${effectiveInvoiceId}_${grvToUse}_${productKey}_line$lineIndex';
         print('🔥 FINAL purchaseId: "$purchaseId"');
 
         final purchase = {
           'purchases_ID': purchaseId,
           'invoiceDetailsID': effectiveInvoiceId,
-          'GRV Reference': grvToUse,  // 🔥 CRITICAL: Include GRV using grvToUse
+          'GRV Reference': grvToUse,
           'Invoice Nr.': invoice['Invoice Number']?.toString() ?? '',
           'Inv. Date of Purchase': invoice['Date of Purchase']?.toString() ?? widget.deliveryDate.toIso8601String(),
           'supplierID': invoice['supplierID'] ?? '',
@@ -2041,6 +2037,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
   void _editItem(int index) async {
     final item = _items[index];
+
+    // 🔥 FIX: Ensure GRV Reference is never empty
+    final grvRef = widget.grvReference.isNotEmpty ? widget.grvReference : 'NO_GRV';
+
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -2048,7 +2048,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
           invoiceDetailsID: widget.invoiceDetailsID,
           supplierName: widget.supplierName,
           deliveryDate: widget.deliveryDate,
-          initialItem: item, grvReference: '',
+          grvReference: grvRef,
+          initialItem: item,
         ),
       ),
     );

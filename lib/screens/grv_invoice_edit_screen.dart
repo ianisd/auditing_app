@@ -35,7 +35,7 @@ class GrvInvoiceEditScreen extends StatefulWidget {
 
 class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   late TextEditingController _invoiceNumberController;
-  late TextEditingController _grvController;  // 🔥 ADDED
+  late TextEditingController _grvController;
   late DateTime _deliveryDate;
   late DateTime _purchaseDate;
   late String _supplierName;
@@ -65,20 +65,25 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   void dispose() {
     _invoiceNumberController.removeListener(_onFieldChanged);
     _invoiceNumberController.dispose();
-    _grvController.removeListener(_onFieldChanged);  // 🔥 ADDED
-    _grvController.dispose();  // 🔥 ADDED
+    _grvController.removeListener(_onFieldChanged);
+    _grvController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
   }
 
+  // 🔥 FIX: Add the missing _initializeFromInvoice method
   void _initializeFromInvoice() {
     _invoiceNumberController = TextEditingController(
       text: widget.invoice['Invoice Number']?.toString() ?? '',
     );
-    _grvController = TextEditingController(  // 🔥 ADDED
-      text: widget.invoice['GRV Reference']?.toString() ?? '',
+
+    // 🔥 FIX: Ensure GRV Reference is never null or empty
+    final grvValue = widget.invoice['GRV Reference']?.toString();
+    _grvController = TextEditingController(
+      text: (grvValue != null && grvValue.isNotEmpty) ? grvValue : 'NO_GRV',
     );
+
     _deliveryDate = _parseDate(widget.invoice['Delivery Date']);
     _purchaseDate = _parseDate(widget.invoice['Date of Purchase']);
     _supplierName = widget.invoice['Supplier Name']?.toString() ??
@@ -86,7 +91,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     _supplierId = widget.invoice['supplierID']?.toString() ?? '';
 
     _invoiceNumberController.addListener(_onFieldChanged);
-    _grvController.addListener(_onFieldChanged);  // 🔥 ADDED
+    _grvController.addListener(_onFieldChanged);
   }
 
   void _onFieldChanged() {
@@ -252,7 +257,11 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     }
   }
 
+  // 🔥 FIX: Only ONE _addNewProduct method (remove the duplicate)
   Future<void> _addNewProduct() async {
+    // 🔥 FIX: Ensure GRV Reference is never empty
+    final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+
     final result = await Navigator.push<GrvLineItemDisplay>(
       context,
       MaterialPageRoute(
@@ -260,7 +269,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           invoiceDetailsID: widget.invoice['invoiceDetailsID']?.toString() ?? '',
           supplierName: _supplierName,
           deliveryDate: _deliveryDate,
-          grvReference: _grvController.text,  // 🔥 ADDED - PASS GRV
+          grvReference: grvRef,
         ),
       ),
     );
@@ -271,7 +280,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       final newPurchase = {
         'purchases_ID': tempId,
         'invoiceDetailsID': widget.invoice['invoiceDetailsID'],
-        'GRV Reference': _grvController.text,  // 🔥 ADDED
+        'GRV Reference': grvRef,
         'Purchased Product Name': result.description,
         'Qty Purchased': result.quantityCases.toDouble(),
         'Cost Per Bottle': result.pricePerUnit,
@@ -336,6 +345,9 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       barcode: purchase['Barcode']?.toString(),
     );
 
+    // 🔥 FIX: Ensure GRV Reference is never empty
+    final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+
     final result = await Navigator.push<GrvLineItemDisplay>(
       context,
       MaterialPageRoute(
@@ -343,7 +355,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           invoiceDetailsID: widget.invoice['invoiceDetailsID']?.toString() ?? '',
           supplierName: _supplierName,
           deliveryDate: _deliveryDate,
-          grvReference: _grvController.text,  // 🔥 ADDED - PASS GRV
+          grvReference: grvRef,
           initialItem: existingItem,
         ),
       ),
@@ -352,7 +364,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     if (result != null && mounted) {
       final updatedPurchase = {
         ...purchase,
-        'GRV Reference': _grvController.text,  // 🔥 ADDED
+        'GRV Reference': grvRef,
         'Purchased Product Name': result.description,
         'Qty Purchased': result.quantityCases.toDouble(),
         'Cost Per Bottle': result.pricePerUnit,
@@ -432,9 +444,12 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
       final newTotalCost = _calculateTotal();
 
+      // 🔥 FIX: Ensure GRV Reference is never empty
+      final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+
       final updatedInvoice = Map<String, dynamic>.from(widget.invoice);
       updatedInvoice['Invoice Number'] = _invoiceNumberController.text;
-      updatedInvoice['GRV Reference'] = _grvController.text;  // 🔥 ADDED
+      updatedInvoice['GRV Reference'] = grvRef;
       updatedInvoice['Delivery Date'] = _deliveryDate.toIso8601String();
       updatedInvoice['Date of Purchase'] = _purchaseDate.toIso8601String();
       updatedInvoice['Supplier Name'] = _supplierName;
@@ -459,7 +474,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
               : (qtyCases * packSize * costPerUnit);
 
           final updateData = {
-            'GRV Reference': _grvController.text,  // 🔥 ADDED
+            'GRV Reference': grvRef,
             'Qty Purchased': qtyCases,
             'Cost Per Bottle': costPerUnit,
             'Case/Pack Size': 'Case $packSize',
@@ -661,7 +676,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // 🔥 ADDED: GRV Reference Field
+                      // GRV Reference Field
                       TextFormField(
                         controller: _grvController,
                         decoration: const InputDecoration(
