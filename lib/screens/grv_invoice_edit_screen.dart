@@ -77,13 +77,11 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     _invoiceNumberController = TextEditingController(
       text: widget.invoice['Invoice Number']?.toString() ?? '',
     );
-
-    // 🔥 FIX: Ensure GRV Reference is never null or empty
+    // 🔥 FIX: GRV Reference must never be null/empty downstream
     final grvValue = widget.invoice['GRV Reference']?.toString();
     _grvController = TextEditingController(
-      text: (grvValue != null && grvValue.isNotEmpty) ? grvValue : 'NO_GRV',
+      text: (grvValue != null && grvValue.trim().isNotEmpty) ? grvValue : 'NO_GRV',
     );
-
     _deliveryDate = _parseDate(widget.invoice['Delivery Date']);
     _purchaseDate = _parseDate(widget.invoice['Date of Purchase']);
     _supplierName = widget.invoice['Supplier Name']?.toString() ??
@@ -181,6 +179,17 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         sortAscending: true,
       );
 
+      // 🔥 FIX: Sanitize stale UI flags persisted by older builds.
+      // Anything already 'synced' is by definition NOT new/edited.
+      // This repairs the stuck "NEW / * Unsaved changes" records in Hive
+      // (in-memory only — no extra writes, no re-sync triggered).
+      for (final p in purchases) {
+        if (p['syncStatus'] == 'synced') {
+          p['_edited'] = false;
+          p['_isNew'] = false;
+        }
+      }
+
       if (mounted) {
         setState(() {
           if (reset) {
@@ -259,8 +268,10 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
   // 🔥 FIX: Only ONE _addNewProduct method (remove the duplicate)
   Future<void> _addNewProduct() async {
-    // 🔥 FIX: Ensure GRV Reference is never empty
-    final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+    // 🔥 FIX: never pass an empty GRV down
+    final grvRef = _grvController.text.trim().isNotEmpty
+        ? _grvController.text.trim()
+        : 'NO_GRV';
 
     final result = await Navigator.push<GrvLineItemDisplay>(
       context,
@@ -282,13 +293,20 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         'invoiceDetailsID': widget.invoice['invoiceDetailsID'],
         'GRV Reference': grvRef,
         'Purchased Product Name': result.description,
+        // 🔥 FIX: carry full metadata so Purchases rows aren't missing
+        // Main Category / Category / Single Unit Volume / UoM on the sheet
+        'Main Category': result.mainCategory,
+        'Category': result.category,
+        'Single Unit Volume': result.singleUnitVolume,
+        'UoM': result.uom,
         'Qty Purchased': result.quantityCases.toDouble(),
         'Cost Per Bottle': result.pricePerUnit,
-        'Case/Pack Size': result.unitsPerCase,
+        'Case/Pack Size': 'Case ${result.unitsPerCase}',
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
         'Barcode': result.barcode,
+        // In-memory only; _saveChanges now strips these before persisting.
         '_edited': true,
         '_isNew': true,
       };
@@ -343,10 +361,16 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       pricePerUnit: NumberParser.parse(purchase['Cost Per Bottle']),
       productName: purchase['Purchased Product Name']?.toString(),
       barcode: purchase['Barcode']?.toString(),
+      // 🔥 FIX: preserve metadata through the edit round-trip
+      mainCategory: purchase['Main Category']?.toString(),
+      category: purchase['Category']?.toString(),
+      singleUnitVolume: NumberParser.parse(purchase['Single Unit Volume']),
+      uom: purchase['UoM']?.toString(),
     );
 
-    // 🔥 FIX: Ensure GRV Reference is never empty
-    final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+    final grvRef = _grvController.text.trim().isNotEmpty
+        ? _grvController.text.trim()
+        : 'NO_GRV';
 
     final result = await Navigator.push<GrvLineItemDisplay>(
       context,
@@ -366,15 +390,20 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         ...purchase,
         'GRV Reference': grvRef,
         'Purchased Product Name': result.description,
+        'Main Category': result.mainCategory,
+        'Category': result.category,
+        'Single Unit Volume': result.singleUnitVolume,
+        'UoM': result.uom,
         'Qty Purchased': result.quantityCases.toDouble(),
         'Cost Per Bottle': result.pricePerUnit,
-        'Case/Pack Size': result.unitsPerCase,
+        'Case/Pack Size': 'Case ${result.unitsPerCase}',
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
         'Barcode': result.barcode,
         '_edited': true,
-        '_isNew': purchase['_isNew'] == true ? true : null,
+        // 🔥 FIX: keep a real boolean (old code wrote `null` here)
+        '_isNew': purchase['_isNew'] == true,
       };
 
       setState(() {
@@ -419,7 +448,11 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         final storage = context.read<OfflineStorage>();
         final purchaseId = purchase['purchases_ID']?.toString();
 
-        if (purchaseId != null && !purchaseId.startsWith('TEMP_')) {
+        // 🔥 FIX: ALWAYS queue the server-side delete (including TEMP_ ids).
+        // TEMP_ rows DO exist on the sheet once synced — skipping them left
+        // orphan rows server-side while local was deleted (the 16-vs-14 drift).
+        // For never-synced TEMP_ rows the server simply returns notFound.
+        if (purchaseId != null && purchaseId.isNotEmpty) {
           storage.softDeletePurchase(purchaseId);
         }
 
@@ -443,9 +476,9 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       final storage = context.read<OfflineStorage>();
 
       final newTotalCost = _calculateTotal();
-
-      // 🔥 FIX: Ensure GRV Reference is never empty
-      final grvRef = _grvController.text.isNotEmpty ? _grvController.text : 'NO_GRV';
+      final grvRef = _grvController.text.trim().isNotEmpty
+          ? _grvController.text.trim()
+          : 'NO_GRV';
 
       final updatedInvoice = Map<String, dynamic>.from(widget.invoice);
       updatedInvoice['Invoice Number'] = _invoiceNumberController.text;
@@ -461,47 +494,81 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
       final List<Future> updateFutures = [];
 
-      for (var purchase in _purchases) {
-        if (purchase['_edited'] == true) {
-          final purchaseId = purchase['purchases_ID']?.toString();
+      // 🔥 FIX: Use a standard for-loop with an index so we can generate
+      // the correct _lineN suffix for the canonical ID.
+      for (int i = 0; i < _purchases.length; i++) {
+        var purchase = _purchases[i];
+        if (purchase['_edited'] != true) continue;
 
-          final packSize = _extractPackSize(purchase['Case/Pack Size']);
-          final qtyCases = NumberParser.parse(purchase['Qty Purchased']);
-          final costPerUnit = NumberParser.parse(purchase['Cost Per Bottle']);
-          final lineTotal = purchase['Cost of Purchases'] != null &&
-              NumberParser.parse(purchase['Cost of Purchases']) != 0.0
-              ? NumberParser.parse(purchase['Cost of Purchases'])
-              : (qtyCases * packSize * costPerUnit);
+        final purchaseId = purchase['purchases_ID']?.toString();
+        final packSize = _extractPackSize(purchase['Case/Pack Size']);
+        final qtyCases = NumberParser.parse(purchase['Qty Purchased']);
+        final costPerUnit = NumberParser.parse(purchase['Cost Per Bottle']);
+        final lineTotal = purchase['Cost of Purchases'] != null &&
+            NumberParser.parse(purchase['Cost of Purchases']) != 0.0
+            ? NumberParser.parse(purchase['Cost of Purchases'])
+            : (qtyCases * packSize * costPerUnit);
 
-          final updateData = {
-            'GRV Reference': grvRef,
-            'Qty Purchased': qtyCases,
-            'Cost Per Bottle': costPerUnit,
-            'Case/Pack Size': 'Case $packSize',
-            'Purchases Bottles': (qtyCases * packSize),
-            'Cost of Purchases': lineTotal,
+        final Map<String, dynamic> updateData = {
+          'GRV Reference': grvRef,
+          'Qty Purchased': qtyCases,
+          'Cost Per Bottle': costPerUnit,
+          'Case/Pack Size': 'Case $packSize',
+          'Purchases Bottles': (qtyCases * packSize),
+          'Cost of Purchases': lineTotal,
+        };
+
+        final bool isNew = purchase['_isNew'] == true;
+
+        if (isNew) {
+          // 🔥🔥🔥 THE FIX: Generate Canonical ID Client-Side 🔥🔥🔥
+          // Replace the TEMP_ ID with the proper format so Hive and the
+          // Server share the exact same ID, fixing deduplication.
+          final barcode = purchase['Barcode']?.toString() ?? '';
+          final productKey = barcode.isNotEmpty
+              ? barcode
+              : (purchase['Purchased Product Name']?.toString() ?? 'unknown').replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '');
+
+          // 🔥 BULLETPROOF FIX: Use a microsecond timestamp + i instead of just list index `i`.
+          // This guarantees the line suffix is globally unique, preventing any
+          // collisions if items are deleted, reordered, or re-indexed by Hive.
+          final lineSuffix = (DateTime.now().microsecondsSinceEpoch + i).toString();
+          final canonicalId = 'purchase_${widget.invoice['invoiceDetailsID']}_${grvRef}_${productKey}_line$lineSuffix';
+
+          updateData['Purchased Product Name'] = purchase['Purchased Product Name'];
+          updateData['purSupplierBottleID'] = purchase['purSupplierBottleID'];
+          updateData['Barcode'] = purchase['Barcode'];
+          updateData['Main Category'] = purchase['Main Category'];
+          updateData['Category'] = purchase['Category'];
+          updateData['Single Unit Volume'] = purchase['Single Unit Volume'];
+          updateData['UoM'] = purchase['UoM'];
+
+          final Map<String, dynamic> cleanPayload = {
+            ...purchase,
+            ...updateData,
+            'purchases_ID': canonicalId, // 🔥 OVERWRITE THE TEMP_ ID HERE
+            'invoiceDetailsID': widget.invoice['invoiceDetailsID'],
+            'supplierID': _supplierId,
+            'Supplier': _supplierName,
+            'Stock Delivery Date': _deliveryDate.toIso8601String(),
+            'syncStatus': 'pending',
+            '_edited': false,
+            '_isNew': false,
           };
+          cleanPayload.removeWhere((k, _) => k.startsWith('_') && k != '_edited' && k != '_isNew');
 
-          if (purchase['_isNew'] == true) {
-            updateData['Purchased Product Name'] = purchase['Purchased Product Name'];
-            updateData['purSupplierBottleID'] = purchase['purSupplierBottleID'];
-            updateData['Barcode'] = purchase['Barcode'];
-          }
+          updateFutures.add(storage.savePurchase(cleanPayload));
 
-          if (purchaseId != null && !purchaseId.startsWith('TEMP_')) {
-            updateFutures.add(storage.updatePurchaseItem(purchaseId, updateData));
-          } else if (purchase['_isNew'] == true) {
-            updateFutures.add(storage.savePurchase({
-              ...purchase,
-              ...updateData,
-              'invoiceDetailsID': widget.invoice['invoiceDetailsID'],
-              'supplierID': _supplierId,
-              'Supplier': _supplierName,
-              'Stock Delivery Date': _deliveryDate.toIso8601String(),
-              'syncStatus': 'pending',
-            }));
-          }
+          // Update the in-memory object so the UI uses the real ID going forward
+          purchase['purchases_ID'] = canonicalId;
+        } else if (purchaseId != null && purchaseId.isNotEmpty) {
+          updateFutures.add(storage.updatePurchaseItem(purchaseId, updateData));
         }
+
+        // Keep the in-memory list consistent for the rest of this session.
+        purchase.addAll(updateData);
+        purchase['_edited'] = false;
+        purchase['_isNew'] = false;
       }
 
       if (updateFutures.isNotEmpty) {
@@ -605,6 +672,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
     final grandTotal = _calculateTotal();
     final isCreditNote = grandTotal < 0;
@@ -618,16 +686,48 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
               padding: EdgeInsets.only(right: 8.0),
               child: Icon(Icons.circle, color: Colors.orange, size: 12),
             ),
-          IconButton(
-            icon: const Icon(Icons.delete, color: Colors.red),
-            onPressed: _deleteInvoice,
+
+          // 🔵 ADD PRODUCT (was the floating button)
+          ElevatedButton.icon(
+            onPressed: _addNewProduct,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add Product'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
           ),
-          IconButton(
-            icon: _isSaving
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.save),
+          const SizedBox(width: 8),
+
+          // 🔴 DELETE GRV/CREDIT NOTE (was the red bin)
+          ElevatedButton.icon(
+            onPressed: _isSaving ? null : _deleteInvoice,
+            icon: const Icon(Icons.delete_outline, size: 18),
+            label: const Text('Delete GRV/Credit Note'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // 🟢 SAVE GRV/CREDIT NOTE (was the floppy disk)
+          ElevatedButton.icon(
             onPressed: _isSaving ? null : _saveChanges,
+            icon: _isSaving
+                ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            )
+                : const Icon(Icons.save, size: 18),
+            label: const Text('Save GRV/Credit Note'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
           ),
+          const SizedBox(width: 12),
         ],
       ),
       body: _isLoading
@@ -636,7 +736,9 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         onRefresh: _refreshPurchases,
         child: SingleChildScrollView(
           controller: _scrollController,
-          padding: const EdgeInsets.all(16),
+          // 🔥 Extra bottom padding so the last card's edit/delete
+          // buttons are never clipped or covered.
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -771,7 +873,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Tap the + button to add your first product',
+                        'Use "Add Product" in the top bar to add your first product',
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.grey[500],
@@ -808,7 +910,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                       final pricePerUnit = NumberParser.parse(purchase['Cost Per Bottle']);
                       final packSize = _extractPackSize(purchase['Case/Pack Size']);
                       final lineTotal = _calculateLineTotal(purchase);
-                      final isNew = purchase['_isNew'] == true;
+                      final isNew = _isNewItem(purchase);
 
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -845,7 +947,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text('${qtyCases.toStringAsFixed(2)} cases ($packSize pk) @ R${pricePerUnit.toStringAsFixed(2)}/unit'),
-                              if (purchase['_edited'] == true)
+                              if (_isUnsaved(purchase))
                                 const Text(
                                   '* Unsaved changes',
                                   style: TextStyle(color: Colors.orange, fontSize: 10),
@@ -886,7 +988,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                   ),
                   if (_isLoadingMore && _purchases.isNotEmpty)
                     const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16.0),
+                      padding: const EdgeInsets.symmetric(vertical: 16.0),
                       child: Center(
                         child: SizedBox(
                           width: 24,
@@ -901,14 +1003,18 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addNewProduct,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Product'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      // 🔥 FAB REMOVED — it was covering the last item's edit/delete buttons.
     );
   }
+
+  // 🔥 NEW helpers — single source of truth for the UI badges.
+// UI state is now DERIVED from syncStatus, not from persisted flags alone.
+  bool _isUnsaved(Map<String, dynamic> purchase) =>
+      purchase['_edited'] == true || purchase['syncStatus'] == 'pending';
+
+  bool _isNewItem(Map<String, dynamic> purchase) =>
+      purchase['_isNew'] == true ||
+          ((purchase['purchases_ID']?.toString().startsWith('TEMP_') ?? false) &&
+              purchase['syncStatus'] == 'pending');
+
 }

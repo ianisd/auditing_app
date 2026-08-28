@@ -143,16 +143,20 @@ class GrvData {
 // ===========================================================================
 
 class GrvLineItemDisplay {
-  final String? plu;           // From CSV, for display only
+  final String? plu;
   final String description;
   final int quantityCases;
   final int unitsPerCase;
   final double pricePerUnit;
 
-  String? productName;         // Filled after matching
-  String? barcode;             // Filled after matching
-  String? supplierBottleID;    // ← The REAL ID for cost lookup
-  String? matchedBy;           // 🔴 NEW: Track how we matched (saved_mapping, plu_direct, fuzzy, manual)
+  String? productName;
+  String? barcode;
+  String? supplierBottleID;
+  String? matchedBy;
+  String? mainCategory;
+  String? category;
+  double? singleUnitVolume;
+  String? uom;
   late final double costPerCase;
 
   GrvLineItemDisplay({
@@ -165,6 +169,10 @@ class GrvLineItemDisplay {
     this.barcode,
     this.supplierBottleID,
     this.matchedBy,
+    this.mainCategory,
+    this.category,
+    this.singleUnitVolume,
+    this.uom,
   }) {
     costPerCase = pricePerUnit * unitsPerCase;
   }

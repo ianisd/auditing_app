@@ -13,7 +13,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbxtJ5SoH5Xc9SZ1RDmg5r0odOIrQxCNolVVE-w9_7W7c27PQVW1xd8O4Fi2jkN_l5Rb/exec';
+      'https://script.google.com/macros/s/AKfycbw013Dskx5uHC5VkYsJiTJ43HeQz1lzsRoOcX_Ti7_BQklzfEUnuaByH8kmvHm3NB1A/exec';
 
   late Box _box;
   bool _initialized = false;
@@ -59,12 +59,13 @@ class StoreManager with ChangeNotifier {
         logger: _logger,
       );
 
-      // 🔥 SyncService no longer needs syncStatus - listener is in StoreManager
       _syncService = SyncService(
         offlineStorage: offlineStorage,
         googleSheets: googleSheets,
         logger: _logger,
       );
+
+      _syncService!.addListener(notifyListeners); // 🔥 forward SyncService changes
 
       offlineStorage.setGoogleSheetsService(googleSheets, storeSheetId);
     }
@@ -119,6 +120,7 @@ class StoreManager with ChangeNotifier {
 
   void _disposeSyncService() {
     if (_syncService != null) {
+      _syncService!.removeListener(notifyListeners);
       _syncService!.dispose();
       _syncService = null;
     }

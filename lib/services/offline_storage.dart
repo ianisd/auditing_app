@@ -3373,56 +3373,36 @@ class OfflineStorage with ChangeNotifier {
 
   Future<void> migratePurchaseIdsToUuid() async {
     if (!_isReady || _purchases == null) return;
-
-    print('🔄 Migrating Purchase IDs to UUID format...');
-
-    // 1. Get all purchases
+    print('🔄 Migrating LEGACY NUMERIC purchase IDs only...');
     final allPurchases = _purchases!.values.map((e) => _safeCast(e)).toList();
     int migratedCount = 0;
-
     final batchAdd = <String, dynamic>{};
     final batchDelete = <String>[];
 
     for (var purchase in allPurchases) {
       final oldId = purchase['purchases_ID'].toString();
-
-      // Check if ID is "Long" (Timestamp) or numeric
-      // 8-char hex is length 8. Timestamps are usually length 13.
-      if (oldId.length > 8 || RegExp(r'^\d+$').hasMatch(oldId)) {
-
-        // Generate new ID
+      // 🔥 FIX: ONLY purely-numeric legacy IDs. Never touch TEMP_… or purchase_… IDs.
+      if (RegExp(r'^\d+$').hasMatch(oldId)) {
         final newId = _generateUuid();
-
-        // Update purchase object
         purchase['purchases_ID'] = newId;
-        purchase['syncStatus'] = 'pending'; // Mark pending so it uploads
+        purchase['syncStatus'] = 'pending';
         purchase['updatedAt'] = DateTime.now().toIso8601String();
-
-        // Add to batch operations
         batchAdd[newId] = purchase;
         batchDelete.add(oldId);
-
         migratedCount++;
       }
     }
 
     if (migratedCount > 0) {
-      // Execute Delete Old
       await _purchases!.deleteAll(batchDelete);
-
-      // Execute Save New
       await _purchases!.putAll(batchAdd);
-
-      // Rebuild indexes (Critical because IDs changed)
       await _rebuildIndexes();
-
-      print('✅ Successfully migrated $migratedCount purchases to UUIDs');
+      print('✅ Migrated $migratedCount numeric purchases to UUIDs');
       notifyListeners();
     } else {
       print('✅ No purchases needed migration.');
     }
   }
-
   /// Clear ALL cached data (invoices, purchases, inventory, etc.)
   /// ⚠️ WARNING: This will delete ALL local data and require a full refresh
   Future<void> clearAllData() async {

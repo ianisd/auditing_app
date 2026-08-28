@@ -133,6 +133,12 @@ class _GrvListScreenState extends State<GrvListScreen> {
           _isLoading = false;
           _cachedFilteredInvoices = null;
           _cachedTotalValueSum = null;
+
+          // 🔥 FIX: Clear the purchases cache.
+          // This ensures we fetch a fresh snapshot from Hive, which
+          // correctly filters out soft-deleted "zombie" rows that were
+          // deleted or edited on the edit screen.
+          _expandedPurchasesCache.clear();
         });
 
         // 🔥 Auto-fetch purchases for all invoices to get correct totals
@@ -644,12 +650,17 @@ class _GrvListScreenState extends State<GrvListScreen> {
       MaterialPageRoute(
         builder: (context) => GrvInvoiceEditScreen(
           invoice: invoice,
+          // 🔥 FIX: Ensure callbacks also trigger a full reload
           onDeleted: _loadInvoices,
           onUpdated: _loadInvoices,
         ),
       ),
     );
-    if (result == true) _loadInvoices();
+
+    // 🔥 FIX: Force a reload when popping back to this screen
+    if (result == true && mounted) {
+      _loadInvoices();
+    }
   }
 
   Future<void> _pickCustomDateRange(BuildContext context, StateSetter setSheetState) async {
