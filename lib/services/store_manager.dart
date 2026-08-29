@@ -5,6 +5,7 @@ import 'sync_service.dart';
 import 'google_sheets_service.dart';
 import 'logger_service.dart';
 import 'offline_storage.dart';
+import 'encryption_service.dart';
 import '../models/sync_model.dart';  // 🔥 ADD THIS
 
 class StoreManager with ChangeNotifier {
@@ -13,7 +14,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbw013Dskx5uHC5VkYsJiTJ43HeQz1lzsRoOcX_Ti7_BQklzfEUnuaByH8kmvHm3NB1A/exec';
+      'https://script.google.com/macros/s/AKfycbzi7vyV7tR5GdEz2iUDWvBbmY5CSOI_3OeswNhXM7hY2E19ktldUgDO00gbSfgVsAFQ/exec';
 
   late Box _box;
   bool _initialized = false;
@@ -101,7 +102,8 @@ class StoreManager with ChangeNotifier {
     if (_initialized) return;
     _logger?.info('📦 Initializing StoreManager...');
 
-    _box = await Hive.openBox(_globalBoxName);
+    final encryptionKey = await EncryptionService.getEncryptionKey();
+    _box = await Hive.openBox(_globalBoxName, encryptionCipher: HiveAesCipher(encryptionKey));
     _loadStores();
     await _migrateLegacyStores();
     _loadActiveStore();

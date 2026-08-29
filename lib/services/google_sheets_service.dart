@@ -1248,20 +1248,12 @@ class GoogleSheetsService {
   // ---------------------------------------------------------------------------
 
   Future<bool> syncStockCounts(List<Map<String, dynamic>> counts) async {
-    final payload = counts.map((c) {
-      final item = Map<String, dynamic>.from(c);
-      item['deleted'] = (c['syncStatus'] == 'deleted');
-      if (item['stock_id'] == null && item['id'] != null) {
-        item['stock_id'] = item['id'];
-      }
-      return item;
-    }).toList();
-
-    // 🔥 FIXED: Use the chunking method
-    if (payload.length > chunkSize) {
-      final result = await syncStockCountsWithChunking(payload);
+    if (counts.length > chunkSize) {
+      final result = await syncStockCountsWithChunking(counts);
       return result['success'] == true;
     }
+
+    final payload = counts.map(_mapStockCountForSheet).toList();
 
     final result = await _sendPostRequest(
         'syncStockCounts',
@@ -1276,9 +1268,11 @@ class GoogleSheetsService {
       return result['success'] == true;
     }
 
+    final payload = products.map(_mapCommonFieldsForSheet).toList();
+
     final result = await _sendPostRequest(
         'syncNewProducts',
-        {'data': products, 'endpoint': 'syncNewProducts'}
+        {'data': payload, 'endpoint': 'syncNewProducts'}
     );
     return result['success'] == true;
   }
@@ -1290,9 +1284,11 @@ class GoogleSheetsService {
       return result['success'] == true;
     }
 
+    final payload = locations.map(_mapCommonFieldsForSheet).toList();
+
     final result = await _sendPostRequest(
         'syncNewLocations',
-        {'data': locations, 'endpoint': 'syncNewLocations'}
+        {'data': payload, 'endpoint': 'syncNewLocations'}
     );
     return result['success'] == true;
   }
@@ -1608,14 +1604,7 @@ class GoogleSheetsService {
 
     print('📊 Syncing ${counts.length} stock counts in chunks of $chunkSize');
 
-    final payload = counts.map((c) {
-      final item = Map<String, dynamic>.from(c);
-      item['deleted'] = (c['syncStatus'] == 'deleted');
-      if (item['stock_id'] == null && item['id'] != null) {
-        item['stock_id'] = item['id'];
-      }
-      return item;
-    }).toList();
+    final payload = counts.map(_mapStockCountForSheet).toList();
 
     int totalInserted = 0;
     int totalUpdated = 0;
@@ -1723,12 +1712,14 @@ class GoogleSheetsService {
 
       print('🔗 Syncing PLU chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
+      final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
+
       try {
         final result = await _sendPostRequest(
           'syncPluMappings',
           {
             'endpoint': 'syncPluMappings',
-            'data': chunk,
+            'data': mappedChunk,
           },
         );
 
@@ -1800,16 +1791,18 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (locations.length / chunkSize).ceil();
 
-      print('📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+    print('📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-      try {
-        final result = await _sendPostRequest(
-          'syncNewLocations',
-          {
-            'endpoint': 'syncNewLocations',
-            'data': chunk,
-          },
-        );
+    final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
+
+    try {
+      final result = await _sendPostRequest(
+        'syncNewLocations',
+        {
+          'endpoint': 'syncNewLocations',
+          'data': mappedChunk,
+        },
+      );
 
         if (result['success'] == true) {
           totalAdded += (result['count'] ?? 0) as int;
@@ -1877,16 +1870,18 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (products.length / chunkSize).ceil();
 
-      print('🆕 Syncing product chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+    print('🆕 Syncing product chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-      try {
-        final result = await _sendPostRequest(
-          'syncNewProducts',
-          {
-            'endpoint': 'syncNewProducts',
-            'data': chunk,
-          },
-        );
+    final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
+
+    try {
+      final result = await _sendPostRequest(
+        'syncNewProducts',
+        {
+          'endpoint': 'syncNewProducts',
+          'data': mappedChunk,
+        },
+      );
 
         if (result['success'] == true) {
           totalAdded += (result['added'] ?? 0) as int;
@@ -2034,6 +2029,73 @@ class GoogleSheetsService {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  Map<String, dynamic> _mapCommonFieldsForSheet(Map<String, dynamic> c) {
+    final item = Map<String, dynamic>.from(c);
+
+    // 🔥 Force date formatting for consistency in Google Sheets (dd/MM/yyyy HH:mm:ss)
+    final rawCreated = c['createdAt'] ?? c['created_at'];
+    final rawUpdated = c['updatedAt'] ?? c['updated_at'] ?? rawCreated;
+    final rawSynced = c['syncedAt'] ?? c['synced_at'];
+
+    if (rawCreated != null) {
+      item['created_at'] = _formatDateTimeForSheet(rawCreated);
+    }
+    if (rawUpdated != null) {
+      item['updated_at'] = _formatDateTimeForSheet(rawUpdated);
+    }
+    if (rawSynced != null) {
+      item['synced_at'] = _formatDateTimeForSheet(rawSynced);
+    }
+
+    return item;
+  }
+
+  Map<String, dynamic> _mapStockCountForSheet(Map<String, dynamic> c) {
+    final item = Map<String, dynamic>.from(c);
+    item['deleted'] = (c['syncStatus'] == 'deleted');
+    if (item['stock_id'] == null && item['id'] != null) {
+      item['stock_id'] = item['id'];
+    }
+
+    // 🔥 Ensure consistent date formatting for both created_at and updated_at
+    // We look for both camelCase and snake_case to be safe with older data
+    final rawCreated = c['createdAt'] ?? c['created_at'];
+    final rawUpdated = c['updatedAt'] ?? c['updated_at'] ?? rawCreated;
+
+    if (rawCreated != null) {
+      item['created_at'] = _formatDateTimeForSheet(rawCreated);
+    }
+    if (rawUpdated != null) {
+      item['updated_at'] = _formatDateTimeForSheet(rawUpdated);
+    }
+
+    return item;
+  }
+
+  String _formatDateTimeForSheet(dynamic value) {
+    if (value == null || value.toString().isEmpty) return '';
+
+    DateTime? dt;
+    if (value is DateTime) {
+      dt = value;
+    } else if (value is String) {
+      dt = DateTime.tryParse(value);
+      if (dt == null) return value; // Already formatted or invalid
+    } else {
+      return value.toString();
+    }
+
+    // Format to dd/MM/yyyy HH:mm:ss
+    final day = dt.day.toString().padLeft(2, '0');
+    final month = dt.month.toString().padLeft(2, '0');
+    final year = dt.year;
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final second = dt.second.toString().padLeft(2, '0');
+
+    return '$day/$month/$year $hour:$minute:$second';
+  }
 
   Map<String, dynamic> _mapInvoiceFields(Map<String, dynamic> invoice) {
     final newMap = Map<String, dynamic>.from(invoice);

@@ -1,5 +1,6 @@
 import 'package:hive/hive.dart';
 import 'package:intl/intl.dart';
+import 'encryption_service.dart';
 
 class LoggerService {
   static const String _boxName = 'app_logs';
@@ -7,7 +8,8 @@ class LoggerService {
 
   Future<void> init() async {
     try {
-      _box = await Hive.openBox(_boxName);
+      final encryptionKey = await EncryptionService.getEncryptionKey();
+      _box = await Hive.openBox(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
     } catch (e) {
       // Fallback for test environments where Hive isn't fully initialized
       _box = null;

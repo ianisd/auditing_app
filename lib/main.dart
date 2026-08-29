@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:path/path.dart' as path; // Add this
+import 'package:path_provider/path_provider.dart'; // Add this
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,7 +42,9 @@ void main() async {
   }
 
   // 3. Initialize Hive
-  await Hive.initFlutter();
+  final appDir = await getApplicationSupportDirectory();
+  final dataPath = path.join(appDir.path, 'database');
+  Hive.init(dataPath);
 
   // 4. Init Logger
   final logger = LoggerService();

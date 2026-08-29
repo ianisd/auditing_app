@@ -8,6 +8,7 @@ import 'package:http/http.dart';
 
 import '../models/plu_mapping.dart';
 import 'google_sheets_service.dart';
+import 'encryption_service.dart';
 
 class OfflineStorage with ChangeNotifier {
   // ===========================================================================
@@ -170,31 +171,34 @@ class OfflineStorage with ChangeNotifier {
 
     await _closeBoxes();
 
+    final encryptionKey = await EncryptionService.getEncryptionKey();
+    final cipher = HiveAesCipher(encryptionKey);
+
     // Open Core Boxes
-    _counts = await Hive.openBox('store_${storeId}_stock_counts');
-    _inventory = await Hive.openBox('store_${storeId}_inventory_items');
-    _locations = await Hive.openBox('store_${storeId}_locations');
-    _audits = await Hive.openBox('store_${storeId}_audits');
-    _masterCatalog = await Hive.openBox('store_${storeId}_master_catalog');
+    _counts = await Hive.openBox('store_${storeId}_stock_counts', encryptionCipher: cipher);
+    _inventory = await Hive.openBox('store_${storeId}_inventory_items', encryptionCipher: cipher);
+    _locations = await Hive.openBox('store_${storeId}_locations', encryptionCipher: cipher);
+    _audits = await Hive.openBox('store_${storeId}_audits', encryptionCipher: cipher);
+    _masterCatalog = await Hive.openBox('store_${storeId}_master_catalog', encryptionCipher: cipher);
 
     // Open Variance Report Boxes
-    _purchases = await Hive.openBox('store_${storeId}_purchases');
-    _storeSalesData = await Hive.openBox('store_${storeId}_store_sales_data');
-    _itemSalesMap = await Hive.openBox('store_${storeId}_item_sales_map');
+    _purchases = await Hive.openBox('store_${storeId}_purchases', encryptionCipher: cipher);
+    _storeSalesData = await Hive.openBox('store_${storeId}_store_sales_data', encryptionCipher: cipher);
+    _itemSalesMap = await Hive.openBox('store_${storeId}_item_sales_map', encryptionCipher: cipher);
 
     // Open Invoice Details + Master Suppliers boxes
-    _invoiceDetails = await Hive.openBox('store_${storeId}_invoice_details');
-    _masterSuppliers = await Hive.openBox('store_${storeId}_master_suppliers');
-    _supplierMappings = await Hive.openBox('store_${storeId}_supplier_mappings');
+    _invoiceDetails = await Hive.openBox('store_${storeId}_invoice_details', encryptionCipher: cipher);
+    _masterSuppliers = await Hive.openBox('store_${storeId}_master_suppliers', encryptionCipher: cipher);
+    _supplierMappings = await Hive.openBox('store_${storeId}_supplier_mappings', encryptionCipher: cipher);
 
-// Open PLU Mapping boxes (add with other box openings)
-    _pluMappings = await Hive.openBox('store_${storeId}_plu_mappings');
-    _pluMappingHistory = await Hive.openBox('store_${storeId}_plu_mapping_history');
+    // Open PLU Mapping boxes (add with other box openings)
+    _pluMappings = await Hive.openBox('store_${storeId}_plu_mappings', encryptionCipher: cipher);
+    _pluMappingHistory = await Hive.openBox('store_${storeId}_plu_mapping_history', encryptionCipher: cipher);
 
     //Open StockIssues/GRV Mapping Boxes
-    _itemsIssued = await Hive.openBox('store_${storeId}_items_issued');
-    _stockIssues = await Hive.openBox('store_${storeId}_stock_issues');
-    _itemsIssuedMap = await Hive.openBox('store_${storeId}_items_issued_map');
+    _itemsIssued = await Hive.openBox('store_${storeId}_items_issued', encryptionCipher: cipher);
+    _stockIssues = await Hive.openBox('store_${storeId}_stock_issues', encryptionCipher: cipher);
+    _itemsIssuedMap = await Hive.openBox('store_${storeId}_items_issued_map', encryptionCipher: cipher);
 
     // Rebuild indexes
     await _rebuildIndexes();
@@ -2848,7 +2852,8 @@ class OfflineStorage with ChangeNotifier {
         'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? '0') ?? 0.0,
         'syncStatus': 'synced',
         'syncedAt': DateTime.now().toIso8601String(),
-        'createdAt': row['created_at'] ?? DateTime.now().toIso8601String(),
+        'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
+        'updatedAt': row['updated_at'] ?? row['updatedAt'],
       };
       await _counts!.put(id, count);
       added++;
@@ -2913,7 +2918,8 @@ class OfflineStorage with ChangeNotifier {
         'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? '0') ?? 0.0,
         'syncStatus': 'synced',
         'syncedAt': DateTime.now().toIso8601String(),
-        'createdAt': row['created_at'] ?? DateTime.now().toIso8601String(),
+        'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
+        'updatedAt': row['updated_at'] ?? row['updatedAt'],
       };
       await _counts!.put(id, count);
       added++;

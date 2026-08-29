@@ -978,7 +978,10 @@ class _CountScreenState extends State<CountScreen> {
     }
 
     final stockId = existingId ?? (_isEditMode ? widget.existingCount!['stock_id'] : id);
-    final createdDate = _isEditMode ? widget.existingCount!['createdAt'] : DateTime.now().toIso8601String();
+    // 🔥 FIX: Handle both createdAt and created_at to avoid losing the original timestamp
+    final createdDate = _isEditMode 
+        ? (widget.existingCount!['createdAt'] ?? widget.existingCount!['created_at'] ?? DateTime.now().toIso8601String())
+        : DateTime.now().toIso8601String();
 
     _recalculateTotals();
 
