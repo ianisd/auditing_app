@@ -224,14 +224,14 @@ class GoogleSheetsService {
 
     _client = _createClient();
     _activeClients.add(_client);
-    print('🔄 Client recreated (${_activeClients.length} active)');
+    // print('🔄 Client recreated (${_activeClients.length} active)');
   }
 
   void dispose() {
     if (_isDisposed) return;
     _isDisposed = true;
 
-    print('🧹 Disposing GoogleSheetsService...');
+    // print('🧹 Disposing GoogleSheetsService...');
     _cache.clear();
 
     // Close all tracked clients
@@ -239,7 +239,7 @@ class GoogleSheetsService {
       _closeClient(client);
     }
     _activeClients.clear();
-    print('✅ All clients closed');
+    // print('✅ All clients closed');
   }
 
   // ---------------------------------------------------------------------------
@@ -321,13 +321,13 @@ class GoogleSheetsService {
         final body = json.encode(payload);
         final uri = Uri.parse(masterScriptUrl);
 
-        if (kDebugMode) {
-          print('📤 [Attempt $attempt] POST: ${jsonData['endpoint'] ?? tag}');
-          print('📦 Payload keys: ${payload.keys.join(', ')}');
-          if (payload['table'] != null && payload['table'].isNotEmpty) {
-            print('📋 Table: ${payload['table']}');
-          }
-        }
+        // if (kDebugMode) {
+        //   print('📤 [Attempt $attempt] POST: ${jsonData['endpoint'] ?? tag}');
+        //   print('📦 Payload keys: ${payload.keys.join(', ')}');
+        //   if (payload['table'] != null && payload['table'].isNotEmpty) {
+        //     print('📋 Table: ${payload['table']}');
+        //   }
+        // }
 
         var response = await _client.post(
           uri,
@@ -396,12 +396,14 @@ class GoogleSheetsService {
   }
 
   Map<String, dynamic> _parseSyncResponse(String responseBody) {
-    print('🔍 Parsing response: ${responseBody.substring(0, responseBody.length > 100 ? 100 : responseBody.length)}');
+    // if (kDebugMode) {
+    //   print('🔍 Parsing response: ${responseBody.substring(0, responseBody.length > 100 ? 100 : responseBody.length)}');
+    // }
 
     try {
       final result = json.decode(responseBody);
       if (result is Map<String, dynamic>) {
-        print('✅ Parsed JSON: ${result.keys.join(', ')}');
+        // if (kDebugMode) print('✅ Parsed JSON: ${result.keys.join(', ')}');
 
         // 🔥 FIXED: Handle error responses properly
         if (result.containsKey('error') ||
@@ -436,7 +438,9 @@ class GoogleSheetsService {
         final duplicates = result['duplicates'] ?? [];
         final duplicateCount = result['duplicateCount'] ?? duplicates.length ?? 0;
 
-        print('📊 Extracted: count=$count, updated=$updated, deleted=$deleted, duplicates=$duplicateCount');
+        // if (kDebugMode) {
+        //   print('📊 Extracted: count=$count, updated=$updated, deleted=$deleted, duplicates=$duplicateCount');
+        // }
 
         return {
           'success': isSuccess,
@@ -511,19 +515,19 @@ class GoogleSheetsService {
         onStatus?.call('Getting total record count...');
         totalRecords = await getTableRowCount(tableName);
         if (totalRecords > 0) {
-          print('📊 Total records: $totalRecords');
+          // if (kDebugMode) print('📊 Total records: $totalRecords');
 
           // Adaptive batch sizing
           if (totalRecords > 50000 && batchSize < largeBatchSize) {
             batchSize = largeBatchSize;
-            print('📦 Large dataset, increased batch size to $batchSize');
+            // if (kDebugMode) print('📦 Large dataset, increased batch size to $batchSize');
             if (timeoutSeconds < largeTableTimeoutSeconds) {
               timeoutSeconds = largeTableTimeoutSeconds;
-              print('⏱️ Large table, using ${timeoutSeconds}s timeout');
+              // if (kDebugMode) print('⏱️ Large table, using ${timeoutSeconds}s timeout');
             }
           } else if (totalRecords < 500 && batchSize > 500) {
             batchSize = 500;
-            print('📦 Small dataset, using batch size: $batchSize');
+            // if (kDebugMode) print('📦 Small dataset, using batch size: $batchSize');
           }
           break;
         } else if (countAttempt < 3) {
@@ -553,7 +557,7 @@ class GoogleSheetsService {
       }
 
       if (totalRecords != null && totalFetched >= totalRecords) {
-        print('✅ Reached expected total: $totalRecords');
+        // if (kDebugMode) print('✅ Reached expected total: $totalRecords');
         break;
       }
 
@@ -674,15 +678,15 @@ class GoogleSheetsService {
       totalFetched += batch.length;
       onProgress?.call(totalFetched, totalRecords);
 
-      if (totalFetched % 10000 == 0) {
+      if (totalFetched % 10000 == 0 && totalFetched > 0) {
         final String percent = totalRecords != null
             ? (totalFetched / totalRecords * 100).toStringAsFixed(1)
             : '?';
-        print('📊 Progress: $totalFetched/${totalRecords ?? '?'} ($percent%)');
+        // if (kDebugMode) print('📊 Progress: $totalFetched/${totalRecords ?? '?'} ($percent%)');
       }
 
       if (batch.length < batchSize) {
-        print('✅ Last batch: ${batch.length} records');
+        // if (kDebugMode) print('✅ Last batch: ${batch.length} records');
         break;
       }
 
@@ -698,10 +702,10 @@ class GoogleSheetsService {
         data: allResults,
         timestamp: DateTime.now(),
       );
-      print('💾 Cached $tableName (${allResults.length} records)');
+      // if (kDebugMode) print('💾 Cached $tableName (${allResults.length} records)');
     }
 
-    print('✅ Completed $tableName: ${allResults.length} records');
+    // if (kDebugMode) print('✅ Completed $tableName: ${allResults.length} records');
     return allResults;
   }
 
@@ -731,16 +735,16 @@ class GoogleSheetsService {
       if (data is List) {
         final bool hasMore = decoded['hasMore'] ?? false;
         final int total = ((decoded['total'] ?? 0) as num).toInt();
-        if (kDebugMode) {
-          print('📦 Received ${data.length} records (total: $total, hasMore: $hasMore)');
-        }
+        // if (kDebugMode) {
+        //   print('📦 Received ${data.length} records (total: $total, hasMore: $hasMore)');
+        // }
         return await _parseSmart(data);
       }
       return [];
     }
 
     if (decoded is List) {
-      if (kDebugMode) print('📦 Received ${decoded.length} records');
+      // if (kDebugMode) print('📦 Received ${decoded.length} records');
       return await _parseSmart(decoded);
     }
 
@@ -1457,7 +1461,7 @@ class GoogleSheetsService {
           }
           processedCount += chunk.length;
           onProgress?.call(processedCount, syncedInvoices.length);
-          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted');
         } else {
           allSuccessful = false;
           lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
@@ -1557,7 +1561,7 @@ class GoogleSheetsService {
           totalDuplicates += (result['duplicateCount'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, sanitized.length);
-          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted');
         } else {
           allSuccessful = false;
           lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
@@ -1647,7 +1651,7 @@ class GoogleSheetsService {
           totalDeleted += (result['deleted'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, payload.length);
-          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? result['newCount'] ?? 0} inserted, ${result['updated'] ?? result['updatedCount'] ?? 0} updated');
+          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? result['newCount'] ?? 0} inserted, ${result['updated'] ?? result['updatedCount'] ?? 0} updated, ${result['deleted'] ?? 0} deleted');
         }
       } catch (e) {
         allSuccessful = false;
@@ -1728,7 +1732,7 @@ class GoogleSheetsService {
           totalUpdated += (result['updatedCount'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, mappings.length);
-          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted');
         } else {
           allSuccessful = false;
           lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
@@ -1808,7 +1812,7 @@ class GoogleSheetsService {
           totalAdded += (result['count'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, locations.length);
-          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? 0} locations');
+          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? 0} locations, ${result['deleted'] ?? 0} deleted');
         } else {
           allSuccessful = false;
           lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
@@ -1887,7 +1891,7 @@ class GoogleSheetsService {
           totalAdded += (result['added'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, products.length);
-          print('✅ Chunk $chunkNumber complete: +${result['added'] ?? 0} products');
+          print('✅ Chunk $chunkNumber complete: +${result['added'] ?? 0} products, ${result['deleted'] ?? 0} deleted');
         } else {
           allSuccessful = false;
           lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';

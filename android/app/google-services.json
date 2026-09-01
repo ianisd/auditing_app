@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "674553136591",
+    "project_id": "retail-solution-78f8f",
+    "storage_bucket": "retail-solution-78f8f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:674553136591:android:309f39cd23bbaaf8d1feba",
+        "android_client_info": {
+          "package_name": "com.hola.adaptive.counting_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVcPiAV_tFkfJtVzTrPsHlNBV62vrLELU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

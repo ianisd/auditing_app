@@ -464,7 +464,7 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    print('📦 saveItemsIssued: Saving ${items.length} items');
+    // print('📦 saveItemsIssued: Saving ${items.length} items');
     await _itemsIssued!.clear();
 
     final batch = <String, dynamic>{};
@@ -530,9 +530,9 @@ class OfflineStorage with ChangeNotifier {
 
     if (batch.isNotEmpty) {
       await _itemsIssued!.putAll(batch);
-      print('✅ Saved $savedCount ItemsIssued entries to local storage ($skippedCount skipped)');
+      // print('✅ Saved $savedCount ItemsIssued entries to local storage ($skippedCount skipped)');
     } else {
-      print('⚠️ No valid ItemsIssued to save ($skippedCount skipped)');
+      // print('⚠️ No valid ItemsIssued to save ($skippedCount skipped)');
     }
 
     notifyListeners();
@@ -550,7 +550,7 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    print('📦 saveStockIssues: Saving ${items.length} stock issues');
+    // print('📦 saveStockIssues: Saving ${items.length} stock issues');
 
     // 🔥 Clear the box first to remove collapsed data
     await _stockIssues!.clear();
@@ -605,9 +605,9 @@ class OfflineStorage with ChangeNotifier {
 
     if (batch.isNotEmpty) {
       await _stockIssues!.putAll(batch);
-      print('✅ Saved $savedCount stock issues to local storage ($skippedCount skipped)');
+      // print('✅ Saved $savedCount stock issues to local storage ($skippedCount skipped)');
     } else {
-      print('⚠️ No valid stock issues to save ($skippedCount skipped)');
+      // print('⚠️ No valid stock issues to save ($skippedCount skipped)');
     }
 
     notifyListeners();
@@ -902,11 +902,11 @@ class OfflineStorage with ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> getMasterSuppliers() async {
     if (!_isReady || _masterSuppliers == null) {
-      print('🔍 DEBUG: getMasterSuppliers - Storage not ready');
+      // print('🔍 DEBUG: getMasterSuppliers - Storage not ready');
       return [];
     }
 
-    print('🔍 DEBUG: getMasterSuppliers - box has ${_masterSuppliers!.length} items');
+    // print('🔍 DEBUG: getMasterSuppliers - box has ${_masterSuppliers!.length} items');
 
     if (_masterSuppliers!.isEmpty) {
       print('  ⚠️ _masterSuppliers box is EMPTY');
@@ -1239,7 +1239,7 @@ class OfflineStorage with ChangeNotifier {
         }
       }
 
-      print('🔍 DEBUG: getAllPluMappings found ${mappings.length} mappings');
+      // print('🔍 DEBUG: getAllPluMappings found ${mappings.length} mappings');
       return mappings;
     } catch (e) {
       print('🔍 ERROR in getAllPluMappings: $e');
@@ -1409,10 +1409,10 @@ class OfflineStorage with ChangeNotifier {
       })
           .toList();
 
-      print('🔍 DEBUG: getMasterCosts found ${costs.length} cost entries');
-      if (costs.isNotEmpty) {
-        print('  📊 First cost entry: ${costs.first}');
-      }
+      // print('🔍 DEBUG: getMasterCosts found ${costs.length} cost entries');
+      // if (costs.isNotEmpty) {
+      //   print('  📊 First cost entry: ${costs.first}');
+      // }
       return costs;
     } catch (e) {
       print('🔍 ERROR in getMasterCosts: $e');
@@ -1512,11 +1512,11 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    print('📦 saveInvoices: Saving ${items.length} invoices (replace: $replace)');
+    // print('📦 saveInvoices: Saving ${items.length} invoices (replace: $replace)');
 
     if (replace) {
       await _invoiceDetails!.clear();
-      print('✅ Cleared existing invoices');
+      // print('✅ Cleared existing invoices');
     }
 
     final batch = <String, dynamic>{};
@@ -1548,17 +1548,17 @@ class OfflineStorage with ChangeNotifier {
         savedCount++;
 
         // Debug the invoice number
-        print('📋 Invoice ${id.substring(0, 8)}... number: "${invoice['Invoice Number']}"');
+        // print('📋 Invoice ${id.substring(0, 8)}... number: "${invoice['Invoice Number']}"');
       }
     }
 
     if (batch.isNotEmpty) {
       await _invoiceDetails!.putAll(batch);
-      print('✅ Saved $savedCount invoices to local storage');
-      print('   📊 Hex format: $uuidCount, Numeric format: $numericCount');
+      // print('✅ Saved $savedCount invoices to local storage');
+      // print('   📊 Hex format: $uuidCount, Numeric format: $numericCount');
       notifyListeners();
     } else {
-      print('⚠️ No valid invoices to save');
+      // print('⚠️ No valid invoices to save');
     }
   }
 
@@ -1591,7 +1591,7 @@ class OfflineStorage with ChangeNotifier {
           .where((v) => v.isNotEmpty)
           .toList();
 
-      print('🔍 DEBUG: getAllInvoiceDetails found ${invoices.length} invoices');
+      // print('🔍 DEBUG: getAllInvoiceDetails found ${invoices.length} invoices');
       return invoices;
     } catch (e) {
       print('🔍 ERROR in getAllInvoiceDetails: $e');
@@ -2100,7 +2100,7 @@ class OfflineStorage with ChangeNotifier {
         }
       }
 
-      print('🔍 DEBUG: getPurchasesByInvoiceId found ${purchases.length} purchases for invoice $invoiceId');
+      // print('🔍 DEBUG: getPurchasesByInvoiceId found ${purchases.length} purchases for invoice $invoiceId');
       return purchases;
     } catch (e) {
       print('🔍 ERROR in getPurchasesByInvoiceId: $e');
@@ -2252,10 +2252,10 @@ class OfflineStorage with ChangeNotifier {
           item['syncStatus'] != 'deleted')  // ✅ EXCLUDE DELETED
           .toList();
 
-      print('🔍 DEBUG: getPendingPurchases found ${pending.length} pending items');
+      // print('🔍 DEBUG: getPendingPurchases found ${pending.length} pending items');
       return pending;
     } catch (e) {
-      print('🔍 ERROR in getPendingPurchases: $e');
+      // print('🔍 ERROR in getPendingPurchases: $e');
       return [];
     }
   }
@@ -2367,10 +2367,10 @@ class OfflineStorage with ChangeNotifier {
           .where((p) => p['syncStatus'] == 'deleted')
           .toList();
 
-      print('🔍 DEBUG: getDeletedPurchases found ${deleted.length} deleted purchases');
+      // print('🔍 DEBUG: getDeletedPurchases found ${deleted.length} deleted purchases');
       return deleted;
     } catch (e) {
-      print('🔍 ERROR in getDeletedPurchases: $e');
+      // print('🔍 ERROR in getDeletedPurchases: $e');
       return [];
     }
   }
@@ -2392,7 +2392,7 @@ class OfflineStorage with ChangeNotifier {
       }
 
       await _purchases!.delete(purchaseId);
-      print('🔍 DEBUG: hardDeletePurchase - Removed purchase: $purchaseId');
+      // print('🔍 DEBUG: hardDeletePurchase - Removed purchase: $purchaseId');
       notifyListeners();
     }
   }
@@ -2522,11 +2522,11 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    print('📦 saveMasterCatalog: Saving ${items.length} items');
+    // print('📦 saveMasterCatalog: Saving ${items.length} items');
 
     try {
       await _masterCatalog!.clear();
-      print('✅ Master catalog cleared');
+      // print('✅ Master catalog cleared');
 
       final Map<String, Map<String, dynamic>> batch = {};
       int validItems = 0;
@@ -2569,9 +2569,9 @@ class OfflineStorage with ChangeNotifier {
 
       if (batch.isNotEmpty) {
         await _masterCatalog!.putAll(batch);
-        print('✅ Saved $validItems items to master catalog');
+        // print('✅ Saved $validItems items to master catalog');
       } else {
-        print('⚠️ No valid items to save');
+        // print('⚠️ No valid items to save');
       }
 
       notifyListeners();
@@ -3018,7 +3018,7 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    print('📦 saveItemsIssuedMap: Saving ${items.length} mappings');
+    // print('📦 saveItemsIssuedMap: Saving ${items.length} mappings');
     await _itemsIssuedMap!.clear();
 
     final batch = <String, dynamic>{};
@@ -3051,7 +3051,7 @@ class OfflineStorage with ChangeNotifier {
 
     if (batch.isNotEmpty) {
       await _itemsIssuedMap!.putAll(batch);
-      print('✅ Saved $savedCount ItemsIssuedMap entries to local storage');
+      // print('✅ Saved $savedCount ItemsIssuedMap entries to local storage');
       notifyListeners();
     }
   }
@@ -3700,23 +3700,23 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<void> debugSalesData() async {
-    print('🔍 ===== SALES DATA DEBUG =====');
+    // print('🔍 ===== SALES DATA DEBUG =====');
 
     final storeSales = await getStoreSalesData();
-    print('📊 StoreSalesData count: ${storeSales.length}');
+    // print('📊 StoreSalesData count: ${storeSales.length}');
     if (storeSales.isNotEmpty) {
-      print('  First record: ${storeSales.first}');
-      print('  Date range: ${storeSales.map((s) => s['Date']).toSet().toList()..sort()}');
+      // print('  First record: ${storeSales.first}');
+      // print('  Date range: ${storeSales.map((s) => s['Date']).toSet().toList()..sort()}');
     }
 
     final itemSales = await getItemSalesMap();
-    print('📊 ItemSalesMap count: ${itemSales.length}');
+    // print('📊 ItemSalesMap count: ${itemSales.length}');
     if (itemSales.isNotEmpty) {
-      print('  First record: ${itemSales.first}');
-      print('  Sample PLUs: ${itemSales.take(5).map((i) => i['PLU']).toList()}');
+      // print('  First record: ${itemSales.first}');
+      // print('  Sample PLUs: ${itemSales.take(5).map((i) => i['PLU']).toList()}');
     }
 
-    print('🔍 ===== DEBUG END =====');
+    // print('🔍 ===== DEBUG END =====');
   }
 
   // ===========================================================================
