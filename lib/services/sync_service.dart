@@ -7,6 +7,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'offline_storage.dart';
 import 'google_sheets_service.dart';
+import 'firestore_service.dart';
 import 'logger_service.dart';
 
 // ==================== SYNC RESULT MODEL ====================
@@ -25,6 +26,7 @@ class SyncResult {
   final int stockCountsSynced;
   final int locationsSynced;
   final int productsSynced;
+  final int totalDeleted;
 
   SyncResult({
     required this.hasInternet,
@@ -38,6 +40,7 @@ class SyncResult {
     this.stockCountsSynced = 0,
     this.locationsSynced = 0,
     this.productsSynced = 0,
+    this.totalDeleted = 0,
   });
 
   String get detailedMessage {
@@ -49,8 +52,11 @@ class SyncResult {
     if (locationsSynced > 0) parts.add('$locationsSynced Location${locationsSynced > 1 ? 's' : ''}');
     if (productsSynced > 0) parts.add('$productsSynced Product${productsSynced > 1 ? 's' : ''}');
 
-    if (parts.isEmpty) return message;
-    return 'Synced: ${parts.join(', ')}';
+    String msg = parts.isEmpty ? message : 'Synced: ${parts.join(', ')}';
+    if (totalDeleted > 0) {
+      msg += ' ($totalDeleted deleted)';
+    }
+    return msg;
   }
 }
 
@@ -59,11 +65,9 @@ class SyncService with ChangeNotifier {
   // ==================== DEPENDENCIES ====================
   final OfflineStorage offlineStorage;
   final GoogleSheetsService googleSheets;
+  final FirestoreService? firestore;
   final Connectivity connectivity;
   final LoggerService? logger;
-
-  // 🔥 Single debounce timer for the entire app
-  Timer? _pendingCountDebounce;
 
   // ==================== STATE VARIABLES ====================
   bool _isDisposed = false;
@@ -91,23 +95,25 @@ class SyncService with ChangeNotifier {
   SyncService({
     required this.offlineStorage,
     required this.googleSheets,
+    this.firestore,
     this.logger,
   }) : connectivity = Connectivity() {
     _initConnectivity();
+    _initFirestoreListeners();
   }
 
-  // 🔥 Single storage change handler - app-wide!
-  void _onStorageChanged() {
-    _pendingCountDebounce?.cancel();
-    _pendingCountDebounce = Timer(const Duration(milliseconds: 300), _updatePendingCount);
-  }
+  void _initFirestoreListeners() {
+    if (firestore == null) return;
+    
+    final storeId = offlineStorage.currentStoreId;
+    if (storeId == null) return;
 
-  Future<void> _updatePendingCount() async {
-    try {
-      final count = await offlineStorage.getTotalPendingItemsCount();
-    } catch (e) {
-      logger?.error('Failed to update pending count', e);
-    }
+    // 🔥 REAL-TIME: Listen for changes from other devices via Firestore
+    firestore!.watchStockCounts(storeId).listen((remoteCounts) {
+      if (!_isSyncing) {
+        offlineStorage.saveRemoteStockCounts(remoteCounts);
+      }
+    });
   }
 
   void _initConnectivity() {
@@ -122,8 +128,7 @@ class SyncService with ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
-    _pendingCountDebounce?.cancel();
-    offlineStorage.removeListener(_onStorageChanged);
+    _connectivitySubscription?.cancel();
     googleSheets.dispose();
     super.dispose();
   }
@@ -422,7 +427,8 @@ class SyncService with ChangeNotifier {
     }
   }
 
-  Future<void> _syncDeletedInvoices() async {
+  Future<int> _syncDeletedInvoices() async {
+    int deletedCount = 0;
     try {
       final deletedInvoices = await offlineStorage.getDeletedInvoices();
       if (deletedInvoices.isNotEmpty) {
@@ -435,6 +441,7 @@ class SyncService with ChangeNotifier {
           final success = await googleSheets.deleteInvoice(invoiceId);
           if (success) {
             await offlineStorage.hardDeleteInvoice(invoiceId);
+            deletedCount++;
             logger?.info('  ✅ Deleted invoice $invoiceId');
           } else {
             logger?.error('  ❌ Failed to delete invoice $invoiceId');
@@ -446,12 +453,14 @@ class SyncService with ChangeNotifier {
     } catch (e) {
       logger?.error('Error syncing deleted invoices', e.toString());
     }
+    return deletedCount;
   }
 
-  Future<void> _syncDeletedPurchases() async {
+  Future<int> _syncDeletedPurchases() async {
+    int deletedCount = 0;
     try {
       final deletedPurchases = await offlineStorage.getDeletedPurchases();
-      if (deletedPurchases.isEmpty) return;
+      if (deletedPurchases.isEmpty) return 0;
 
       logger?.info('🗑️ Syncing ${deletedPurchases.length} deleted purchases...');
 
@@ -467,10 +476,10 @@ class SyncService with ChangeNotifier {
         for (final id in purchaseIds) {
           await offlineStorage.hardDeletePurchase(id);
         }
+        deletedCount = purchaseIds.length;
         logger?.info('✅ Batch deleted ${purchaseIds.length} purchases');
       } else {
         logger?.info('⚠️ Batch delete not available, falling back to sequential...');
-        int successCount = 0;
         int failCount = 0;
 
         for (final purchase in deletedPurchases) {
@@ -480,7 +489,7 @@ class SyncService with ChangeNotifier {
           final success = await googleSheets.deletePurchase(purchaseId);
           if (success) {
             await offlineStorage.hardDeletePurchase(purchaseId);
-            successCount++;
+            deletedCount++;
           } else {
             failCount++;
           }
@@ -488,11 +497,12 @@ class SyncService with ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 300));
         }
 
-        logger?.info('🗑️ Sequential delete complete: $successCount succeeded, $failCount failed');
+        logger?.info('🗑️ Sequential delete complete: $deletedCount succeeded, $failCount failed');
       }
     } catch (e) {
       logger?.error('Error syncing deleted purchases', e.toString());
     }
+    return deletedCount;
   }
 
   Future<void> _syncNewProducts() async {
@@ -547,6 +557,21 @@ class SyncService with ChangeNotifier {
     }
 
     logger?.info('📊 Uploading ${pending.length} counts...');
+    
+    // 🔥 NEW: Push to Firestore first for real-time availability
+    if (firestore != null) {
+      final storeId = offlineStorage.currentStoreId;
+      if (storeId != null) {
+        try {
+          // Use batch save for performance
+          await firestore!.saveStockCountsBatch(storeId, pending);
+          logger?.info('🔥 Real-time: Synced to Firestore (Batch)');
+        } catch (e) {
+          logger?.error('🔥 Real-time: Firestore batch sync failed', e);
+        }
+      }
+    }
+
     final success = await googleSheets.syncStockCounts(pending);
 
     if (success) {
@@ -597,6 +622,7 @@ class SyncService with ChangeNotifier {
 
     final allDuplicates = <Map<String, dynamic>>[];
     int totalSynced = 0;
+    int totalDeleted = 0;
     bool allSuccessful = true;
 
     // Track detailed counts
@@ -635,7 +661,9 @@ class SyncService with ChangeNotifier {
           await offlineStorage.markLocationsAsSynced(ids);
           locationsSynced = locations.length;
           totalSynced += locations.length;
-          logger?.info('📍 Synced ${locations.length} locations');
+          final deleted = (result['deleted'] ?? 0) as int;
+          totalDeleted += deleted;
+          logger?.info('📍 Synced ${locations.length} locations${deleted > 0 ? " ($deleted deleted)" : ""}');
         } else {
           allSuccessful = false;
           logger?.error('❌ Location sync failed: ${result['message']}');
@@ -669,10 +697,12 @@ class SyncService with ChangeNotifier {
           await offlineStorage.bulkMarkInvoicesAsSynced(invoiceIds);
           invoicesSynced = pendingInvoices.length;
           totalSynced += pendingInvoices.length;
+          final deleted = (result['deleted'] ?? 0) as int;
+          totalDeleted += deleted;
           if (result['duplicates'] != null) {
             allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
           }
-          logger?.info('📄 Synced ${pendingInvoices.length} invoices');
+          logger?.info('📄 Synced ${pendingInvoices.length} invoices${deleted > 0 ? " ($deleted deleted)" : ""}');
         } else {
           allSuccessful = false;
           logger?.error('❌ Invoice sync failed: ${result['message']}');
@@ -699,7 +729,9 @@ class SyncService with ChangeNotifier {
           await offlineStorage.bulkMarkPurchasesAsSynced(purchaseIds);
           purchasesSynced = pendingPurchases.length;
           totalSynced += pendingPurchases.length;
-          logger?.info('📦 Synced ${pendingPurchases.length} purchases');
+          final deleted = (result['deleted'] ?? 0) as int;
+          totalDeleted += deleted;
+          logger?.info('📦 Synced ${pendingPurchases.length} purchases${deleted > 0 ? " ($deleted deleted)" : ""}');
         } else {
           allSuccessful = false;
           logger?.error('❌ Purchase sync failed: ${result['message']}');
@@ -722,7 +754,9 @@ class SyncService with ChangeNotifier {
           await offlineStorage.markPluMappingsAsSynced(pendingMappings);
           pluMappingsSynced = pendingMappings.length;
           totalSynced += pendingMappings.length;
-          logger?.info('🔗 Synced ${pendingMappings.length} PLU mappings');
+          final deleted = (result['deleted'] ?? 0) as int;
+          totalDeleted += deleted;
+          logger?.info('🔗 Synced ${pendingMappings.length} PLU mappings${deleted > 0 ? " ($deleted deleted)" : ""}');
         } else {
           allSuccessful = false;
           logger?.error('❌ PLU mapping sync failed: ${result['message']}');
@@ -730,8 +764,8 @@ class SyncService with ChangeNotifier {
       }
 
       // 5. Sync deleted items
-      await _syncDeletedInvoices();
-      await _syncDeletedPurchases();
+      totalDeleted += await _syncDeletedInvoices();
+      totalDeleted += await _syncDeletedPurchases();
 
       // 6. Sync new products
       final newProducts = await offlineStorage.getPendingNewProducts();
@@ -748,6 +782,20 @@ class SyncService with ChangeNotifier {
 
       if (pendingCounts.isNotEmpty) {
         onStatus?.call('Syncing ${pendingCounts.length} stock counts...');
+        
+        // 🔥 NEW: Push to Firestore first for real-time availability using batch
+        if (firestore != null) {
+          final storeId = offlineStorage.currentStoreId;
+          if (storeId != null) {
+            try {
+              await firestore!.saveStockCountsBatch(storeId, pendingCounts);
+              logger?.info('🔥 Real-time: Synced to Firestore (Batch)');
+            } catch (e) {
+              logger?.error('🔥 Real-time: Firestore sync failed', e);
+            }
+          }
+        }
+
         final result = await googleSheets.syncStockCountsWithChunking(
           pendingCounts,
           onProgress: (processed, total) {
@@ -763,7 +811,9 @@ class SyncService with ChangeNotifier {
           await offlineStorage.markMultipleAsSynced(ids);
           stockCountsSynced = pendingCounts.length;
           totalSynced += pendingCounts.length;
-          logger?.info('📊 Synced ${pendingCounts.length} stock counts');
+          final deleted = (result['deleted'] ?? 0) as int;
+          totalDeleted += deleted;
+          logger?.info('📊 Synced ${pendingCounts.length} stock counts${deleted > 0 ? " ($deleted deleted)" : ""}');
         } else {
           allSuccessful = false;
           logger?.error('❌ Stock count sync failed: ${result['message']}');
@@ -786,17 +836,10 @@ class SyncService with ChangeNotifier {
       final dupMsg = allDuplicates.isNotEmpty ? ' (${allDuplicates.length} duplicates found)' : '';
       final detailMsg = parts.isNotEmpty ? 'Synced: ${parts.join(", ")}$dupMsg' : 'No items to sync';
 
-      final message = allSuccessful
-          ? detailMsg
-          : 'Sync completed with errors: $detailMsg';
-
-      logger?.info('✨ $message');
-      onStatus?.call(message);
-
-      return SyncResult(
+      final result = SyncResult(
         hasInternet: true,
         syncedCount: totalSynced,
-        message: message,
+        message: detailMsg,
         success: allSuccessful,
         duplicates: allDuplicates,
         invoicesSynced: invoicesSynced,
@@ -805,7 +848,17 @@ class SyncService with ChangeNotifier {
         stockCountsSynced: stockCountsSynced,
         locationsSynced: locationsSynced,
         productsSynced: productsSynced,
+        totalDeleted: totalDeleted,
       );
+
+      final finalMessage = allSuccessful
+          ? result.detailedMessage
+          : 'Sync completed with errors: ${result.detailedMessage}';
+
+      logger?.info('✨ $finalMessage');
+      onStatus?.call(finalMessage);
+
+      return result;
 
     } catch (e) {
       _lastError = e.toString();
@@ -979,22 +1032,42 @@ class SyncService with ChangeNotifier {
 
   // ==================== HELPER METHODS - DATA FETCHING ====================
   Future<List<List<Map<String, dynamic>>>> _fetchAllMasterData() async {
-    logger?.info('📥 Refreshing master data tables...');
+    logger?.info('📥 Refreshing master data tables (Parallel Batches)...');
 
-    final inventory = await googleSheets.fetchInventory();
-    await Future.delayed(const Duration(milliseconds: 150));
+    // Group fetches into parallel batches to speed up download while avoiding GAS rate limits
+    
+    // Batch 1: Core metadata
+    final results1 = await Future.wait([
+      googleSheets.fetchInventory(),
+      googleSheets.fetchLocations(),
+      googleSheets.fetchAudits(),
+    ]);
+    await Future.delayed(const Duration(milliseconds: 250));
 
-    final locations = await googleSheets.fetchLocations();
-    await Future.delayed(const Duration(milliseconds: 150));
+    // Batch 2: Transactional data
+    final results2 = await Future.wait([
+      googleSheets.fetchPurchases(),
+      googleSheets.fetchStoreSalesData(),
+      googleSheets.fetchItemSales(),
+    ]);
+    await Future.delayed(const Duration(milliseconds: 250));
 
-    final audits = await googleSheets.fetchAudits();
-    await Future.delayed(const Duration(milliseconds: 150));
+    // Batch 3: Accounting data
+    final results3 = await Future.wait([
+      googleSheets.fetchComputedCosts(),
+      googleSheets.fetchInvoices(),
+      googleSheets.fetchItemsIssued(),
+    ]);
+    await Future.delayed(const Duration(milliseconds: 250));
 
-    final purchases = await googleSheets.fetchPurchases();
-    await Future.delayed(const Duration(milliseconds: 150));
+    // Batch 4: Mappings and specific issues
+    final results4 = await Future.wait([
+      googleSheets.fetchStockIssues(),
+      googleSheets.fetchItemsIssuedMap(),
+      googleSheets.fetchPluMappings(),
+    ]);
 
-    final storeSales = await googleSheets.fetchStoreSalesData();
-
+    final storeSales = results2[1];
     final filteredStoreSales = storeSales.where((item) {
       final date = item['Date'];
       if (date == null) return false;
@@ -1010,58 +1083,35 @@ class SyncService with ChangeNotifier {
       return true;
     }).toList();
 
-    logger?.info('📊 StoreSalesData: ${storeSales.length} total, ${filteredStoreSales.length} valid dates');
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final itemSales = await googleSheets.fetchItemSales();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final costs = await googleSheets.fetchComputedCosts();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final invoices = await googleSheets.fetchInvoices();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final itemsIssued = await googleSheets.fetchItemsIssued();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final stockIssues = await googleSheets.fetchStockIssues();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final itemsIssuedMap = await googleSheets.fetchItemsIssuedMap();
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    final pluMappings = await googleSheets.fetchPluMappings();
-
     return [
-      inventory,
-      locations,
-      audits,
-      purchases,
-      filteredStoreSales,
-      itemSales,
-      costs,
-      invoices,
-      itemsIssued,
-      stockIssues,
-      itemsIssuedMap,
-      pluMappings,
+      results1[0], // inventory
+      results1[1], // locations
+      results1[2], // audits
+      results2[0], // purchases
+      filteredStoreSales, // storeSales
+      results2[2], // itemSales
+      results3[0], // costs
+      results3[1], // invoices
+      results3[2], // itemsIssued
+      results4[0], // stockIssues
+      results4[1], // itemsIssuedMap
+      results4[2], // pluMappings
     ];
   }
 
   Future<void> _logFetchedDataCounts(List<List<Map<String, dynamic>>> results) async {
-    logger?.info('📊 Data Fetched:');
-    logger?.info('  - Inventory: ${results[0].length}');
-    logger?.info('  - Locations: ${results[1].length}');
-    logger?.info('  - Audits: ${results[2].length}');
-    logger?.info('  - Purchases: ${results[3].length}');
-    logger?.info('  - Store Sales: ${results[4].length}');
-    logger?.info('  - Item Sales: ${results[5].length}');
-    logger?.info('  - Costs: ${results[6].length}');
-    logger?.info('  - Invoices: ${results[7].length}');
-    logger?.info('  - Items Issued: ${results[8].length}');
-    logger?.info('  - Stock Issues: ${results[9].length}');
-    logger?.info('  - Items Issued Map: ${results[10].length}');
+    // logger?.info('📊 Data Fetched:');
+    // logger?.info('  - Inventory: ${results[0].length}');
+    // logger?.info('  - Locations: ${results[1].length}');
+    // logger?.info('  - Audits: ${results[2].length}');
+    // logger?.info('  - Purchases: ${results[3].length}');
+    // logger?.info('  - Store Sales: ${results[4].length}');
+    // logger?.info('  - Item Sales: ${results[5].length}');
+    // logger?.info('  - Costs: ${results[6].length}');
+    // logger?.info('  - Invoices: ${results[7].length}');
+    // logger?.info('  - Items Issued: ${results[8].length}');
+    // logger?.info('  - Stock Issues: ${results[9].length}');
+    // logger?.info('  - Items Issued Map: ${results[10].length}');
   }
 
   Future<void> _saveMasterCatalog(List<Map<String, dynamic>> masterCosts) async {
@@ -1335,14 +1385,14 @@ class SyncService with ChangeNotifier {
 
       if (uniqueInvoices.isNotEmpty) {
         await _saveDownloadedInvoices(uniqueInvoices);
-        logger?.info('📄 Saved ${uniqueInvoices.length} unique invoices (${duplicates.length} duplicates skipped)');
+        // logger?.info('📄 Saved ${uniqueInvoices.length} unique invoices (${duplicates.length} duplicates skipped)');
       }
 
       await _saveAllMasterDataToDatabase(results);
 
-      logger?.info('🔍 Verifying saved data:');
-      final storeSalesCount = await offlineStorage.getStoreSalesDataCount();
-      logger?.info('  - StoreSalesData count: $storeSalesCount');
+      // logger?.info('🔍 Verifying saved data:');
+      // final storeSalesCount = await offlineStorage.getStoreSalesDataCount();
+      // logger?.info('  - StoreSalesData count: $storeSalesCount');
 
       await offlineStorage.debugSalesData();
 

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'sync_service.dart';
 import 'google_sheets_service.dart';
+import 'firestore_service.dart';
 import 'logger_service.dart';
 import 'offline_storage.dart';
 import 'encryption_service.dart';
@@ -14,12 +15,13 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbzi7vyV7tR5GdEz2iUDWvBbmY5CSOI_3OeswNhXM7hY2E19ktldUgDO00gbSfgVsAFQ/exec';
+      'https://script.google.com/macros/s/AKfycbzMdZd4h6zdEvHL-vlz170kCFx1G2j3NV7XZpJ3hevsGPA-3MNJD93Bnrk7hzb13JBR/exec';
 
   late Box _box;
   bool _initialized = false;
   final LoggerService? _logger;
   final OfflineStorage offlineStorage;
+  final FirestoreService? firestoreService;
   final SyncStatus syncStatus;  // 🔥 ADDED - Required
 
   Map<String, dynamic>? _activeStore;
@@ -63,6 +65,7 @@ class StoreManager with ChangeNotifier {
       _syncService = SyncService(
         offlineStorage: offlineStorage,
         googleSheets: googleSheets,
+        firestore: firestoreService,
         logger: _logger,
       );
 
@@ -77,6 +80,7 @@ class StoreManager with ChangeNotifier {
   StoreManager({
     required this.offlineStorage,
     required this.syncStatus,  // 🔥 Required
+    this.firestoreService,
     LoggerService? logger,
   }) : _logger = logger {
     // 🔥 CRITICAL: Listen to OfflineStorage changes ONCE, app-wide

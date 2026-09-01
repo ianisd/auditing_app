@@ -1,5 +1,12 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+
+# Force the use of the dynamic C++ runtime (/MD and /MDd)
+# This is required for the Firebase C++ SDK to link correctly.
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MDd")
+set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_PROFILE} /MD")
+
 project(counting_app LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -43,6 +50,7 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
+  target_compile_definitions(${TARGET} PRIVATE "_CRT_SECURE_NO_WARNINGS")
 endfunction()
 
 # Flutter library and tool build rules.

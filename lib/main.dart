@@ -9,17 +9,29 @@ import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart'; 
 
 import 'services/offline_storage.dart';
 import 'services/store_manager.dart';
 import 'services/logger_service.dart';
 import 'services/network_ping_service.dart';
+import 'services/firestore_service.dart';
 import 'models/sync_model.dart';  // 🔥 ADD THIS
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 0. Initialize Firebase
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('Firebase initialization failed: $e');
+  }
 
   // 1. Device Orientation
   if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
@@ -64,14 +76,14 @@ void main() async {
 
   // 6. Initialize Global Services
   final offlineStorage = OfflineStorage();
-
-  // 🔥 Create SyncStatus first (single source of truth)
   final syncStatus = SyncStatus();
+  final firestoreService = FirestoreService(logger: logger);
 
   final storeManager = StoreManager(
     offlineStorage: offlineStorage,
     logger: logger,
-    syncStatus: syncStatus,  // 🔥 Pass it here
+    syncStatus: syncStatus,
+    firestoreService: firestoreService,
   );
 
   // 7. Initialize Network Ping Service & Attach Lifecycle Observer
@@ -104,6 +116,7 @@ void main() async {
         ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: networkPingService),
         ChangeNotifierProvider.value(value: syncStatus),  // 🔥 ADDED
+        Provider<FirestoreService>.value(value: firestoreService),
         Provider<Connectivity>.value(value: Connectivity()),
         StreamProvider<List<ConnectivityResult>>(
           create: (_) => Connectivity().onConnectivityChanged,
