@@ -305,6 +305,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
+        'supplierBottleID': result.supplierBottleID, // 🔥 carry supplierBottleID
         'Barcode': result.barcode,
         // In-memory only; _saveChanges now strips these before persisting.
         '_edited': true,
@@ -400,6 +401,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
+        'supplierBottleID': result.supplierBottleID, // 🔥 carry supplierBottleID
         'Barcode': result.barcode,
         '_edited': true,
         // 🔥 FIX: keep a real boolean (old code wrote `null` here)
@@ -492,10 +494,21 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
       await storage.updateInvoiceDetails(updatedInvoice);
 
+      // 🔥 FIX: To match the "Uploaded GRV" look while being safe for edits/deletes,
+      // we find the highest existing line index and continue the sequence.
+      // This prevents ID collisions and ensures synergy with GAS.
+      int maxLineIndex = -1;
+      for (var p in _purchases) {
+        final pid = p['purchases_ID']?.toString() ?? '';
+        final match = RegExp(r'_line(\d+)$').firstMatch(pid);
+        if (match != null) {
+          final n = int.tryParse(match.group(1)!) ?? -1;
+          if (n > maxLineIndex) maxLineIndex = n;
+        }
+      }
+
       final List<Future> updateFutures = [];
 
-      // 🔥 FIX: Use a standard for-loop with an index so we can generate
-      // the correct _lineN suffix for the canonical ID.
       for (int i = 0; i < _purchases.length; i++) {
         var purchase = _purchases[i];
         if (purchase['_edited'] != true) continue;
@@ -511,32 +524,36 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
         final Map<String, dynamic> updateData = {
           'GRV Reference': grvRef,
+          'Invoice Nr.': _invoiceNumberController.text, // 🔥 Align with upload
+          'Inv. Date of Purchase': _purchaseDate.toIso8601String(), // 🔥 Align with upload
           'Qty Purchased': qtyCases,
           'Cost Per Bottle': costPerUnit,
           'Case/Pack Size': 'Case $packSize',
           'Purchases Bottles': (qtyCases * packSize),
+          'Purchase Units': 0, // 🔥 Align with upload
           'Cost of Purchases': lineTotal,
         };
 
         final bool isNew = purchase['_isNew'] == true;
 
         if (isNew) {
-          // 🔥🔥🔥 THE FIX: Generate Canonical ID Client-Side 🔥🔥🔥
-          // Replace the TEMP_ ID with the proper format so Hive and the
-          // Server share the exact same ID, fixing deduplication.
-          final barcode = purchase['Barcode']?.toString() ?? '';
-          final productKey = barcode.isNotEmpty
-              ? barcode
-              : (purchase['Purchased Product Name']?.toString() ?? 'unknown').replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '');
+          // 🔥 MATCH UPLOAD LOGIC: Use sequential line index to match what GrvLineItemsScreen does.
+          // We increment from the highest known index found in this GRV.
+          maxLineIndex++;
 
-          // 🔥 BULLETPROOF FIX: Use a microsecond timestamp + i instead of just list index `i`.
-          // This guarantees the line suffix is globally unique, preventing any
-          // collisions if items are deleted, reordered, or re-indexed by Hive.
-          final lineSuffix = (DateTime.now().microsecondsSinceEpoch + i).toString();
-          final canonicalId = 'purchase_${widget.invoice['invoiceDetailsID']}_${grvRef}_${productKey}_line$lineSuffix';
+          // Build product key from PLU or Barcode to match GrvLineItemsScreen logic
+          final String productKey = (purchase['supplierBottleID'] ?? purchase['purSupplierBottleID'])?.toString().isNotEmpty == true
+              ? (purchase['supplierBottleID'] ?? purchase['purSupplierBottleID']).toString()
+              : (purchase['Barcode']?.toString().isNotEmpty == true
+                  ? purchase['Barcode'].toString()
+                  : 'unknown');
+
+          final canonicalId = 'purchase_${widget.invoice['invoiceDetailsID']}_${grvRef}_${productKey}_line$maxLineIndex';
 
           updateData['Purchased Product Name'] = purchase['Purchased Product Name'];
-          updateData['purSupplierBottleID'] = purchase['purSupplierBottleID'];
+          updateData['purSupplierBottleID'] = purchase['supplierBottleID'] ?? purchase['purSupplierBottleID']; // 🔥 Align with upload
+          updateData['supplierBottleID'] = purchase['supplierBottleID'] ?? purchase['purSupplierBottleID']; // 🔥 Align with upload
+          updateData['plu'] = purchase['purSupplierBottleID']; // 🔥 Align with upload
           updateData['Barcode'] = purchase['Barcode'];
           updateData['Main Category'] = purchase['Main Category'];
           updateData['Category'] = purchase['Category'];

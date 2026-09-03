@@ -43,6 +43,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   // Track selected pack size and auto-lookup cost
   String? _selectedPackSize;
   double? _autoCalculatedPrice;
+  String? _foundSupplierBottleID; // 🔥 Added to store supplierBottleID from MasterCosts
 
   bool _isMounted() => mounted && !_isDisposed;
 
@@ -126,6 +127,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       barcode:
           _selectedProduct?['Barcode']?.toString() ??
           widget.initialItem?.barcode,
+      supplierBottleID: _foundSupplierBottleID ?? widget.initialItem?.supplierBottleID, // 🔥 Pass the found bottle ID
       // 🔥 FIX: this is what was missing — without it the edit screen wrote
       // empty Category/UoM/volume for manually added lines (the tonic rows).
       mainCategory:
@@ -233,18 +235,20 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     String supplierId,
   ) async {
     try {
-      final price = await _lookupCost(productName, supplierName, supplierId);
+      final result = await _lookupCost(productName, supplierName, supplierId);
       if (!_isMounted()) return;
 
-      if (price != null) {
+      if (result != null) {
         setState(() {
-          _autoCalculatedPrice = price;
-          _priceController.text = price.toStringAsFixed(2);
+          _autoCalculatedPrice = result['price'];
+          _foundSupplierBottleID = result['supplierBottleID'];
+          _priceController.text = _autoCalculatedPrice!.toStringAsFixed(2);
         });
+        print('✅ Cost lookup success: R$_autoCalculatedPrice, BottleID: $_foundSupplierBottleID');
       } else {
         if (_isMounted()) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
+            const SnackBar(
               content: Text('⚠️ Cost lookup failed. Enter price manually.'),
               backgroundColor: Colors.orange,
             ),
@@ -354,7 +358,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     return 1;
   }
 
-  Future<double?> _lookupCost(
+  Future<Map<String, dynamic>?> _lookupCost(
     String productName,
     String supplierName,
     String supplierId,
@@ -388,23 +392,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       }
 
       // Try multiple matching strategies
-      double? foundCost;
+      Map<String, dynamic>? bestMatch;
 
-      // Strategy 1: Match by product name only
-      final nameMatches = masterCosts.where((cost) {
-        final costName = (cost['Product Name']?.toString() ?? '')
-            .toLowerCase()
-            .trim();
-        final searchName = productName.toLowerCase().trim();
-        return costName.contains(searchName) || searchName.contains(costName);
-      }).toList();
-
-      if (nameMatches.isNotEmpty) {
-        foundCost = _extractCost(nameMatches.first);
-        if (foundCost != null) return foundCost;
-      }
-
-      // Strategy 2: Match by product + supplier
+      // Strategy 1: Match by product name + supplier (Primary)
       if (actualSupplierId.isNotEmpty) {
         final supplierMatches = masterCosts.where((cost) {
           final costName = (cost['Product Name']?.toString() ?? '')
@@ -413,14 +403,41 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
           final costSupplierId = (cost['supplierID']?.toString() ?? '').trim();
           final searchName = productName.toLowerCase().trim();
 
-          return (costName.contains(searchName) ||
+          return (costName == searchName ||
+                  costName.contains(searchName) ||
                   searchName.contains(costName)) &&
               costSupplierId == actualSupplierId;
         }).toList();
 
         if (supplierMatches.isNotEmpty) {
-          foundCost = _extractCost(supplierMatches.first);
-          if (foundCost != null) return foundCost;
+          bestMatch = supplierMatches.first;
+        }
+      }
+
+      // Strategy 2: Match by product name only (Fallback)
+      if (bestMatch == null) {
+        final nameMatches = masterCosts.where((cost) {
+          final costName = (cost['Product Name']?.toString() ?? '')
+              .toLowerCase()
+              .trim();
+          final searchName = productName.toLowerCase().trim();
+          return costName == searchName ||
+                 costName.contains(searchName) ||
+                 searchName.contains(costName);
+        }).toList();
+
+        if (nameMatches.isNotEmpty) {
+          bestMatch = nameMatches.first;
+        }
+      }
+
+      if (bestMatch != null) {
+        final price = _extractCost(bestMatch);
+        if (price != null) {
+          return {
+            'price': price,
+            'supplierBottleID': bestMatch['supplierBottleID']?.toString(),
+          };
         }
       }
 
