@@ -623,11 +623,13 @@ class GoogleSheetsService {
               continue;
             }
 
-            // If we still get 404 after alternative URL, stop
+            // If we still get 404 after alternative URL, this batch is
+            // unrecoverable. Throw so the caller knows the download is
+            // incomplete instead of silently treating it as end-of-data.
             if (useAlternativeUrl && consecutive404Count >= 2) {
-              print('⚠️ 404 even with alternative URL. Stopping.');
-              batch = [];
-              break;
+              throw Exception(
+                  'Batch $batchNumber (offset $offset) for $tableName failed: '
+                      '404 even with alternative URL after $consecutive404Count attempts.');
             }
           }
 
@@ -644,10 +646,9 @@ class GoogleSheetsService {
               e.toString().contains('Too Many Requests');
 
           if (retryCount >= maxRetries) {
-            print('❌ Failed after $maxRetries attempts');
-            consecutiveFailures++;
-            batch = [];
-            break;
+            throw Exception(
+                'Batch $batchNumber (offset $offset) for $tableName failed '
+                    'after $maxRetries attempts: $e');
           }
 
           // Exponential backoff with jitter
@@ -659,10 +660,12 @@ class GoogleSheetsService {
       }
 
       if (batch == null) {
-        consecutiveFailures++;
-        offset += batchSize;
-        batchNumber++;
-        continue;
+        // Should be unreachable: every failure path above now throws
+        // instead of leaving batch unset. Fail loudly rather than
+        // silently skipping this chunk and moving on.
+        throw Exception(
+            'Batch $batchNumber (offset $offset) for $tableName returned '
+                'no result and no error. Aborting download.');
       }
 
       if (batch.isEmpty) {
@@ -1795,18 +1798,18 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (locations.length / chunkSize).ceil();
 
-    print('📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+      print('📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-    final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
+      final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
 
-    try {
-      final result = await _sendPostRequest(
-        'syncNewLocations',
-        {
-          'endpoint': 'syncNewLocations',
-          'data': mappedChunk,
-        },
-      );
+      try {
+        final result = await _sendPostRequest(
+          'syncNewLocations',
+          {
+            'endpoint': 'syncNewLocations',
+            'data': mappedChunk,
+          },
+        );
 
         if (result['success'] == true) {
           totalAdded += (result['count'] ?? 0) as int;
@@ -1874,18 +1877,18 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (products.length / chunkSize).ceil();
 
-    print('🆕 Syncing product chunk $chunkNumber/$totalChunks (${chunk.length} records)');
+      print('🆕 Syncing product chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-    final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
+      final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
 
-    try {
-      final result = await _sendPostRequest(
-        'syncNewProducts',
-        {
-          'endpoint': 'syncNewProducts',
-          'data': mappedChunk,
-        },
-      );
+      try {
+        final result = await _sendPostRequest(
+          'syncNewProducts',
+          {
+            'endpoint': 'syncNewProducts',
+            'data': mappedChunk,
+          },
+        );
 
         if (result['success'] == true) {
           totalAdded += (result['added'] ?? 0) as int;

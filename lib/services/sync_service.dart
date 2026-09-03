@@ -104,7 +104,7 @@ class SyncService with ChangeNotifier {
 
   void _initFirestoreListeners() {
     if (firestore == null) return;
-    
+
     final storeId = offlineStorage.currentStoreId;
     if (storeId == null) return;
 
@@ -557,7 +557,7 @@ class SyncService with ChangeNotifier {
     }
 
     logger?.info('📊 Uploading ${pending.length} counts...');
-    
+
     // 🔥 NEW: Push to Firestore first for real-time availability
     if (firestore != null) {
       final storeId = offlineStorage.currentStoreId;
@@ -782,7 +782,7 @@ class SyncService with ChangeNotifier {
 
       if (pendingCounts.isNotEmpty) {
         onStatus?.call('Syncing ${pendingCounts.length} stock counts...');
-        
+
         // 🔥 NEW: Push to Firestore first for real-time availability using batch
         if (firestore != null) {
           final storeId = offlineStorage.currentStoreId;
@@ -1035,7 +1035,7 @@ class SyncService with ChangeNotifier {
     logger?.info('📥 Refreshing master data tables (Parallel Batches)...');
 
     // Group fetches into parallel batches to speed up download while avoiding GAS rate limits
-    
+
     // Batch 1: Core metadata
     final results1 = await Future.wait([
       googleSheets.fetchInventory(),
@@ -1314,7 +1314,24 @@ class SyncService with ChangeNotifier {
       if (!hasInternet) throw Exception('No internet connection');
 
       logger?.info('📥 Downloading clean list from server...');
-      final remoteCounts = await googleSheets.fetchStockCounts();
+
+      int? expectedTotal;
+      final remoteCounts = await googleSheets.fetchStockCounts(
+        onProgress: (received, total) {
+          if (total != null) expectedTotal = total;
+        },
+      );
+
+      // Defense in depth: even if fetchStockCounts ever returns a short
+      // list without throwing, refuse to wipe local data with an
+      // incomplete download.
+      if (expectedTotal != null && remoteCounts.length < expectedTotal!) {
+        final msg = 'Download incomplete: got ${remoteCounts.length} of '
+            '$expectedTotal records from server. Local data left unchanged '
+            '— please retry.';
+        logger?.error(msg);
+        throw Exception(msg);
+      }
 
       await offlineStorage.overwriteLocalCounts(remoteCounts);
 
