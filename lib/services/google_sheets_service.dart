@@ -1255,17 +1255,13 @@ class GoogleSheetsService {
   // ---------------------------------------------------------------------------
 
   Future<bool> syncStockCounts(List<Map<String, dynamic>> counts) async {
-    if (counts.length > chunkSize) {
-      final result = await syncStockCountsWithChunking(counts);
-      return result['success'] == true;
-    }
-
-    final payload = counts.map(_mapStockCountForSheet).toList();
-
-    final result = await _sendPostRequest(
-        'syncStockCounts',
-        {'data': payload, 'endpoint': 'syncStockCounts'}
-    );
+    // Always go through the chunking implementation, even for small
+    // batches — it correctly checks GAS's actual response shape
+    // (status: 'success'/'partial_success') and tracks confirmed IDs.
+    // The old direct-post branch here checked result['success'], a
+    // field the backend never sends for stock counts, so small batches
+    // could never be confirmed through this path.
+    final result = await syncStockCountsWithChunking(counts);
     return result['success'] == true;
   }
 
@@ -1605,13 +1601,13 @@ class GoogleSheetsService {
         'count': 0,
         'updated': 0,
         'deleted': 0,
+        'syncedIds': <String>[],
+        'failedIds': <String>[],
         'message': 'No stock counts to sync'
       };
     }
 
     print('📊 Syncing ${counts.length} stock counts in chunks of $chunkSize');
-
-    final payload = counts.map(_mapStockCountForSheet).toList();
 
     int totalInserted = 0;
     int totalUpdated = 0;
@@ -1619,22 +1615,31 @@ class GoogleSheetsService {
     bool allSuccessful = true;
     String lastError = '';
     int processedCount = 0;
+    final List<String> syncedIds = [];
+    final List<String> failedIds = [];
 
-    for (var i = 0; i < payload.length; i += chunkSize) {
+    for (var i = 0; i < counts.length; i += chunkSize) {
       if (_isDisposed) {
         return {
           'success': false,
           'count': totalInserted,
           'updated': totalUpdated,
           'deleted': totalDeleted,
+          'syncedIds': syncedIds,
+          'failedIds': failedIds,
           'message': 'Service disposed during sync'
         };
       }
 
-      final end = (i + chunkSize).clamp(0, payload.length);
-      final chunk = payload.sublist(i, end);
+      final end = (i + chunkSize).clamp(0, counts.length);
+      final rawChunk = counts.sublist(i, end);
+      final chunk = rawChunk.map(_mapStockCountForSheet).toList();
+      final chunkIds = rawChunk
+          .where((c) => c['id'] != null)
+          .map((c) => c['id'].toString())
+          .toList();
       final chunkNumber = (i ~/ chunkSize) + 1;
-      final totalChunks = (payload.length / chunkSize).ceil();
+      final totalChunks = (counts.length / chunkSize).ceil();
 
       print('📊 Syncing stock count chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
@@ -1653,16 +1658,29 @@ class GoogleSheetsService {
           totalUpdated += (result['updated'] ?? result['updatedCount'] ?? 0) as int;
           totalDeleted += (result['deleted'] ?? 0) as int;
           processedCount += chunk.length;
-          onProgress?.call(processedCount, payload.length);
+          syncedIds.addAll(chunkIds);
+          onProgress?.call(processedCount, counts.length);
           print('✅ Chunk $chunkNumber complete: +${result['count'] ?? result['newCount'] ?? 0} inserted, ${result['updated'] ?? result['updatedCount'] ?? 0} updated, ${result['deleted'] ?? 0} deleted');
+        } else {
+          // The server answered but didn't confirm success (e.g. GAS
+          // returned status: 'error', such as a lock timeout). This used
+          // to fall through silently and get counted as a success —
+          // don't mark these records synced.
+          allSuccessful = false;
+          failedIds.addAll(chunkIds);
+          lastError = (result['message'] ??
+              'Chunk $chunkNumber: server did not confirm success (status: ${result['status']})')
+              .toString();
+          print('⚠️ Chunk $chunkNumber NOT confirmed: $lastError');
         }
       } catch (e) {
         allSuccessful = false;
+        failedIds.addAll(chunkIds);
         lastError = e.toString();
         print('❌ Chunk $chunkNumber exception: $e');
       }
 
-      if (i + chunkSize < payload.length) {
+      if (i + chunkSize < counts.length) {
         await Future.delayed(const Duration(milliseconds: 500));
       }
     }
@@ -1672,9 +1690,11 @@ class GoogleSheetsService {
       'count': totalInserted,
       'updated': totalUpdated,
       'deleted': totalDeleted,
+      'syncedIds': syncedIds,
+      'failedIds': failedIds,
       'message': allSuccessful
-          ? 'Synced ${payload.length} stock counts successfully'
-          : 'Completed with errors: $lastError',
+          ? 'Synced ${counts.length} stock counts successfully'
+          : 'Completed with errors: $lastError (${failedIds.length} of ${counts.length} record(s) not confirmed)',
       'lastError': lastError,
     };
   }

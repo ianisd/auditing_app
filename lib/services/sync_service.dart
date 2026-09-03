@@ -572,16 +572,27 @@ class SyncService with ChangeNotifier {
       }
     }
 
-    final success = await googleSheets.syncStockCounts(pending);
+    final result = await googleSheets.syncStockCountsWithChunking(pending);
 
-    if (success) {
-      final ids = pending.where((c) => c['id'] != null).map((c) => c['id'].toString()).toList();
-      await offlineStorage.markMultipleAsSynced(ids);
+    final syncedIds = (result['syncedIds'] as List<dynamic>? ?? const [])
+        .map((id) => id.toString())
+        .toList();
+
+    if (syncedIds.isNotEmpty) {
+      await offlineStorage.markMultipleAsSynced(syncedIds);
+    }
+
+    if (result['success'] == true) {
       _lastSyncTime = _formatDateTime(DateTime.now());
       _lastSyncCount = pending.length;
       logger?.info('✅ Counts synced successfully');
-      _safeNotify();
+    } else {
+      logger?.error(
+          '⚠️ Stock count sync incomplete: ${result['message']}. '
+              '${syncedIds.length}/${pending.length} confirmed — the rest remain '
+              'pending and will retry next sync.');
     }
+    _safeNotify();
   }
 
   // ============================================================================
@@ -803,20 +814,26 @@ class SyncService with ChangeNotifier {
           },
         );
 
-        if (result['success'] == true) {
-          final ids = pendingCounts
-              .where((c) => c['id'] != null)
-              .map((c) => c['id'].toString())
-              .toList();
-          await offlineStorage.markMultipleAsSynced(ids);
-          stockCountsSynced = pendingCounts.length;
-          totalSynced += pendingCounts.length;
+        final syncedIds = (result['syncedIds'] as List<dynamic>? ?? const [])
+            .map((id) => id.toString())
+            .toList();
+
+        if (syncedIds.isNotEmpty) {
+          await offlineStorage.markMultipleAsSynced(syncedIds);
+          stockCountsSynced = syncedIds.length;
+          totalSynced += syncedIds.length;
           final deleted = (result['deleted'] ?? 0) as int;
           totalDeleted += deleted;
-          logger?.info('📊 Synced ${pendingCounts.length} stock counts${deleted > 0 ? " ($deleted deleted)" : ""}');
+        }
+
+        if (result['success'] == true) {
+          logger?.info('📊 Synced ${syncedIds.length} stock counts');
         } else {
           allSuccessful = false;
-          logger?.error('❌ Stock count sync failed: ${result['message']}');
+          logger?.error(
+              '❌ Stock count sync incomplete: ${result['message']}. '
+                  '${syncedIds.length}/${pendingCounts.length} confirmed — the '
+                  'rest remain pending and will retry next sync.');
         }
       }
 
