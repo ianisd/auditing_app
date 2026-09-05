@@ -83,6 +83,16 @@ class SyncService with ChangeNotifier {
   DateTime? _suppliersCacheTime;
   static const Duration _cacheDuration = Duration(minutes: 5);
 
+  // 🔥 NEW: Track failed chunks for health monitoring
+  int _failedChunks = 0;
+  int _totalChunks = 0;
+  List<String> _recentErrors = [];
+  static const int _maxErrorsToStore = 50;
+
+  // 🔥 NEW: Track sync attempts for success rate calculation
+  int _syncAttempts = 0;
+  int _syncSuccesses = 0;
+
   // ==================== GETTERS ====================
   bool get isDisposed => _isDisposed;
   bool get isSyncing => _isSyncing && !_isDisposed;
@@ -541,6 +551,18 @@ class SyncService with ChangeNotifier {
     }
   }
 
+  /// 🔥 Builds a Firestore-safe copy of stock count records.
+  /// Firestore doesn't understand `syncStatus`, so this translates
+  /// syncStatus == 'deleted' into an explicit `deleted: true` flag
+  /// without mutating the original local records.
+  List<Map<String, dynamic>> _mapForFirestore(List<Map<String, dynamic>> counts) {
+    return counts.map((c) {
+      final item = Map<String, dynamic>.from(c);
+      item['deleted'] = (c['syncStatus'] == 'deleted');
+      return item;
+    }).toList();
+  }
+
   // 🔥 FIXED: Added _safeNotify() when pending.isEmpty
   Future<void> _syncStockCounts() async {
     // 🔥 FIX: Only get items that are truly pending (not synced)
@@ -564,7 +586,8 @@ class SyncService with ChangeNotifier {
       if (storeId != null) {
         try {
           // Use batch save for performance
-          await firestore!.saveStockCountsBatch(storeId, pending);
+          final firestorePayload = _mapForFirestore(pending);
+          await firestore!.saveStockCountsBatch(storeId, firestorePayload);
           logger?.info('🔥 Real-time: Synced to Firestore (Batch)');
         } catch (e) {
           logger?.error('🔥 Real-time: Firestore batch sync failed', e);
@@ -594,7 +617,6 @@ class SyncService with ChangeNotifier {
     }
     _safeNotify();
   }
-
   // ============================================================================
   // 🔥 ENHANCED SYNC WITH CHUNKING AND PROGRESS
   // ============================================================================
@@ -626,9 +648,12 @@ class SyncService with ChangeNotifier {
 
     _isSyncing = true;
     _lastError = null;
+    _syncAttempts++;
+    _failedChunks = 0;
+    _totalChunks = 0;
     _safeNotify();
 
-    logger?.info('🚀 Sync with chunking started...');
+    logger?.info('🚀 Sync with chunking started... (Attempt #$_syncAttempts)');
     onStatus?.call('Starting sync...');
 
     final allDuplicates = <Map<String, dynamic>>[];
@@ -636,7 +661,6 @@ class SyncService with ChangeNotifier {
     int totalDeleted = 0;
     bool allSuccessful = true;
 
-    // Track detailed counts
     int invoicesSynced = 0;
     int purchasesSynced = 0;
     int pluMappingsSynced = 0;
@@ -661,22 +685,25 @@ class SyncService with ChangeNotifier {
       final locations = await offlineStorage.getPendingLocations();
       if (locations.isNotEmpty) {
         onStatus?.call('Syncing ${locations.length} locations...');
+        _totalChunks += (locations.length / 50).ceil();
+
         final result = await googleSheets.syncNewLocationsWithChunking(
           locations,
           onProgress: (processed, total) {
             onProgress?.call(processed, total);
           },
         );
+
         if (result['success'] == true) {
           final ids = locations.map((e) => e['locationID'].toString()).toList();
           await offlineStorage.markLocationsAsSynced(ids);
           locationsSynced = locations.length;
           totalSynced += locations.length;
-          final deleted = (result['deleted'] ?? 0) as int;
-          totalDeleted += deleted;
-          logger?.info('📍 Synced ${locations.length} locations${deleted > 0 ? " ($deleted deleted)" : ""}');
+          logger?.info('📍 Synced ${locations.length} locations');
         } else {
           allSuccessful = false;
+          _failedChunks++;
+          _recordError('Location sync failed: ${result['message']}');
           logger?.error('❌ Location sync failed: ${result['message']}');
         }
       }
@@ -685,6 +712,7 @@ class SyncService with ChangeNotifier {
       final pendingInvoices = await offlineStorage.getPendingInvoiceDetails();
       if (pendingInvoices.isNotEmpty) {
         onStatus?.call('Syncing ${pendingInvoices.length} invoices...');
+        _totalChunks += (pendingInvoices.length / 25).ceil();
 
         final syncedInvoices = pendingInvoices.map((invoice) {
           final modified = Map<String, dynamic>.from(invoice);
@@ -708,14 +736,14 @@ class SyncService with ChangeNotifier {
           await offlineStorage.bulkMarkInvoicesAsSynced(invoiceIds);
           invoicesSynced = pendingInvoices.length;
           totalSynced += pendingInvoices.length;
-          final deleted = (result['deleted'] ?? 0) as int;
-          totalDeleted += deleted;
           if (result['duplicates'] != null) {
             allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
           }
-          logger?.info('📄 Synced ${pendingInvoices.length} invoices${deleted > 0 ? " ($deleted deleted)" : ""}');
+          logger?.info('📄 Synced ${pendingInvoices.length} invoices');
         } else {
           allSuccessful = false;
+          _failedChunks++;
+          _recordError('Invoice sync failed: ${result['message']}');
           logger?.error('❌ Invoice sync failed: ${result['message']}');
         }
       }
@@ -724,6 +752,8 @@ class SyncService with ChangeNotifier {
       final pendingPurchases = await offlineStorage.getPendingPurchases();
       if (pendingPurchases.isNotEmpty) {
         onStatus?.call('Syncing ${pendingPurchases.length} purchases...');
+        _totalChunks += (pendingPurchases.length / 50).ceil();
+
         final result = await googleSheets.syncPurchasesWithChunking(
           pendingPurchases,
           onProgress: (processed, total) {
@@ -740,11 +770,11 @@ class SyncService with ChangeNotifier {
           await offlineStorage.bulkMarkPurchasesAsSynced(purchaseIds);
           purchasesSynced = pendingPurchases.length;
           totalSynced += pendingPurchases.length;
-          final deleted = (result['deleted'] ?? 0) as int;
-          totalDeleted += deleted;
-          logger?.info('📦 Synced ${pendingPurchases.length} purchases${deleted > 0 ? " ($deleted deleted)" : ""}');
+          logger?.info('📦 Synced ${pendingPurchases.length} purchases');
         } else {
           allSuccessful = false;
+          _failedChunks++;
+          _recordError('Purchase sync failed: ${result['message']}');
           logger?.error('❌ Purchase sync failed: ${result['message']}');
         }
       }
@@ -753,6 +783,8 @@ class SyncService with ChangeNotifier {
       final pendingMappings = await offlineStorage.getPendingPluMappings();
       if (pendingMappings.isNotEmpty) {
         onStatus?.call('Syncing ${pendingMappings.length} PLU mappings...');
+        _totalChunks += (pendingMappings.length / 50).ceil();
+
         final jsonList = pendingMappings.map((m) => m.toJson()).toList();
         final result = await googleSheets.syncPluMappingsWithChunking(
           jsonList,
@@ -765,11 +797,11 @@ class SyncService with ChangeNotifier {
           await offlineStorage.markPluMappingsAsSynced(pendingMappings);
           pluMappingsSynced = pendingMappings.length;
           totalSynced += pendingMappings.length;
-          final deleted = (result['deleted'] ?? 0) as int;
-          totalDeleted += deleted;
-          logger?.info('🔗 Synced ${pendingMappings.length} PLU mappings${deleted > 0 ? " ($deleted deleted)" : ""}');
+          logger?.info('🔗 Synced ${pendingMappings.length} PLU mappings');
         } else {
           allSuccessful = false;
+          _failedChunks++;
+          _recordError('PLU mapping sync failed: ${result['message']}');
           logger?.error('❌ PLU mapping sync failed: ${result['message']}');
         }
       }
@@ -785,7 +817,7 @@ class SyncService with ChangeNotifier {
         await _syncNewProducts();
       }
 
-      // 7. Sync stock counts - 🔥 FIX: Only sync truly pending items
+      // 7. Sync stock counts - 🔥 UPDATED with retry tracking
       final allCounts = offlineStorage.pendingCounts;
       final pendingCounts = allCounts.where((c) =>
       c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted'
@@ -793,16 +825,28 @@ class SyncService with ChangeNotifier {
 
       if (pendingCounts.isNotEmpty) {
         onStatus?.call('Syncing ${pendingCounts.length} stock counts...');
+        _totalChunks += (pendingCounts.length / 200).ceil();
 
-        // 🔥 NEW: Push to Firestore first for real-time availability using batch
+        // 🔥 Push to Firestore first with retry
         if (firestore != null) {
           final storeId = offlineStorage.currentStoreId;
           if (storeId != null) {
-            try {
-              await firestore!.saveStockCountsBatch(storeId, pendingCounts);
-              logger?.info('🔥 Real-time: Synced to Firestore (Batch)');
-            } catch (e) {
-              logger?.error('🔥 Real-time: Firestore sync failed', e);
+            final firestorePayload = _mapForFirestore(pendingCounts);
+            int firestoreRetries = 0;
+            bool firestoreSuccess = false;
+
+            while (firestoreRetries < 3 && !firestoreSuccess) {
+              try {
+                await firestore!.saveStockCountsBatch(storeId, firestorePayload);
+                firestoreSuccess = true;
+                logger?.info('🔥 Real-time: Synced to Firestore (Batch)');
+              } catch (e) {
+                firestoreRetries++;
+                logger?.error('🔥 Real-time: Firestore sync failed (attempt $firestoreRetries/3)', e);
+                if (firestoreRetries < 3) {
+                  await Future.delayed(Duration(seconds: firestoreRetries));
+                }
+              }
             }
           }
         }
@@ -826,22 +870,33 @@ class SyncService with ChangeNotifier {
           totalDeleted += deleted;
         }
 
+        final failedIds = (result['failedIds'] as List<dynamic>? ?? const []);
+        if (failedIds.isNotEmpty) {
+          _failedChunks += (failedIds.length / 200).ceil();
+          _recordError('Stock count sync incomplete: ${failedIds.length} records failed');
+        }
+
         if (result['success'] == true) {
           logger?.info('📊 Synced ${syncedIds.length} stock counts');
         } else {
           allSuccessful = false;
           logger?.error(
               '❌ Stock count sync incomplete: ${result['message']}. '
-                  '${syncedIds.length}/${pendingCounts.length} confirmed — the '
-                  'rest remain pending and will retry next sync.');
+                  '${syncedIds.length}/${pendingCounts.length} confirmed'
+          );
         }
+      }
+
+      // 🔥 Record success
+      if (allSuccessful) {
+        _syncSuccesses++;
       }
 
       _lastSyncTime = _formatDateTime(DateTime.now());
       _lastSyncCount = totalSynced;
       _safeNotify();
 
-      // Build detailed message
+      // Build detailed message with health stats
       final parts = <String>[];
       if (invoicesSynced > 0) parts.add('$invoicesSynced Invoice${invoicesSynced > 1 ? 's' : ''}');
       if (purchasesSynced > 0) parts.add('$purchasesSynced Purchase${purchasesSynced > 1 ? 's' : ''}');
@@ -851,7 +906,12 @@ class SyncService with ChangeNotifier {
       if (productsSynced > 0) parts.add('$productsSynced Product${productsSynced > 1 ? 's' : ''}');
 
       final dupMsg = allDuplicates.isNotEmpty ? ' (${allDuplicates.length} duplicates found)' : '';
-      final detailMsg = parts.isNotEmpty ? 'Synced: ${parts.join(", ")}$dupMsg' : 'No items to sync';
+      final healthMsg = _totalChunks > 0
+          ? ' | Success Rate: ${_calculateSuccessRate()}% (${_totalChunks - _failedChunks}/$_totalChunks chunks)'
+          : '';
+      final detailMsg = parts.isNotEmpty
+          ? 'Synced: ${parts.join(", ")}$dupMsg$healthMsg'
+          : 'No items to sync';
 
       final result = SyncResult(
         hasInternet: true,
@@ -879,6 +939,7 @@ class SyncService with ChangeNotifier {
 
     } catch (e) {
       _lastError = e.toString();
+      _recordError(e.toString());
       logger?.error('🔥 Sync Exception', e);
       onStatus?.call('Error: $e');
       return SyncResult(
@@ -895,6 +956,7 @@ class SyncService with ChangeNotifier {
       }
     }
   }
+
 
   Future<SyncResult> syncPurchasesOnly({
     Function(int processed, int total)? onProgress,
@@ -1512,5 +1574,86 @@ class SyncService with ChangeNotifier {
       'lastError': _lastError,
       'inventoryCount': stats['inventoryItems'] ?? 0,
     };
+  }
+
+
+  // ============================================================================
+  // 🔥 NEW: Health Check Methods
+  // ============================================================================
+
+  /// Get sync health statistics
+  Future<Map<String, dynamic>> getSyncHealth() async {
+    if (_isDisposed) {
+      return {
+        'hasInternet': false,
+        'isSyncing': false,
+        'lastSyncTime': '',
+        'pendingCount': 0,
+        'totalAttempts': _syncAttempts,
+        'successfulAttempts': _syncSuccesses,
+        'successRate': _syncAttempts > 0 ? (_syncSuccesses / _syncAttempts * 100) : 0,
+        'chunkSuccessRate': _totalChunks > 0
+            ? ((_totalChunks - _failedChunks) / _totalChunks * 100)
+            : 100,
+        'recentErrors': _recentErrors.take(5).toList(),
+        'lastError': _lastError,
+        'inventoryLoaded': _inventoryLoaded,
+      };
+    }
+
+    final stats = await getDatabaseStats();
+    final hasInternet = await checkConnectivity();
+
+    return {
+      'hasInternet': hasInternet,
+      'isSyncing': _isSyncing,
+      'lastSyncTime': _lastSyncTime,
+      'lastSyncCount': _lastSyncCount,
+      'pendingCount': stats['pendingSync'] ?? 0,
+      'totalAttempts': _syncAttempts,
+      'successfulAttempts': _syncSuccesses,
+      'successRate': _syncAttempts > 0 ? (_syncSuccesses / _syncAttempts * 100) : 0,
+      'chunkSuccessRate': _totalChunks > 0
+          ? ((_totalChunks - _failedChunks) / _totalChunks * 100)
+          : 100,
+      'totalChunks': _totalChunks,
+      'failedChunks': _failedChunks,
+      'recentErrors': _recentErrors.take(5).toList(),
+      'lastError': _lastError,
+      'inventoryLoaded': _inventoryLoaded,
+      'inventoryCount': stats['inventoryItems'] ?? 0,
+      'totalCounts': stats['stockCounts'] ?? 0,
+    };
+  }
+
+  /// Get sync success rate over time
+  double getSyncSuccessRate() {
+    if (_syncAttempts == 0) return 100.0;
+    return (_syncSuccesses / _syncAttempts) * 100;
+  }
+
+  /// Record an error for health tracking
+  void _recordError(String error) {
+    _recentErrors.add('${DateTime.now().toIso8601String()}: $error');
+    if (_recentErrors.length > _maxErrorsToStore) {
+      _recentErrors.removeAt(0);
+    }
+  }
+
+  /// Calculate success rate for current sync
+  double _calculateSuccessRate() {
+    if (_totalChunks == 0) return 100.0;
+    return ((_totalChunks - _failedChunks) / _totalChunks) * 100;
+  }
+
+  /// Reset health tracking (call after major fixes)
+  void resetHealthTracking() {
+    _syncAttempts = 0;
+    _syncSuccesses = 0;
+    _failedChunks = 0;
+    _totalChunks = 0;
+    _recentErrors.clear();
+    _lastError = null;
+    logger?.info('🔄 Health tracking reset');
   }
 }

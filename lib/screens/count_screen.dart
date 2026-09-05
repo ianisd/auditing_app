@@ -792,10 +792,29 @@ class _CountScreenState extends State<CountScreen> {
     );
 
     if (confirm == true && mounted) {
-      await context.read<OfflineStorage>().deleteStockCount(widget.existingCount!['id']);
+      final id = widget.existingCount!['id'];
+      final storage = context.read<OfflineStorage>();
+
+      await storage.deleteStockCount(id);
+
+      // 🔥 REAL-TIME SOFT-DELETE ON FIRESTORE
+      // (was a hard .delete() before — that raced with the background sync
+      // recreating the doc a few seconds later, which is why `deleted`
+      // kept reverting to false)
+      final syncService = context.read<StoreManager>().syncService;
+      if (syncService.firestore != null && storage.currentStoreId != null) {
+        final deletedData = <String, dynamic>{
+          'id': id,
+          'deleted': true,
+          'deletedAt': DateTime.now().toIso8601String(),
+        };
+        await syncService.firestore!.saveStockCount(storage.currentStoreId!, deletedData);
+      }
+
       if (mounted) Navigator.pop(context);
     }
   }
+
 
   // ============================================================================
   // DUPLICATE INTERVENTION & SAVE
@@ -1016,6 +1035,15 @@ class _CountScreenState extends State<CountScreen> {
     try {
       if (isUpdate || _isEditMode) {
         await storage.updateStockCount(countData);
+
+        // 🔥 REAL-TIME UPDATE TO FIRESTORE
+        final syncService = context.read<StoreManager>().syncService;
+        if (syncService.firestore != null && storage.currentStoreId != null) {
+          final firestoreData = Map<String, dynamic>.from(countData);
+          firestoreData['deleted'] = false; // Explicitly ensure active state
+          await syncService.firestore!.saveStockCount(storage.currentStoreId!, firestoreData);
+        }
+
         _logger?.info('Updated: ${_productController.text} ($id)');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated'), backgroundColor: Colors.blue));
@@ -1026,6 +1054,15 @@ class _CountScreenState extends State<CountScreen> {
         }
       } else {
         await storage.saveStockCount(countData);
+
+        // 🔥 REAL-TIME WRITE TO FIRESTORE FOR NEW CREATIONS
+        final syncService = context.read<StoreManager>().syncService;
+        if (syncService.firestore != null && storage.currentStoreId != null) {
+          final firestoreData = Map<String, dynamic>.from(countData);
+          firestoreData['deleted'] = false;
+          await syncService.firestore!.saveStockCount(storage.currentStoreId!, firestoreData);
+        }
+
         _logger?.info('Saved: ${_productController.text} ($id)');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles Bottles'), backgroundColor: Colors.green));
@@ -1033,6 +1070,7 @@ class _CountScreenState extends State<CountScreen> {
       }
 
       _loadContextData();
+
     } catch (e) {
       _logger?.error('Save Failed', e);
       if (!mounted) return;

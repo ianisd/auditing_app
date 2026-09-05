@@ -55,14 +55,21 @@ class _SetupStoreScreenState extends State<SetupStoreScreen> {
       // Add to Store Manager
       await context.read<StoreManager>().addStore(name, url);
 
-      // StoreManager automatically sets it active,
-      // Main.dart listener will detect change and route to Home.
-      // If we were pushed here from the Drawer (Navigator can pop), then pop.
-      // If this is the first launch (Navigator can't pop), RootSwitcher handles it automatically.
-      if (mounted && Navigator.canPop(context)) {
+      if (!mounted) return;
+
+      // 🔥 FIX: Always clear the saving state on success, whether or not
+      // this screen can be popped. Pushed instances (drawer → "Manage
+      // Stores") will pop and disappear anyway; embedded instances (sidebar
+      // "Stores" tab) have no route to pop, so this is what stops the
+      // spinner there. StoreManager's activeStore change already drives
+      // navigation to Home via the root listener either way.
+      setState(() => _isSaving = false);
+
+      if (Navigator.canPop(context)) {
         Navigator.pop(context);
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );

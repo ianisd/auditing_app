@@ -28,18 +28,21 @@ class FirestoreService {
   // ===========================================================================
 
   /// Watches stock counts for a specific store in real-time
+  /// Watches stock counts for a specific store in real-time
+  /// 🔥 FILTERS OUT DELETED RECORDS
   Stream<List<Map<String, dynamic>>> watchStockCounts(String storeId) {
     return _db
         .collection('stores')
         .doc(storeId)
         .collection('stock_counts')
+        .where('deleted', isEqualTo: false)  // 🔥 ONLY GET NON-DELETED
         .orderBy('updated_at', descending: true)
         .snapshots()
         .map((snapshot) => snapshot.docs.map((doc) {
-              final data = doc.data();
-              data['id'] = doc.id; // Ensure ID is included
-              return data;
-            }).toList());
+      final data = doc.data();
+      data['id'] = doc.id; // Ensure ID is included
+      return data;
+    }).toList());
   }
 
   /// Saves or updates a stock count document

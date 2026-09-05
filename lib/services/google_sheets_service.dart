@@ -1388,6 +1388,7 @@ class GoogleSheetsService {
 // ============================================================================
 
   /// Sync invoices with chunking, retry, and progress reporting
+
   Future<Map<String, dynamic>> syncInvoiceDetailsWithChunking(
       List<Map<String, dynamic>> invoices, {
         Function(int processed, int total)? onProgress,
@@ -1407,7 +1408,6 @@ class GoogleSheetsService {
     print('📄 Syncing ${invoices.length} invoices in chunks of $chunkSize');
 
     final mappedInvoices = invoices.map(_mapInvoiceFields).toList();
-
     final syncedInvoices = mappedInvoices.map((inv) {
       final modified = Map<String, dynamic>.from(inv);
       modified['syncStatus'] = 'synced';
@@ -1418,9 +1418,12 @@ class GoogleSheetsService {
     int totalUpdated = 0;
     int totalDuplicates = 0;
     bool allSuccessful = true;
-    List<Map<String, dynamic>> allDuplicates = [];
     String lastError = '';
     int processedCount = 0;
+    List<Map<String, dynamic>> allDuplicates = [];
+
+    // 🔥 Generate unique transaction ID
+    final transactionId = DateTime.now().millisecondsSinceEpoch.toString();
 
     for (var i = 0; i < syncedInvoices.length; i += chunkSize) {
       if (_isDisposed) {
@@ -1441,35 +1444,77 @@ class GoogleSheetsService {
 
       print('📤 Syncing invoice chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-      try {
-        final result = await _sendPostRequest(
-          'syncInvoiceDetails',
-          {
-            'endpoint': 'syncInvoiceDetails',
-            'data': chunk,
-            'table': 'InvoiceDetails',
-          },
-        );
+      // 🔥 Add idempotency metadata
+      final enrichedChunk = chunk.map((inv) => ({
+        ...inv,
+        'transactionId': transactionId,
+        'chunkIndex': i ~/ chunkSize,
+        'chunkTotal': totalChunks,
+      })).toList();
 
-        if (result['success'] == true) {
-          totalNew += (result['newCount'] ?? 0) as int;
-          totalUpdated += (result['updatedCount'] ?? 0) as int;
-          totalDuplicates += (result['duplicateCount'] ?? 0) as int;
-          if (result['duplicates'] != null) {
-            allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
-          }
-          processedCount += chunk.length;
-          onProgress?.call(processedCount, syncedInvoices.length);
-          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted');
-        } else {
-          allSuccessful = false;
-          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
-          print('⚠️ Chunk $chunkNumber failed: $lastError');
+      // 🔥 RETRY LOGIC
+      bool chunkSuccess = false;
+      int retryCount = 0;
+      Map<String, dynamic>? result;
+
+      while (retryCount < 3 && !chunkSuccess) {
+        if (retryCount > 0) {
+          print('🔄 Retry $retryCount/3 for invoice chunk $chunkNumber');
+          await Future.delayed(Duration(seconds: retryCount * 2));
         }
-      } catch (e) {
+
+        try {
+          result = await _sendPostRequest(
+            'syncInvoiceDetails',
+            {
+              'endpoint': 'syncInvoiceDetails',
+              'data': enrichedChunk,
+              'table': 'InvoiceDetails',
+              'retry': retryCount,
+            },
+          );
+
+          final isSuccess = result['success'] == true;
+          final isDuplicate = result['status'] == 'duplicate';
+
+          if (isSuccess || isDuplicate) {
+            chunkSuccess = true;
+            totalNew += (result['newCount'] ?? 0) as int;
+            totalUpdated += (result['updatedCount'] ?? 0) as int;
+            totalDuplicates += (result['duplicateCount'] ?? 0) as int;
+            if (result['duplicates'] != null) {
+              allDuplicates.addAll(List<Map<String, dynamic>>.from(result['duplicates']));
+            }
+            processedCount += chunk.length;
+            onProgress?.call(processedCount, syncedInvoices.length);
+            print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+          } else {
+            lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+            print('⚠️ Chunk $chunkNumber failed: $lastError');
+
+            final isRetryable = result['status'] == 'error' ||
+                result['message']?.contains('timeout') == true ||
+                result['message']?.contains('busy') == true;
+
+            if (!isRetryable) break;
+          }
+        } catch (e) {
+          lastError = e.toString();
+          print('❌ Chunk $chunkNumber exception (attempt ${retryCount + 1}): $e');
+
+          final isRetryable = e.toString().contains('timeout') ||
+              e.toString().contains('socket') ||
+              e.toString().contains('connection');
+
+          if (!isRetryable) break;
+        }
+
+        retryCount++;
+      }
+
+      if (!chunkSuccess) {
         allSuccessful = false;
-        lastError = e.toString();
-        print('❌ Chunk $chunkNumber exception: $e');
+        print('❌ Chunk $chunkNumber FAILED after $retryCount attempts');
       }
 
       if (i + chunkSize < syncedInvoices.length) {
@@ -1491,6 +1536,7 @@ class GoogleSheetsService {
   }
 
   /// Sync purchases with chunking, retry, and progress reporting
+
   Future<Map<String, dynamic>> syncPurchasesWithChunking(
       List<Map<String, dynamic>> purchases, {
         Function(int processed, int total)? onProgress,
@@ -1526,6 +1572,8 @@ class GoogleSheetsService {
     String lastError = '';
     int processedCount = 0;
 
+    final transactionId = DateTime.now().millisecondsSinceEpoch.toString();
+
     for (var i = 0; i < sanitized.length; i += chunkSize) {
       if (_isDisposed) {
         return {
@@ -1544,32 +1592,72 @@ class GoogleSheetsService {
 
       print('📤 Syncing purchase chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-      try {
-        final result = await _sendPostRequest(
-          'syncPurchases',
-          {
-            'endpoint': 'syncPurchases',
-            'data': chunk,
-            'table': 'Purchases',
-          },
-        );
+      final enrichedChunk = chunk.map((p) => ({
+        ...p,
+        'transactionId': transactionId,
+        'chunkIndex': i ~/ chunkSize,
+        'chunkTotal': totalChunks,
+      })).toList();
 
-        if (result['success'] == true) {
-          totalNew += (result['newCount'] ?? 0) as int;
-          totalUpdated += (result['updatedCount'] ?? 0) as int;
-          totalDuplicates += (result['duplicateCount'] ?? 0) as int;
-          processedCount += chunk.length;
-          onProgress?.call(processedCount, sanitized.length);
-          print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted');
-        } else {
-          allSuccessful = false;
-          lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
-          print('⚠️ Chunk $chunkNumber failed: $lastError');
+      bool chunkSuccess = false;
+      int retryCount = 0;
+      Map<String, dynamic>? result;
+
+      while (retryCount < 3 && !chunkSuccess) {
+        if (retryCount > 0) {
+          print('🔄 Retry $retryCount/3 for purchase chunk $chunkNumber');
+          await Future.delayed(Duration(seconds: retryCount * 2));
         }
-      } catch (e) {
+
+        try {
+          result = await _sendPostRequest(
+            'syncPurchases',
+            {
+              'endpoint': 'syncPurchases',
+              'data': enrichedChunk,
+              'table': 'Purchases',
+              'retry': retryCount,
+            },
+          );
+
+          final isSuccess = result['success'] == true;
+          final isDuplicate = result['status'] == 'duplicate';
+
+          if (isSuccess || isDuplicate) {
+            chunkSuccess = true;
+            totalNew += (result['newCount'] ?? 0) as int;
+            totalUpdated += (result['updatedCount'] ?? 0) as int;
+            totalDuplicates += (result['duplicateCount'] ?? 0) as int;
+            processedCount += chunk.length;
+            onProgress?.call(processedCount, sanitized.length);
+            print('✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated');
+          } else {
+            lastError = result['message'] ?? 'Unknown error in chunk $chunkNumber';
+            print('⚠️ Chunk $chunkNumber failed: $lastError');
+
+            final isRetryable = result['status'] == 'error' ||
+                result['message']?.contains('timeout') == true ||
+                result['message']?.contains('busy') == true;
+
+            if (!isRetryable) break;
+          }
+        } catch (e) {
+          lastError = e.toString();
+          print('❌ Chunk $chunkNumber exception (attempt ${retryCount + 1}): $e');
+
+          final isRetryable = e.toString().contains('timeout') ||
+              e.toString().contains('socket') ||
+              e.toString().contains('connection');
+
+          if (!isRetryable) break;
+        }
+
+        retryCount++;
+      }
+
+      if (!chunkSuccess) {
         allSuccessful = false;
-        lastError = e.toString();
-        print('❌ Chunk $chunkNumber exception: $e');
+        print('❌ Chunk $chunkNumber FAILED after $retryCount attempts');
       }
 
       if (i + chunkSize < sanitized.length) {
@@ -1593,7 +1681,7 @@ class GoogleSheetsService {
   Future<Map<String, dynamic>> syncStockCountsWithChunking(
       List<Map<String, dynamic>> counts, {
         Function(int processed, int total)? onProgress,
-        int chunkSize = 500,
+        int chunkSize = 200, // 🔥 REDUCED from 500 to 200 for GAS memory safety
       }) async {
     if (counts.isEmpty) {
       return {
@@ -1617,6 +1705,9 @@ class GoogleSheetsService {
     int processedCount = 0;
     final List<String> syncedIds = [];
     final List<String> failedIds = [];
+
+    // 🔥 Generate unique transaction ID for idempotency
+    final transactionId = DateTime.now().millisecondsSinceEpoch.toString();
 
     for (var i = 0; i < counts.length; i += chunkSize) {
       if (_isDisposed) {
@@ -1643,58 +1734,131 @@ class GoogleSheetsService {
 
       print('📊 Syncing stock count chunk $chunkNumber/$totalChunks (${chunk.length} records)');
 
-      try {
-        final result = await _sendPostRequest(
-          'syncStockCounts',
-          {
-            'endpoint': 'syncStockCounts',
-            'data': chunk,
-          },
-        );
+      // 🔥 Add idempotency metadata
+      final enrichedChunk = chunk.map((c) => {
+        ...c,
+        'transactionId': transactionId,
+        'chunkIndex': i ~/ chunkSize,
+        'chunkTotal': totalChunks,
+      }).toList();
 
-        if (result['success'] == true || result['status'] == 'success' || result['status'] == 'partial_success') {
-          // 🔥 FIXED: Use both old and new field names
-          totalInserted += (result['count'] ?? result['newCount'] ?? 0) as int;
-          totalUpdated += (result['updated'] ?? result['updatedCount'] ?? 0) as int;
-          totalDeleted += (result['deleted'] ?? 0) as int;
-          processedCount += chunk.length;
-          syncedIds.addAll(chunkIds);
-          onProgress?.call(processedCount, counts.length);
-          print('✅ Chunk $chunkNumber complete: +${result['count'] ?? result['newCount'] ?? 0} inserted, ${result['updated'] ?? result['updatedCount'] ?? 0} updated, ${result['deleted'] ?? 0} deleted');
-        } else {
-          // The server answered but didn't confirm success (e.g. GAS
-          // returned status: 'error', such as a lock timeout). This used
-          // to fall through silently and get counted as a success —
-          // don't mark these records synced.
-          allSuccessful = false;
-          failedIds.addAll(chunkIds);
-          lastError = (result['message'] ??
-              'Chunk $chunkNumber: server did not confirm success (status: ${result['status']})')
-              .toString();
-          print('⚠️ Chunk $chunkNumber NOT confirmed: $lastError');
+      // 🔥 RETRY LOGIC: Try up to 3 times
+      bool chunkSuccess = false;
+      int retryCount = 0;
+      Map<String, dynamic>? result;
+
+      while (retryCount < 3 && !chunkSuccess) {
+        if (retryCount > 0) {
+          print('🔄 Retry $retryCount/3 for chunk $chunkNumber (waiting ${retryCount * 2}s)...');
+          await Future.delayed(Duration(seconds: retryCount * 2));
         }
-      } catch (e) {
-        allSuccessful = false;
-        failedIds.addAll(chunkIds);
-        lastError = e.toString();
-        print('❌ Chunk $chunkNumber exception: $e');
+
+        try {
+          result = await _sendPostRequest(
+            'syncStockCounts',
+            {
+              'endpoint': 'syncStockCounts',
+              'data': enrichedChunk,
+              'retry': retryCount, // 🔥 Pass retry count for GAS backoff
+            },
+          );
+
+          // Check if chunk was successful
+          final isSuccess = result['success'] == true ||
+              result['status'] == 'success' ||
+              result['status'] == 'partial_success';
+
+          // Check if duplicate (already processed)
+          final isDuplicate = result['status'] == 'duplicate';
+
+          if (isSuccess || isDuplicate) {
+            chunkSuccess = true;
+            final count = (result['count'] ?? result['newCount'] ?? 0) as int;
+            final updated = (result['updated'] ?? result['updatedCount'] ?? 0) as int;
+            final deleted = (result['deleted'] ?? 0) as int;
+
+            totalInserted += count;
+            totalUpdated += updated;
+            totalDeleted += deleted;
+            processedCount += chunk.length;
+
+            if (isDuplicate) {
+              print('⏭️ Chunk $chunkNumber already processed (duplicate)');
+            } else {
+              print('✅ Chunk $chunkNumber complete: +$count inserted, $updated updated, $deleted deleted');
+            }
+
+            // Only mark as synced if not duplicate
+            if (!isDuplicate) {
+              syncedIds.addAll(chunkIds);
+            }
+
+            onProgress?.call(processedCount, counts.length);
+          } else {
+            // Server responded but didn't confirm success
+            lastError = (result['message'] ??
+                'Chunk $chunkNumber: server did not confirm success (status: ${result['status']})')
+                .toString();
+            print('⚠️ Chunk $chunkNumber NOT confirmed: $lastError');
+
+            // Check if we should retry
+            final isRetryable = result['status'] == 'error' ||
+                result['status'] == 'partial_success' ||
+                result['message']?.contains('timeout') == true ||
+                result['message']?.contains('busy') == true;
+
+            if (!isRetryable) {
+              break; // Don't retry non-retryable errors
+            }
+          }
+        } catch (e) {
+          lastError = e.toString();
+          print('❌ Chunk $chunkNumber exception (attempt ${retryCount + 1}): $e');
+
+          // Check if we should retry
+          final isRetryable = e.toString().contains('timeout') ||
+              e.toString().contains('socket') ||
+              e.toString().contains('connection');
+
+          if (!isRetryable) {
+            break; // Don't retry non-retryable errors
+          }
+        }
+
+        retryCount++;
       }
 
+      // If chunk still failed after retries
+      if (!chunkSuccess) {
+        allSuccessful = false;
+        failedIds.addAll(chunkIds);
+        print('❌ Chunk $chunkNumber FAILED after $retryCount attempts: $lastError');
+      }
+
+      // 🔥 Add delay between chunks (increased for GAS safety)
       if (i + chunkSize < counts.length) {
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 800));
       }
     }
 
+    // Calculate success rate
+    final totalAttempted = counts.length;
+    final totalConfirmed = syncedIds.length;
+    final successRate = totalAttempted > 0 ? (totalConfirmed / totalAttempted * 100) : 0;
+
     return {
-      'success': allSuccessful,
+      'success': allSuccessful && failedIds.isEmpty,
       'count': totalInserted,
       'updated': totalUpdated,
       'deleted': totalDeleted,
       'syncedIds': syncedIds,
       'failedIds': failedIds,
-      'message': allSuccessful
-          ? 'Synced ${counts.length} stock counts successfully'
-          : 'Completed with errors: $lastError (${failedIds.length} of ${counts.length} record(s) not confirmed)',
+      'totalAttempted': totalAttempted,
+      'totalConfirmed': totalConfirmed,
+      'successRate': successRate,
+      'message': allSuccessful && failedIds.isEmpty
+          ? 'Synced $totalConfirmed of $totalAttempted stock counts successfully ($successRate% success rate)'
+          : 'Completed with errors: $lastError ($totalConfirmed of $totalAttempted confirmed, ${failedIds.length} failed)',
       'lastError': lastError,
     };
   }

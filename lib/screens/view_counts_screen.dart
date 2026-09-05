@@ -256,7 +256,23 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
     ) ?? false;
 
     if (confirm) {
-      await context.read<OfflineStorage>().deleteStockCount(id);
+      final storage = context.read<OfflineStorage>();
+      await storage.deleteStockCount(id);
+
+      // 🔥 REAL-TIME SOFT-DELETE ON FIRESTORE
+      // (was a hard .delete() before — that raced with the background sync
+      // recreating the doc a few seconds later, which is why `deleted`
+      // kept reverting to false)
+      final syncService = context.read<StoreManager>().syncService;
+      if (syncService.firestore != null && storage.currentStoreId != null) {
+        final deletedData = <String, dynamic>{
+          'id': id,
+          'deleted': true,
+          'deletedAt': DateTime.now().toIso8601String(),
+        };
+        await syncService.firestore!.saveStockCount(storage.currentStoreId!, deletedData);
+      }
+
       _loadCounts();
     }
   }

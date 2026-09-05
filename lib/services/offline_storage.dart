@@ -2684,23 +2684,32 @@ class OfflineStorage with ChangeNotifier {
     // Clean date (keep digits and hyphens only)
     final cleanDate = date.replaceAll(RegExp(r'[^0-9-]'), '');
 
-    // Clean time (keep digits only)
-    final cleanTime = time.replaceAll(RegExp(r'[^0-9:]'), '').replaceAll(':', '');
+    // Clean time (keep digits only) - ensure 6 digits
+    final cleanTime = time
+        .replaceAll(RegExp(r'[^0-9:]'), '')
+        .replaceAll(':', '')
+        .padLeft(6, '0')
+        .substring(0, 6);
 
-    // 🔥 Barcode: Remove special characters, keep alphanumeric
+    // 🔥 IMPROVED: Sanitize barcode - remove special chars, keep alphanumeric
     final rawBarcode = barcode.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
     final cleanBarcode = rawBarcode.isEmpty
         ? 'unknown'
         : rawBarcode.substring(0, math.min(20, rawBarcode.length));
 
-    // 🔥 Product Name: Remove special characters, keep alphanumeric
-    final rawProduct = productName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+    // 🔥 IMPROVED: Sanitize product name - remove special chars AND underscores
+    // This prevents the regex from breaking on product names with underscores
+    final rawProduct = productName
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '') // Remove ALL special chars
+        .replaceAll('_', ''); // Remove underscores specifically
     final cleanProduct = rawProduct.isEmpty
         ? 'unknown'
         : rawProduct.substring(0, math.min(15, rawProduct.length));
 
-    // 🔥 Location: Remove special characters, keep alphanumeric
-    final rawLocation = location.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+    // 🔥 IMPROVED: Sanitize location - remove special chars AND underscores
+    final rawLocation = location
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
+        .replaceAll('_', '');
     final cleanLocation = rawLocation.isEmpty
         ? 'unknown'
         : rawLocation.substring(0, math.min(10, rawLocation.length));
@@ -2709,6 +2718,7 @@ class OfflineStorage with ChangeNotifier {
     final random = _generateShortId();
 
     // Format: stock_{date}_{time}_{barcode}_{product}_{location}_{timestamp}_{random}
+    // All variable parts now have NO underscores, so regex works reliably
     return 'stock_${cleanDate}_${cleanTime}_${cleanBarcode}_${cleanProduct}_${cleanLocation}_${timestamp}_$random';
   }
 
@@ -2728,27 +2738,42 @@ class OfflineStorage with ChangeNotifier {
   Future<void> saveStockCount(Map<String, dynamic> count) async {
     if (_isDisposed) return;
 
-    // 🔥 Get date and time from the count
-    final now = DateTime.now();
-    final date = count['date']?.toString() ?? now.toIso8601String().split('T').first;
-    final time = now.toIso8601String().split('T').last.split('.').first; // HH:MM:SS
+    try {
+      // 🔥 Get date and time from the count
+      final now = DateTime.now();
+      final date = count['date']?.toString() ?? now.toIso8601String().split('T').first;
+      final time = now.toIso8601String().split('T').last.split('.').first; // HH:MM:SS
 
-    // 🔥 Generate unique ID with date AND time
-    final id = count['id'] ?? _generateStockId(
-      date: date,
-      time: time,
-      barcode: count['barcode']?.toString() ?? '',
-      productName: count['productName']?.toString() ?? '',
-      location: count['location']?.toString() ?? '',
-    );
+      // 🔥 Generate unique ID with sanitized values
+      final id = count['id'] ?? _generateStockId(
+        date: date,
+        time: time,
+        barcode: count['barcode']?.toString() ?? '',
+        productName: count['productName']?.toString() ?? '',
+        location: count['location']?.toString() ?? '',
+      );
 
-    count['id'] = id;
-    count['stock_id'] = count['stock_id'] ?? id;
-    count['syncStatus'] = 'pending';
-    count['createdAt'] = now.toIso8601String();
-    await _counts!.put(id, count);
-    _updatePendingCounts();
-    notifyListeners();
+      // 🔥 Ensure the ID is consistent
+      count['id'] = id;
+      count['stock_id'] = count['stock_id'] ?? id;
+      count['syncStatus'] = 'pending';
+      count['createdAt'] = now.toIso8601String();
+
+      // 🔥 Trim long fields to prevent GAS memory issues
+      if (count['productName'] != null && count['productName'].toString().length > 100) {
+        count['productName'] = count['productName'].toString().substring(0, 100);
+      }
+      if (count['location'] != null && count['location'].toString().length > 50) {
+        count['location'] = count['location'].toString().substring(0, 50);
+      }
+
+      await _counts!.put(id, count);
+      _updatePendingCounts();
+      notifyListeners();
+    } catch (e) {
+      print('❌ Error saving stock count: $e');
+      // Don't rethrow - we want the app to continue
+    }
   }
 
   Future<void> updateStockCount(Map<String, dynamic> count) async {
@@ -2767,6 +2792,7 @@ class OfflineStorage with ChangeNotifier {
     final data = _counts!.get(id);
     if (data != null) {
       final count = _safeCast(data);
+      count['deleted'] = true; // 👈 Add this line!
       count['syncStatus'] = 'deleted';
       count['deletedAt'] = DateTime.now().toIso8601String();
       await _counts!.put(id, count);
@@ -2774,6 +2800,7 @@ class OfflineStorage with ChangeNotifier {
       notifyListeners();
     }
   }
+
 
   Future<List<Map<String, dynamic>>> getStockCounts({String? location, String? date, String? auditId}) async {
     if (!_isReady) return [];
@@ -2816,65 +2843,112 @@ class OfflineStorage with ChangeNotifier {
   Future<void> saveRemoteStockCounts(List<Map<String, dynamic>> remoteCounts) async {
     if (!_isReady) return;
 
+    print('📊 saveRemoteStockCounts: Processing ${remoteCounts.length} remote counts');
+
+    // 🔥 FILTER OUT DELETED RECORDS
+    final filteredCounts = remoteCounts.where((row) {
+      final isDeleted = row['deleted'] == true ||
+          row['deleted'] == 'true' ||
+          row['deleted']?.toString().toLowerCase() == 'true';
+      return !isDeleted;
+    }).toList();
+
+    print('  - After filtering deleted: ${filteredCounts.length} records');
+
     int added = 0;
     int skipped = 0;
     int deleted = 0;
+    int updated = 0;
 
     Set<String> serverIds = {};
 
-    for (var row in remoteCounts) {
-      final id = row['stockTake_ID']?.toString() ?? '';
-      if (id.isEmpty) continue;
+    for (var row in filteredCounts) {  // 🔥 USE filteredCounts
+      // Try multiple possible ID fields
+      final id = (row['id'] ?? row['stock_id'] ?? row['stockTake_ID'])?.toString() ?? '';
+      if (id.isEmpty) {
+        print('⚠️ Skipping remote count with empty ID');
+        continue;
+      }
+
+      // Check if this is a deleted record (safety check)
+      final isDeleted = row['deleted'] == true ||
+          row['deleted'] == 'true' ||
+          row['deleted']?.toString().toLowerCase() == 'true';
+
+      if (isDeleted) {
+        print('⏭️ Skipping deleted record: $id');
+        continue;
+      }
 
       serverIds.add(id);
 
       final localData = _counts!.get(id);
       if (localData != null) {
         final localMap = _safeCast(localData);
+        // 🔥 Preserve pending/deleted status
         if (localMap['syncStatus'] == 'pending' || localMap['syncStatus'] == 'deleted') {
           skipped++;
+          print('⏭️ Keeping local pending/deleted record: $id');
           continue;
         }
       }
 
+      // 🔥 Map remote fields to local field names
       final count = {
         'id': id,
         'stock_id': id,
-        'date': row['Date'],
-        'barcode': row['Barcode'],
-        'productName': row['Product Name'],
-        'mainCategory': row['Main Category'],
-        'category': row['Category'],
-        'location': row['Location'],
-        'pack_size': row['Case/Pack Size'],
-        'count': double.tryParse(row['Count']?.toString() ?? '0') ?? 0.0,
-        'weight': double.tryParse(row['Weight (g)']?.toString() ?? '0') ?? 0.0,
-        'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? '0') ?? 0.0,
+        'date': row['date'] ?? row['Date'] ?? '',
+        'barcode': row['barcode'] ?? row['Barcode'] ?? '',
+        'productName': row['productName'] ?? row['Product Name'] ?? '',
+        'mainCategory': row['mainCategory'] ?? row['Main Category'] ?? '',
+        'category': row['category'] ?? row['Category'] ?? '',
+        'location': row['location'] ?? row['Location'] ?? '',
+        'pack_size': row['pack_size'] ?? row['Case/Pack Size'] ?? '',
+        'count': _safeDouble(row['count'] ?? row['Count'] ?? 0),
+        'weight': _safeDouble(row['weight'] ?? row['Weight (g)'] ?? 0),
+        'total_bottles': _safeDouble(row['total_bottles'] ?? row['Total Bottles on Hand'] ?? 0),
         'syncStatus': 'synced',
         'syncedAt': DateTime.now().toIso8601String(),
-        'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
-        'updatedAt': row['updated_at'] ?? row['updatedAt'],
+        'createdAt': row['createdAt'] ?? row['created_at'] ?? DateTime.now().toIso8601String(),
+        'updatedAt': row['updatedAt'] ?? row['updated_at'],
+        'deleted': false,
       };
-      await _counts!.put(id, count);
-      added++;
+
+      // 🔥 Trim long fields
+      if (count['productName'] != null && count['productName'].toString().length > 100) {
+        count['productName'] = count['productName'].toString().substring(0, 100);
+      }
+
+      if (localData != null) {
+        await _counts!.put(id, count);
+        updated++;
+      } else {
+        await _counts!.put(id, count);
+        added++;
+      }
     }
 
-    final allKeys = _counts!.keys.toList();
-    for (var key in allKeys) {
-      if (!serverIds.contains(key)) {
-        final localItem = _safeCast(_counts!.get(key));
-        if (localItem['syncStatus'] == 'synced') {
-          await _counts!.delete(key);
-          deleted++;
+    // 🔥 SAFETY: Only reconcile if we got a complete dataset
+    if (filteredCounts.isNotEmpty) {  // 🔥 USE filteredCounts
+      final allKeys = _counts!.keys.toList();
+      for (var key in allKeys) {
+        if (!serverIds.contains(key)) {
+          final localItem = _safeCast(_counts!.get(key));
+          // Only delete if synced (preserve pending/deleted)
+          if (localItem['syncStatus'] == 'synced') {
+            await _counts!.delete(key);
+            deleted++;
+          } else {
+            print('⏭️ Keeping local pending/deleted record (not on server): $key');
+          }
         }
       }
     }
 
+    print('📊 saveRemoteStockCounts result: +$added added, $updated updated, $deleted deleted, $skipped skipped');
+
     _updatePendingCounts();
     notifyListeners();
-    if (kDebugMode) {
-      print("Sync Result: $added updated, $skipped kept local, $deleted removed (zombies).");
-    }
   }
 
   Future<void> overwriteLocalCounts(List<Map<String, dynamic>> remoteCounts) async {
@@ -2888,6 +2962,16 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
+    // 🔥 FILTER OUT DELETED RECORDS
+    final filteredCounts = remoteCounts.where((row) {
+      // Check if this record is marked as deleted
+      final isDeleted = row['deleted'] == true ||
+          row['deleted'] == 'true' ||
+          row['deleted']?.toString().toLowerCase() == 'true';
+      return !isDeleted;
+    }).toList();
+
+    print('  - After filtering deleted: ${filteredCounts.length} records');
     print('  📊 Before - _counts box has ${_counts!.length} items');
 
     final pendingItems = _counts!.values
@@ -2899,33 +2983,54 @@ class OfflineStorage with ChangeNotifier {
     print('  - After clear: ${_counts!.length} items');
 
     int added = 0;
-    for (var row in remoteCounts) {
-      final id = row['stockTake_ID']?.toString() ?? '';
-      if (id.isEmpty) continue;
+    int skipped = 0;
+    for (var row in filteredCounts) {  // 🔥 USE filteredCounts
+      // Try multiple possible ID fields
+      final id = row['stockTake_ID']?.toString() ??
+          row['id']?.toString() ??
+          row['stock_id']?.toString() ?? '';
+
+      if (id.isEmpty) {
+        print('  ⚠️ Skipping row with no ID');
+        skipped++;
+        continue;
+      }
+
+      // Check if this is a deleted record (safety check)
+      final isDeleted = row['deleted'] == true ||
+          row['deleted'] == 'true' ||
+          row['deleted']?.toString().toLowerCase() == 'true';
+
+      if (isDeleted) {
+        print('  ⏭️ Skipping deleted record: $id');
+        skipped++;
+        continue;
+      }
 
       final count = {
         'id': id,
         'stock_id': id,
-        'date': row['Date'],
-        'barcode': row['Barcode'],
-        'productName': row['Product Name'],
-        'mainCategory': row['Main Category'],
-        'category': row['Category'],
-        'location': row['Location'],
-        'pack_size': row['Case/Pack Size'],
-        'count': double.tryParse(row['Count']?.toString() ?? '0') ?? 0.0,
-        'weight': double.tryParse(row['Weight (g)']?.toString() ?? '0') ?? 0.0,
-        'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? '0') ?? 0.0,
+        'date': row['Date'] ?? row['date'] ?? '',
+        'barcode': row['Barcode'] ?? row['barcode'] ?? '',
+        'productName': row['Product Name'] ?? row['productName'] ?? '',
+        'mainCategory': row['Main Category'] ?? row['mainCategory'] ?? '',
+        'category': row['Category'] ?? row['category'] ?? '',
+        'location': row['Location'] ?? row['location'] ?? '',
+        'pack_size': row['Case/Pack Size'] ?? row['pack_size'] ?? '',
+        'count': double.tryParse(row['Count']?.toString() ?? row['count']?.toString() ?? '0') ?? 0.0,
+        'weight': double.tryParse(row['Weight (g)']?.toString() ?? row['weight']?.toString() ?? '0') ?? 0.0,
+        'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? row['total_bottles']?.toString() ?? '0') ?? 0.0,
         'syncStatus': 'synced',
         'syncedAt': DateTime.now().toIso8601String(),
         'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
         'updatedAt': row['updated_at'] ?? row['updatedAt'],
+        'deleted': false,  // 🔥 Explicitly mark as not deleted
       };
       await _counts!.put(id, count);
       added++;
     }
 
-    print('  - Added $added remote counts');
+    print('  - Added $added remote counts (${remoteCounts.length - filteredCounts.length + skipped} deleted/skipped)');
 
     int restored = 0;
     for (var p in pendingItems) {
@@ -2941,7 +3046,6 @@ class OfflineStorage with ChangeNotifier {
     print('  - Final box size: ${_counts!.length}');
     print('🔍 ===== OVERWRITE COMPLETE =====');
   }
-
   // ===========================================================================
   // PUBLIC METHODS - AUDITS
   // ===========================================================================
@@ -3761,12 +3865,13 @@ class OfflineStorage with ChangeNotifier {
     try {
       _pendingCounts = _counts!.values
           .map((e) => _safeCast(e))
-          .where((c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted')
+          .where((c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted') // 👈 Keep only this
           .toList();
     } catch (e) {
       _pendingCounts = [];
     }
   }
+
 
   /// Rebuild in-memory indexes for faster lookups
   Future<void> _rebuildIndexes() async {
