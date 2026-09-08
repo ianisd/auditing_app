@@ -531,16 +531,22 @@ class VarianceService {
     print('  - ${prodIssues.length} unique products with issues');
     print('');
 
-    // ============================================================================
-    // 7. SALES - Match the sheet formula exactly
-    // ============================================================================
+// ============================================================================
+// 7. SALES - Match the sheet formula exactly
+// ============================================================================
     print('📦 Processing Store Sales (SALES ONLY)...');
 
-    // 🔥 Build PLU → List of recipes, only include if Total Qty Used > 0
+// 🔥 Build PLU → List of recipes, only include if Total Qty Used > 0
+// PLU keys are normalized here (e.g. "105.0" -> "105") so lookups
+// don't need any retry/fallback logic on the sales side.
     Map<String, List<Map<String, dynamic>>> pluToAllRecipes = {};
     for (var row in itemSalesMap) {
-      final plu = row['PLU']?.toString().trim();
+      final pluRaw = row['PLU']?.toString().trim();
+      final plu = pluRaw != null && pluRaw.isNotEmpty
+          ? (int.tryParse(pluRaw)?.toString() ?? pluRaw)
+          : null;
       final totalQtyUsed = _safeDouble(row['Total Qty Used']);
+
       if (plu != null && plu.isNotEmpty && totalQtyUsed > 0) {
         pluToAllRecipes.putIfAbsent(plu, () => []);
         pluToAllRecipes[plu]!.add(row);
@@ -565,7 +571,10 @@ class VarianceService {
       if (isAfterStart && isOnOrBeforeEnd) {
         salesInRange++;
 
-        final salePlu = sale['No.']?.toString().trim();
+        final salePluRaw = sale['No.']?.toString().trim();
+        final salePlu = salePluRaw != null && salePluRaw.isNotEmpty
+            ? (int.tryParse(salePluRaw)?.toString() ?? salePluRaw)
+            : null;
         final qtySold = _safeDouble(sale['Qty']);
 
         if (salePlu != null && salePlu.isNotEmpty && qtySold > 0) {

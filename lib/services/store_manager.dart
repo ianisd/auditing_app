@@ -15,7 +15,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbzTqzbm-gQt9A83rd7cULZOr3rF8b13cRhFDKr89Ri4ftjAsPokvI-64xd0foU9ons/exec';
+      'https://script.google.com/macros/s/AKfycbzzlF8HUUcGMrImDVF1exeCBf_iItTkpRLW38Xrupdk2IcORBU_SiDfhxkKOBZ-WJSM/exec';
 
   late Box _box;
   bool _initialized = false;

@@ -822,6 +822,10 @@ class _CountScreenState extends State<CountScreen> {
 
   Future<void> _processSave() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_selectedProduct == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a product from the list')));
+      return;
+    }
     if (_selectedLocation == null && widget.initialLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Location')));
       return;

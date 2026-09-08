@@ -2857,26 +2857,15 @@ class OfflineStorage with ChangeNotifier {
 
     int added = 0;
     int skipped = 0;
-    int deleted = 0;
     int updated = 0;
 
     Set<String> serverIds = {};
 
-    for (var row in filteredCounts) {  // 🔥 USE filteredCounts
+    for (var row in filteredCounts) {
       // Try multiple possible ID fields
       final id = (row['id'] ?? row['stock_id'] ?? row['stockTake_ID'])?.toString() ?? '';
       if (id.isEmpty) {
         print('⚠️ Skipping remote count with empty ID');
-        continue;
-      }
-
-      // Check if this is a deleted record (safety check)
-      final isDeleted = row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
-
-      if (isDeleted) {
-        print('⏭️ Skipping deleted record: $id');
         continue;
       }
 
@@ -2928,24 +2917,14 @@ class OfflineStorage with ChangeNotifier {
       }
     }
 
-    // 🔥 SAFETY: Only reconcile if we got a complete dataset
-    if (filteredCounts.isNotEmpty) {  // 🔥 USE filteredCounts
-      final allKeys = _counts!.keys.toList();
-      for (var key in allKeys) {
-        if (!serverIds.contains(key)) {
-          final localItem = _safeCast(_counts!.get(key));
-          // Only delete if synced (preserve pending/deleted)
-          if (localItem['syncStatus'] == 'synced') {
-            await _counts!.delete(key);
-            deleted++;
-          } else {
-            print('⏭️ Keeping local pending/deleted record (not on server): $key');
-          }
-        }
-      }
-    }
+    // 🔥 REMOVED: no more delete-by-absence reconciliation here.
+    // This callback fires on every live snapshot, which can be partial
+    // (cache-only, or mid-index-build) — treating "missing from this
+    // batch" as "deleted" was wiping out thousands of real records.
+    // Deletion is already signalled explicitly via row['deleted'] == true,
+    // which is filtered out above, so absence alone must never delete.
 
-    print('📊 saveRemoteStockCounts result: +$added added, $updated updated, $deleted deleted, $skipped skipped');
+    print('📊 saveRemoteStockCounts result: +$added added, $updated updated, $skipped skipped');
 
     _updatePendingCounts();
     notifyListeners();
@@ -2964,7 +2943,6 @@ class OfflineStorage with ChangeNotifier {
 
     // 🔥 FILTER OUT DELETED RECORDS
     final filteredCounts = remoteCounts.where((row) {
-      // Check if this record is marked as deleted
       final isDeleted = row['deleted'] == true ||
           row['deleted'] == 'true' ||
           row['deleted']?.toString().toLowerCase() == 'true';
@@ -2973,6 +2951,16 @@ class OfflineStorage with ChangeNotifier {
 
     print('  - After filtering deleted: ${filteredCounts.length} records');
     print('  📊 Before - _counts box has ${_counts!.length} items');
+
+    // 🔥 SAFETY: this clears and rebuilds the whole box. Never do that
+    // from a payload that looks suspiciously small compared to what's
+    // already stored — that almost always means a partial/empty fetch,
+    // not a genuinely emptied store.
+    final existingSize = _counts!.length;
+    if (existingSize > 0 && filteredCounts.length < existingSize * 0.5) {
+      print('  ⚠️ Refusing to overwrite: incoming (${filteredCounts.length}) is far smaller than existing ($existingSize)');
+      return;
+    }
 
     final pendingItems = _counts!.values
         .map((e) => _safeCast(e))
@@ -2984,7 +2972,7 @@ class OfflineStorage with ChangeNotifier {
 
     int added = 0;
     int skipped = 0;
-    for (var row in filteredCounts) {  // 🔥 USE filteredCounts
+    for (var row in filteredCounts) {
       // Try multiple possible ID fields
       final id = row['stockTake_ID']?.toString() ??
           row['id']?.toString() ??
@@ -2992,17 +2980,6 @@ class OfflineStorage with ChangeNotifier {
 
       if (id.isEmpty) {
         print('  ⚠️ Skipping row with no ID');
-        skipped++;
-        continue;
-      }
-
-      // Check if this is a deleted record (safety check)
-      final isDeleted = row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
-
-      if (isDeleted) {
-        print('  ⏭️ Skipping deleted record: $id');
         skipped++;
         continue;
       }
@@ -3024,13 +3001,13 @@ class OfflineStorage with ChangeNotifier {
         'syncedAt': DateTime.now().toIso8601String(),
         'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
         'updatedAt': row['updated_at'] ?? row['updatedAt'],
-        'deleted': false,  // 🔥 Explicitly mark as not deleted
+        'deleted': false,
       };
       await _counts!.put(id, count);
       added++;
     }
 
-    print('  - Added $added remote counts (${remoteCounts.length - filteredCounts.length + skipped} deleted/skipped)');
+    print('  - Added $added remote counts ($skipped skipped)');
 
     int restored = 0;
     for (var p in pendingItems) {
@@ -3046,6 +3023,7 @@ class OfflineStorage with ChangeNotifier {
     print('  - Final box size: ${_counts!.length}');
     print('🔍 ===== OVERWRITE COMPLETE =====');
   }
+
   // ===========================================================================
   // PUBLIC METHODS - AUDITS
   // ===========================================================================
