@@ -15,7 +15,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbzzlF8HUUcGMrImDVF1exeCBf_iItTkpRLW38Xrupdk2IcORBU_SiDfhxkKOBZ-WJSM/exec';
+      'https://script.google.com/macros/s/AKfycbzgaYQMHOKDNXmB7qU9qCHfZvVWqDFe6aY51ssm9Xvz-IYbpZJcwO_F5pkTFD3Mh6pO/exec';
 
   late Box _box;
   bool _initialized = false;
@@ -229,6 +229,15 @@ class StoreManager with ChangeNotifier {
     return '';
   }
 
+  String _buildFirestoreKey(String? name, String storeId) {
+    final safeName = (name ?? 'store')
+        .trim()
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_');
+    final shortId = storeId.length > 8 ? storeId.substring(0, 8) : storeId;
+    return '${safeName}_$shortId';
+  }
+
   String extractSheetIdFromUrl(String storeUrl) {
     if (storeUrl.isEmpty) return '';
     return _extractIdFromUrl(storeUrl);
@@ -242,40 +251,70 @@ class StoreManager with ChangeNotifier {
     }
   }
 
-  Future<void> addStore(String name, String scriptUrl) async {
-    _logger?.info('➕ Adding new store: $name');
+  Future<void> addStore(String scriptUrl) async {
+    _logger?.info('➕ Validating store link...');
 
-    try {
-      final trimmedUrl = scriptUrl.trim();
-      final extractedId = _extractIdFromUrl(trimmedUrl);
-      final isScriptId = extractedId.startsWith('AKfy');
+    final trimmedUrl = scriptUrl.trim();
+    final extractedId = _extractIdFromUrl(trimmedUrl);
 
-      final newStore = {
-        'id': DateTime.now().millisecondsSinceEpoch.toString(),
-        'name': name,
-        'url': trimmedUrl,
-        'scriptId': isScriptId ? extractedId : '',
-        'sheetId': !isScriptId ? extractedId : '',
-        'createdAt': DateTime.now().toIso8601String(),
-        'storeVersion': _currentStoreVersion,
-        'isLegacy': false,
-      };
-
-      _stores.add(newStore);
-      await _box.put(_storesKey, _stores);
-
-      _logger?.info('✅ Store added with ID: ${newStore['id']}');
-
-      final storeId = newStore['id']?.toString();
-      if (storeId != null && storeId.isNotEmpty) {
-        await setActiveStore(storeId);
-      } else {
-        _logger?.error('❌ Failed to get store ID after creation', 'Store ID is null or empty');
-      }
-    } catch (e) {
-      _logger?.error('Error adding store', e.toString());
-      rethrow;
+    if (extractedId.isEmpty) {
+      throw Exception('Could not read a store ID from that link.');
     }
+
+    // Already saved locally under this sheet id? Just switch to it.
+    final existing = _stores.firstWhere(
+          (s) => s['sheetId'] == extractedId || s['id'] == extractedId,
+      orElse: () => <String, dynamic>{},
+    );
+    if (existing.isNotEmpty) {
+      _logger?.info('Store already saved locally, switching to it');
+      await setActiveStore(existing['id']);
+      return;
+    }
+
+    final userEmail = firestoreService?.currentUserEmail;
+
+    final result = await GoogleSheetsService.validateStoreLink(
+      _masterScriptUrl,
+      extractedId,
+      userEmail: userEmail,
+      logger: _logger,
+    );
+
+    _logger?.info('🔍 validateStoreLink result: $result');
+
+    if (result['found'] != true) {
+      throw Exception("This store isn't registered yet. Ask your admin to add it first.");
+    }
+    if (result['active'] == false) {
+      throw Exception('This store has been deactivated.');
+    }
+    if (result['hasAccess'] == false) {
+      throw Exception("You don't have access to this store. Ask your admin to add you.");
+    }
+
+    final storeName = (result['storeName'] as String?)?.trim();
+    if (storeName == null || storeName.isEmpty) {
+      throw Exception('Store found but has no name set in the master sheet.');
+    }
+
+    final newStore = {
+      'id': extractedId,
+      'name': storeName,
+      'url': trimmedUrl,
+      'scriptId': '',
+      'sheetId': extractedId,
+      'role': result['role'] ?? 'viewer',
+      'createdAt': DateTime.now().toIso8601String(),
+      'storeVersion': _currentStoreVersion,
+      'isLegacy': false,
+    };
+
+    _stores.add(newStore);
+    await _box.put(_storesKey, _stores);
+
+    _logger?.info('✅ Store registered with ID: $extractedId ($storeName)');
+    await setActiveStore(extractedId);
   }
 
   Future<void> setActiveStore(String storeId) async {
@@ -326,7 +365,9 @@ class StoreManager with ChangeNotifier {
 
       offlineStorage.setGoogleSheetsService(googleSheetsService, storeIdentifier);
 
-      await offlineStorage.switchStore(storeId);
+      final firestoreKey = _buildFirestoreKey(store['name'], storeId);
+      await offlineStorage.switchStore(storeId, firestoreKey: firestoreKey);
+      firestoreService?.registerStoreMetadata(firestoreKey, store['name'] ?? 'Unknown Store');
 
       _logger?.info('✅ Store activation complete');
       notifyListeners();

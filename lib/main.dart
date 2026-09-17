@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:counting_app/screens/login_screen.dart';
+import 'package:counting_app/widgets/idle_timeout_wrapper.dart';
 import 'package:path/path.dart' as path; // Add this
 import 'package:path_provider/path_provider.dart'; // Add this
 
@@ -20,6 +22,7 @@ import 'services/firestore_service.dart';
 import 'models/sync_model.dart';  // 🔥 ADD THIS
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -175,7 +178,18 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         appBarTheme: const AppBarTheme(elevation: 0, centerTitle: true),
       ),
-      home: const RootSwitcher(),
+      home: StreamBuilder<User?>(
+        stream: context.read<FirestoreService>().authStateChanges,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          }
+          if (snapshot.data == null) {
+            return const LoginScreen();
+          }
+          return const IdleTimeoutWrapper(child: RootSwitcher());
+        },
+      ),
       debugShowCheckedModeBanner: false,
     );
   }

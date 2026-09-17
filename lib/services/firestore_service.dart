@@ -14,12 +14,33 @@ class FirestoreService {
 
   Stream<User?> get authStateChanges => FirebaseAuth.instance.authStateChanges();
 
-  Future<UserCredential?> signInAnonymously() async {
+  Future<UserCredential?> signInWithEmail(String email, String password) async {
     try {
-      return await FirebaseAuth.instance.signInAnonymously();
+      return await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
     } catch (e) {
-      logger?.error('FirestoreService: Anonymous sign in failed', e);
-      return null;
+      logger?.error('FirestoreService: Email sign in failed', e);
+      rethrow;
+    }
+  }
+
+  Future<void> signOut() async {
+    await FirebaseAuth.instance.signOut();
+  }
+
+  String? get currentUserEmail => FirebaseAuth.instance.currentUser?.email;
+
+  Future<void> registerStoreMetadata(String storeId, String storeName) async {
+    try {
+      await _db.collection('stores').doc(storeId).set({
+        'storeName': storeName,
+        'storeId': storeId,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      logger?.error('FirestoreService: registerStoreMetadata failed', e);
     }
   }
 

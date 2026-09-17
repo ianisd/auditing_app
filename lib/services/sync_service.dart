@@ -115,7 +115,7 @@ class SyncService with ChangeNotifier {
   void _initFirestoreListeners() {
     if (firestore == null) return;
 
-    final storeId = offlineStorage.currentStoreId;
+    final storeId = offlineStorage.firestoreKey;
     if (storeId == null) return;
 
     // 🔥 REAL-TIME: Listen for changes from other devices via Firestore
@@ -582,7 +582,7 @@ class SyncService with ChangeNotifier {
 
     // 🔥 NEW: Push to Firestore first for real-time availability
     if (firestore != null) {
-      final storeId = offlineStorage.currentStoreId;
+      final storeId = offlineStorage.firestoreKey;
       if (storeId != null) {
         try {
           // Use batch save for performance
@@ -829,7 +829,7 @@ class SyncService with ChangeNotifier {
 
         // 🔥 Push to Firestore first with retry
         if (firestore != null) {
-          final storeId = offlineStorage.currentStoreId;
+          final storeId = offlineStorage.firestoreKey;
           if (storeId != null) {
             final firestorePayload = _mapForFirestore(pendingCounts);
             int firestoreRetries = 0;

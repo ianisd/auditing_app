@@ -143,6 +143,8 @@ class OfflineStorage with ChangeNotifier {
   List<Map<String, dynamic>> get pendingCounts => _pendingCounts;
   bool get isReady => _isReady;
   String? get currentStoreId => _currentStoreId;
+  String? _currentFirestoreKey;
+  String? get firestoreKey => _currentFirestoreKey ?? _currentStoreId;
 
   List<Map<String, dynamic>>? _cachedSuppliers;
   DateTime? _suppliersCacheTime;
@@ -157,7 +159,7 @@ class OfflineStorage with ChangeNotifier {
     _scriptUrl = scriptUrl;
   }
 
-  Future<void> switchStore(String storeId) async {
+  Future<void> switchStore(String storeId, {String? firestoreKey}) async {
     print('DEBUG: OfflineStorage.switchStore() called with storeId: $storeId');
     print('  Current store ID: $_currentStoreId, IsReady: $_isReady');
 
@@ -215,6 +217,7 @@ class OfflineStorage with ChangeNotifier {
     print('  ✅ loadMasterSuppliersFromSheet() completed');
 
     _currentStoreId = storeId;
+    _currentFirestoreKey = firestoreKey ?? storeId;
     _isReady = true;
     _updatePendingCounts();
 

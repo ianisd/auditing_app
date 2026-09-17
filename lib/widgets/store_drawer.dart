@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../services/firestore_service.dart';
 import '../services/store_manager.dart';
 import '../screens/setup_store_screen.dart';
 import '../screens/migrate_store_screen.dart';
@@ -282,6 +283,42 @@ class StoreDrawer extends StatelessWidget {
                     context,
                     MaterialPageRoute(builder: (context) => const SetupStoreScreen()),
                   );
+                },
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              ),
+
+              const Divider(height: 1),
+
+              // Sign Out
+              // Sign Out
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text('Sign Out', style: TextStyle(color: Colors.red)),
+                onTap: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Sign Out?'),
+                      content: const Text('You\'ll need to sign in again to use the app.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Sign Out', style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (confirm == true && context.mounted) {
+                    await context.read<FirestoreService>().signOut();
+                    if (context.mounted) {
+                      Navigator.of(context, rootNavigator: true).popUntil((route) => route.isFirst);
+                    }
+                  }
                 },
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               ),

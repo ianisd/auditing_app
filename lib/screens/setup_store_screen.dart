@@ -44,25 +44,16 @@ class _SetupStoreScreenState extends State<SetupStoreScreen> {
     setState(() => _isSaving = true);
 
     try {
-      final name = _nameController.text.trim();
       final url = _urlController.text.trim();
 
-      // Basic validation
       if (!url.startsWith('http')) {
         throw Exception('Invalid URL format');
       }
 
-      // Add to Store Manager
-      await context.read<StoreManager>().addStore(name, url);
+      await context.read<StoreManager>().addStore(url);
 
       if (!mounted) return;
 
-      // 🔥 FIX: Always clear the saving state on success, whether or not
-      // this screen can be popped. Pushed instances (drawer → "Manage
-      // Stores") will pop and disappear anyway; embedded instances (sidebar
-      // "Stores" tab) have no route to pop, so this is what stops the
-      // spinner there. StoreManager's activeStore change already drives
-      // navigation to Home via the root listener either way.
       setState(() => _isSaving = false);
 
       if (Navigator.canPop(context)) {
@@ -91,32 +82,21 @@ class _SetupStoreScreenState extends State<SetupStoreScreen> {
               const Icon(Icons.store_mall_directory, size: 64, color: Colors.blue),
               const SizedBox(height: 24),
               const Text(
-                'Enter your Google Script URL or Scan the Setup QR code provided by your admin.',
+                  'Scan or paste the store link provided by your admin — the store name comes through automatically.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey),
               ),
               const SizedBox(height: 32),
 
-              // 1. Store Name
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Store Name (e.g. Cape Town)',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.label),
-                ),
-                validator: (v) => v!.isEmpty ? 'Required' : null,
-              ),
-              const SizedBox(height: 16),
 
-              // 2. URL Input + Scan Button
+              // 1. URL Input + Scan Button
               Row(
                 children: [
                   Expanded(
                     child: TextFormField(
                       controller: _urlController,
                       decoration: const InputDecoration(
-                        labelText: 'Script URL',
+                        labelText: 'Store Link',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.link),
                       ),

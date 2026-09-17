@@ -1019,6 +1019,48 @@ class GoogleSheetsService {
     }
   }
 
+  static Future<Map<String, dynamic>> validateStoreLink(
+      String masterScriptUrl,
+      String sheetId, {
+        String? userEmail,
+        LoggerService? logger,
+      }) async {
+    try {
+      final url = Uri.parse(masterScriptUrl).replace(queryParameters: {
+        'table': 'validateStore',
+        'sheetId': sheetId,
+        if (userEmail != null && userEmail.isNotEmpty) 'userEmail': userEmail,
+      });
+
+      var response = await http.get(url).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 302 || response.statusCode == 303) {
+        final location = response.headers['location'];
+        if (location != null) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          response = await http.get(
+            Uri.parse(location),
+            headers: {'Accept': 'application/json'},
+          ).timeout(const Duration(seconds: 30));
+        }
+      }
+
+      if (response.statusCode != 200) {
+        return {'found': false, 'message': 'Server error (${response.statusCode})'};
+      }
+
+      final body = response.body.trim();
+      if (body.toUpperCase().startsWith('<HTML')) {
+        return {'found': false, 'message': 'Unexpected server response'};
+      }
+
+      return json.decode(body) as Map<String, dynamic>;
+    } catch (e) {
+      logger?.error('validateStoreLink failed', e.toString());
+      return {'found': false, 'message': e.toString()};
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Cancellation & Cache Management
   // ---------------------------------------------------------------------------
