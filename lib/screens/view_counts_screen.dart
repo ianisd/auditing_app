@@ -264,13 +264,16 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
       // recreating the doc a few seconds later, which is why `deleted`
       // kept reverting to false)
       final syncService = context.read<StoreManager>().syncService;
-      if (syncService.firestore != null && storage.currentStoreId != null) {
+      if (syncService.firestore != null && storage.firestoreKey!= null) {
         final deletedData = <String, dynamic>{
           'id': id,
           'deleted': true,
           'deletedAt': DateTime.now().toIso8601String(),
         };
-        await syncService.firestore!.saveStockCount(storage.currentStoreId!, deletedData);
+        await syncService.firestore!.saveStockCount(
+          storage.firestoreKey!,
+          deletedData,
+        );
       }
 
       _loadCounts();

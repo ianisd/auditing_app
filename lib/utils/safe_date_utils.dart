@@ -2,35 +2,65 @@
 
 
 class SafeDateUtils {
-  /// Safe date parsing from various formats
+  /// Safe date parsing from common API / Google Sheets formats.
+  ///
+  /// Supports:
+  /// - DateTime values
+  /// - ISO-8601 strings
+  /// - Unix timestamps in seconds or milliseconds
+  /// - Google Sheets / Excel serial dates (days since 1899-12-30)
   static DateTime? parseDate(dynamic value) {
     if (value == null) return null;
 
-    if (value is DateTime) {
-      return value;
+    if (value is DateTime) return value;
+
+    if (value is num) {
+      return _parseNumericDate(value.toDouble());
     }
 
     if (value is String) {
-      try {
-        return DateTime.parse(value);
-      } catch (e) {
-        // Try alternative formats
-        try {
-          // Handle ISO format with timezone
-          final cleaned = value.replaceAll('Z', '').replaceAll('+00:00', '');
-          return DateTime.parse(cleaned);
-        } catch (e2) {
-          return null;
-        }
+      final raw = value.trim();
+      if (raw.isEmpty) return null;
+
+      // Numeric strings can be timestamps or spreadsheet serial dates.
+      final numeric = double.tryParse(raw);
+      if (numeric != null) {
+        final parsedNumeric = _parseNumericDate(numeric);
+        if (parsedNumeric != null) return parsedNumeric;
       }
+
+      // DateTime.parse already supports ISO-8601 values with Z / offsets.
+      return DateTime.tryParse(raw);
     }
 
-    if (value is int) {
-      try {
-        return DateTime.fromMillisecondsSinceEpoch(value);
-      } catch (e) {
-        return null;
+    return null;
+  }
+
+  static DateTime? _parseNumericDate(double value) {
+    if (!value.isFinite || value <= 0) return null;
+
+    try {
+      // Contemporary Unix timestamps in milliseconds.
+      if (value >= 100000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(value.round());
       }
+
+      // Contemporary Unix timestamps in seconds.
+      if (value >= 1000000000) {
+        return DateTime.fromMillisecondsSinceEpoch((value * 1000).round());
+      }
+
+      // Google Sheets / Excel serial date. 1899-12-30 matches the
+      // spreadsheet date system (including Excel's historical leap-year quirk).
+      if (value >= 1 && value < 1000000) {
+        final wholeDays = value.floor();
+        final fraction = value - wholeDays;
+        final milliseconds = (fraction * Duration.millisecondsPerDay).round();
+        return DateTime(1899, 12, 30)
+            .add(Duration(days: wholeDays, milliseconds: milliseconds));
+      }
+    } catch (_) {
+      return null;
     }
 
     return null;

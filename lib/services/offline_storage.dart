@@ -9,8 +9,445 @@ import 'package:http/http.dart';
 import '../models/plu_mapping.dart';
 import 'google_sheets_service.dart';
 import 'encryption_service.dart';
+import 'stock_record_fields.dart';
 
 class OfflineStorage with ChangeNotifier {
+  // Capture the exact local versions before any network await.
+  PostWriteSnapshot capturePostSnapshot(
+      String table, List<Map<String, dynamic>> rows, {bool deleting = false}
+      ) {
+    if (_currentStoreId == null) throw StateError('No active store');
+    checkRefreshStore(_currentStoreId!, _refreshStoreGeneration);
+    final Box? box = table == 'Purchases' ? _purchases
+        : table == 'InvoiceDetails' ? _invoiceDetails
+        : table == 'StockCounts' ? _counts : null;
+    if (box == null || !box.isOpen) throw StateError('Storage unavailable: $table');
+    final idField = table == 'Purchases' ? 'purchases_ID'
+        : table == 'InvoiceDetails' ? 'invoiceDetailsID' : 'id';
+    final captured = <String, Map<String, dynamic>>{};
+    for (final row in rows) {
+      final id = (row[idField] ?? (table == 'StockCounts' ? row['stock_id'] : null))?.toString();
+      if (id == null || id.isEmpty || captured.containsKey(id)) {
+        throw StateError('Missing or repeated $idField');
+      }
+      if (row['postRecoveryConflict'] != null) throw StateError('Unresolved POST recovery conflict: $id');
+      final stored = box.get(id);
+      if (stored == null || !_postEqual(_safeCast(stored), row)) {
+        throw StateError('Local $table record $id changed before upload; retry latest work.');
+      }
+      captured[id] = _postFreeze(row) as Map<String, dynamic>;
+    }
+    final children = <String, Map<String, dynamic>>{};
+    if (table == 'InvoiceDetails' && deleting) {
+      if (_purchases == null || !_purchases!.isOpen) throw StateError('Purchase storage unavailable');
+      for (final entry in _purchases!.toMap().entries) {
+        final row = _safeCast(entry.value);
+        if (captured.containsKey(row['invoiceDetailsID']?.toString())) {
+          if (row['syncStatus'] != 'deleted') {
+            throw StateError('Invoice deletion has a non-deleted local purchase: ${entry.key}');
+          }
+          children[entry.key.toString()] = _postFreeze(row) as Map<String, dynamic>;
+        }
+      }
+    }
+    return PostWriteSnapshot._(table, _currentStoreId!, _refreshStoreGeneration,
+        box, _purchases, Map.unmodifiable(captured), Map.unmodifiable(children), deleting);
+  }
+
+  dynamic _postFreeze(dynamic value) {
+    if (value is Map) return Map<String, dynamic>.unmodifiable(
+        value.map((k, v) => MapEntry(k.toString(), _postFreeze(v))));
+    if (value is List) return List<dynamic>.unmodifiable(value.map(_postFreeze));
+    if (value == null || value is String || value is num || value is bool || value is DateTime) return value;
+    throw StateError('Unsupported snapshot field: ${value.runtimeType}');
+  }
+
+  bool _postEqual(dynamic a, dynamic b) {
+    if (a is Map && b is Map) return a.length == b.length &&
+        a.keys.every((k) => b.containsKey(k) && _postEqual(a[k], b[k]));
+    if (a is List && b is List) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) { if (!_postEqual(a[i], b[i])) return false; }
+      return true;
+    }
+    return a == b;
+  }
+
+  Future<List<String>> acknowledgePostSnapshot(
+      PostWriteSnapshot snapshot, Iterable<String> confirmedIds
+      ) {
+    final confirmed = confirmedIds.toSet();
+    final task = _refreshSaveTail.then((_) async {
+      void check() {
+        checkRefreshStore(snapshot.storeId, snapshot.generation);
+        final currentBox = snapshot.table == 'Purchases' ? _purchases
+            : snapshot.table == 'InvoiceDetails' ? _invoiceDetails : _counts;
+        if (!identical(currentBox, snapshot._box) || !snapshot._box.isOpen) {
+          throw StateError('POST acknowledgement belongs to a closed store session');
+        }
+      }
+      check();
+      final marked = <String>[];
+      for (final id in confirmed) {
+        check();
+        final expected = snapshot.rows[id];
+        if (expected == null) continue;
+        final raw = snapshot._box.get(id);
+        final current = raw == null ? null : _safeCast(raw);
+        if (snapshot.table == 'InvoiceDetails' && snapshot.deleting) {
+          final childrenBox = snapshot._childrenBox;
+          if (!identical(_purchases, childrenBox) || childrenBox == null || !childrenBox.isOpen) {
+            throw StateError('Invoice deletion belongs to a closed purchase session');
+          }
+          final linked = <String, Map<String, dynamic>>{};
+          for (final entry in childrenBox.toMap().entries) {
+            final row = _safeCast(entry.value);
+            if (row['invoiceDetailsID']?.toString() == id) linked[entry.key.toString()] = row;
+          }
+          final changedChildren = linked.entries.where((e) =>
+          !_postEqual(e.value, snapshot.children[e.key])).toList();
+          if ((current != null && !_postEqual(current, expected)) || changedChildren.isNotEmpty) {
+            // Server deletion succeeded. Keep local work, but prevent blind replay
+            // of the invoice cascade or automatic orphan-purchase upload.
+            final conflict = 'Server deleted invoice $id while local data changed. Review before syncing.';
+            final parent = Map<String, dynamic>.from(current ?? expected);
+            parent['syncStatus'] = 'error'; parent['postRecoveryConflict'] = conflict;
+            await snapshot._box.put(id, parent);
+            for (final entry in changedChildren) {
+              check();
+              final latest = childrenBox.get(entry.key);
+              if (latest == null) continue;
+              final row = _safeCast(latest);
+              row['syncStatus'] = 'error'; row['postRecoveryConflict'] = conflict;
+              await childrenBox.put(entry.key, row);
+            }
+            await snapshot._box.flush(); await childrenBox.flush();
+            throw StateError(conflict);
+          }
+          // Matching child tombstones remain for the normal purchase-delete path.
+          // Do not run hardDeleteInvoice's unconditional local cascade.
+        }
+        if (current == null || !_postEqual(current, expected)) continue;
+        if (snapshot.deleting || (snapshot.table == 'StockCounts' && current['syncStatus'] == 'deleted')) {
+          if (current['syncStatus'] != 'deleted') continue;
+          await snapshot._box.delete(id);
+          if (snapshot.table == 'Purchases') {
+            for (final ids in _purchasesByInvoiceId.values) { ids.remove(id); }
+            for (final ids in _purchasesBySupplierId.values) { ids.remove(id); }
+          }
+        } else {
+          if (current['syncStatus'] != 'pending') continue;
+          current['syncStatus'] = 'synced';
+          current['syncedAt'] = DateTime.now().toIso8601String();
+          await snapshot._box.put(id, current);
+        }
+        marked.add(id);
+      }
+      await snapshot._box.flush();
+      check();
+      if (snapshot.table == 'StockCounts') _updatePendingCounts();
+      notifyListeners();
+      return marked;
+    });
+    _refreshSaveTail = task.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return task;
+  }
+
+  List<String> getPostRecoveryIssues() {
+    final issues = <String>[];
+    for (final box in <Box?>[_invoiceDetails, _purchases]) {
+      if (box == null || !box.isOpen) continue;
+      for (final value in box.values) {
+        final issue = _safeCast(value)['postRecoveryConflict'];
+        if (issue != null) issues.add(issue.toString());
+      }
+    }
+    return issues.toSet().toList();
+  }
+  // A token identifies this opening of the store, including A -> B -> A switches.
+  int _refreshStoreGeneration = 0;
+  Future<void> _refreshSaveTail = Future<void>.value();
+  int get refreshStoreGeneration => _refreshStoreGeneration;
+  final Map<String, String> _refreshSaveWarnings = {};
+  Map<String, String> get refreshSaveWarnings =>
+      Map.unmodifiable(_refreshSaveWarnings);
+
+  void checkRefreshStore(String storeId, int generation) {
+    if (_isDisposed ||
+        !_isReady ||
+        _currentStoreId != storeId ||
+        _refreshStoreGeneration != generation) {
+      throw StateError(
+        'Refresh stopped: store changed or storage is unavailable',
+      );
+    }
+  }
+
+  bool _keepLocalRefreshRow(dynamic value, String table) {
+    if (value is! Map) return false;
+    final status = value['syncStatus'];
+    return status == 'pending' ||
+        status == 'deleted' ||
+        status == 'modified' ||
+        status == 'error' ||
+        (table == 'PluMappings' && status == null) ||
+        (value['isLocal'] == true && status != 'synced');
+  }
+
+  // Used only by master refresh. Existing upload APIs are unchanged.
+  Future<int> applyDownloadedTable(
+      String table,
+      List<Map<String, dynamic>> rows, {
+        required String storeId,
+        required int generation,
+      }) {
+    final task = _refreshSaveTail.then((_) async {
+      checkRefreshStore(storeId, generation);
+      final boxes = <String, Box?>{
+        'Inventory': _inventory,
+        'Locations': _locations,
+        'AuditCalendar': _audits,
+        'Purchases': _purchases,
+        'StoreSalesData': _storeSalesData,
+        'ItemSales': _itemSalesMap,
+        'MasterCostsComputed': _masterCatalog,
+        'InvoiceDetails': _invoiceDetails,
+        'ItemsIssued': _itemsIssued,
+        'StockIssues': _stockIssues,
+        'ItemsIssuedMap': _itemsIssuedMap,
+        'PluMappings': _pluMappings,
+      };
+      final box = boxes[table];
+      if (box == null || !box.isOpen)
+        throw StateError('$table storage is unavailable');
+      _refreshSaveWarnings.remove(table);
+      final batch = <dynamic, dynamic>{};
+      var missingKeys = 0;
+      var duplicateKeys = 0;
+      final missingExamples = <int>[];
+      final duplicateExamples = <String>[];
+      for (var i = 0; i < rows.length; i++) {
+        final item = Map<String, dynamic>.from(rows[i]);
+        dynamic key;
+        switch (table) {
+          case 'Inventory':
+            key = item['Barcode'] ?? item['barcode'];
+            item['Inventory Product Name'] ??= item['Product Name'];
+            final lookupKey = key?.toString().trim();
+            final existing = lookupKey == null || lookupKey.isEmpty
+                ? null
+                : box.get(lookupKey);
+            if (item['Cost Price'] == null && existing is Map) {
+              item['Cost Price'] = existing['Cost Price'];
+            }
+            break;
+          case 'Locations':
+            key = item['locationID'] ?? item['id'];
+            break;
+          case 'AuditCalendar':
+            key = item['Audit ID'];
+            break;
+          case 'Purchases':
+            key = item['purchases_ID'];
+            break;
+          case 'InvoiceDetails':
+            key = item['invoiceDetailsID'];
+            if (item.containsKey('Invoice Number')) {
+              item['Invoice Number'] = item['Invoice Number'].toString();
+            }
+            item['savedAt'] = DateTime.now().toIso8601String();
+            break;
+          case 'PluMappings':
+            final supplier = item['supplierId']?.toString() ?? '';
+            final plu = item['csvPlu']?.toString() ?? '';
+            if (supplier.isEmpty || plu.isEmpty) {
+              missingKeys++;
+              if (missingExamples.length < 10) missingExamples.add(i);
+              continue; // Legacy behavior: keep loading identifiable records.
+            }
+            key = '${supplier}_$plu';
+            break;
+          case 'MasterCostsComputed':
+            final suppBottleId = item['supplierBottleID']?.toString().trim();
+            final bId = item['bottleID']?.toString().trim();
+            key = (suppBottleId != null && suppBottleId.isNotEmpty)
+                ? suppBottleId
+                : (bId != null && bId.isNotEmpty)
+                ? bId
+                : 'cost_${item['productName'] ?? ''}_$i';
+            item['supplierBottleID'] ??= item['bottleID'] ?? '';
+            item['bottleID'] ??= item['supplierBottleID'] ?? '';
+            item['supplierID'] = item['supplierID']?.toString() ?? '';
+            item['Product Name'] ??= item['productName'] ?? '';
+            item['Inventory Product Name'] ??= item['Product Name'];
+            item['Supplier'] ??= item['supplier'] ?? '';
+            item['Cost Price'] ??= item['cost'] ?? item['avgCost'] ?? 0.0;
+            break;
+          case 'ItemsIssued':
+          // These tables are consumed as rows. Index keys preserve repeated PLUs.
+            key = i;
+            for (final field in [
+              'ROW ID',
+              'Current Audit Date',
+              'Last Audit Date',
+              'PLU',
+              'Menu Item',
+              'Product',
+              'Measure',
+              'Main Category',
+              'Category',
+              'Date Added',
+            ]) {
+              item[field] = item[field]?.toString().trim() ?? '';
+            }
+            for (final field in [
+              'Issues',
+              'Quantity',
+              'Total Qty Issued',
+              'Total Qty Issued Btl',
+              'Sell',
+              'Sales',
+              'Bottle Price',
+            ]) {
+              item[field] = _safeDouble(item[field]);
+            }
+            break;
+          case 'StockIssues':
+            key = i;
+            for (final field in ['Issue No', 'Item', 'Name']) {
+              item[field] = item[field]?.toString().trim() ?? '';
+            }
+            for (final field in ['Was', 'Issued', 'Now', 'Value']) {
+              item[field] = _safeDouble(item[field]);
+            }
+            break;
+          case 'ItemsIssuedMap':
+            key = i; // Preserve multiple ingredient rows for the same PLU.
+            for (final field in [
+              'PLU',
+              'Menu Item',
+              'Product',
+              'Measure',
+              'Main Category',
+              'Category',
+            ]) {
+              item[field] = item[field]?.toString().trim() ?? '';
+            }
+            item['Quantity'] = _safeDouble(item['Quantity']);
+            break;
+          case 'StoreSalesData':
+          case 'ItemSales':
+            key = i;
+            break;
+          default:
+            throw ArgumentError('Unsupported refresh table: $table');
+        }
+        // Only row-position tables use Hive integer keys. Business IDs,
+        // including numeric barcodes/location IDs, always use strings.
+        const rowTables = {
+          'StoreSalesData',
+          'ItemSales',
+          'ItemsIssued',
+          'StockIssues',
+          'ItemsIssuedMap',
+        };
+        if (!rowTables.contains(table)) key = key?.toString().trim();
+        if (key == null || key == '') {
+          missingKeys++;
+          if (missingExamples.length < 10) missingExamples.add(i);
+          continue;
+        }
+        if (batch.containsKey(key)) {
+          // Match the previous keyed-map behavior: the last server row wins.
+          duplicateKeys++;
+          if (duplicateExamples.length < 10) duplicateExamples.add('$key');
+        }
+        if ([
+          'Inventory',
+          'Locations',
+          'Purchases',
+          'InvoiceDetails',
+          'PluMappings',
+        ].contains(table)) {
+          item['syncStatus'] = 'synced';
+        }
+        batch[key] = item;
+      }
+      var appliedCount = batch.length;
+      final before = Map<dynamic, dynamic>.from(box.toMap());
+      for (final entry in before.entries) {
+        if (_keepLocalRefreshRow(entry.value, table)) {
+          if (batch.containsKey(entry.key)) appliedCount--;
+          batch[entry.key] = entry.value;
+        } else if (missingKeys > 0 && !batch.containsKey(entry.key)) {
+          // The incoming list is not a complete keyed snapshot: do not infer deletions.
+          batch[entry.key] = entry.value;
+        }
+      }
+      // Validate and build first, then write without an initial clear().
+      // Switch/close waits for this operation; all I/O uses this captured box.
+      try {
+        await box.putAll(batch);
+        final stale = box.keys
+            .where(
+              (key) =>
+          !batch.containsKey(key) &&
+              !_keepLocalRefreshRow(box.get(key), table),
+        )
+            .toList();
+        await box.deleteAll(stale);
+        await box.flush();
+      } catch (error) {
+        // Best-effort rollback for a write error. This is not a crash transaction.
+        try {
+          final restore = Map<dynamic, dynamic>.from(before);
+          // Preserve edits made by the user while a disk operation was awaiting.
+          for (final entry in box.toMap().entries) {
+            final attempted = batch[entry.key];
+            final unchanged = entry.value is Map && attempted is Map
+                ? mapEquals(entry.value as Map, attempted)
+                : entry.value == attempted;
+            if (!unchanged && _keepLocalRefreshRow(entry.value, table)) {
+              restore[entry.key] = entry.value;
+            }
+          }
+          await box.putAll(restore);
+          await box.deleteAll(
+            box.keys.where((key) => !restore.containsKey(key)).toList(),
+          );
+          await box.flush();
+        } catch (rollbackError) {
+          throw StateError(
+            '$table write failed ($error); rollback also failed ($rollbackError)',
+          );
+        }
+        rethrow;
+      }
+      checkRefreshStore(storeId, generation);
+      if (table == 'Inventory' || table == 'Purchases') await _rebuildIndexes();
+      final warnings = <String>[];
+      if (missingKeys > 0)
+        warnings.add(
+          '$missingKeys rows without usable IDs skipped (zero-based download indexes: '
+              '${missingExamples.join(', ')}); unmatched local records retained',
+        );
+      if (duplicateKeys > 0)
+        warnings.add(
+          '$duplicateKeys repeated keys resolved using the last server row '
+              '(examples: ${duplicateExamples.join(', ')})',
+        );
+      if (warnings.isNotEmpty)
+        _refreshSaveWarnings[table] = warnings.join('; ');
+      if (!_isDisposed) notifyListeners();
+      return appliedCount;
+    });
+    _refreshSaveTail = task.then<void>(
+          (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return task;
+  }
+
   // ===========================================================================
   // PROPERTIES
   // ===========================================================================
@@ -25,7 +462,7 @@ class OfflineStorage with ChangeNotifier {
   // Variance Report Boxes
   Box? _purchases;
   Box? _storeSalesData; // Raw POS Logs
-  Box? _itemSalesMap;   // PLU Definitions
+  Box? _itemSalesMap; // PLU Definitions
 
   // Invoicing Boxes
   Box? _invoiceDetails;
@@ -60,25 +497,27 @@ class OfflineStorage with ChangeNotifier {
   // Supplier Mapping
   Box? _supplierMappings;
   bool _supplierMappingsLoaded = false;
-  Map<String, String> _supplierNameToIdMap = {}; // "DURBAN NORTH LIQ" -> "16876"
-  Map<String, List<String>> _supplierNameVariations = {}; // "16876" -> ["Durban North Liquors", "DURBAN NORTH LIQ", ...]
+  Map<String, String> _supplierNameToIdMap =
+  {}; // "DURBAN NORTH LIQ" -> "16876"
+  Map<String, List<String>> _supplierNameVariations =
+  {}; // "16876" -> ["Durban North Liquors", "DURBAN NORTH LIQ", ...]
 
   // PLU Mapping Boxes (add with other Box declarations)
-  Box? _pluMappings;           // Stores PLU mappings
-  Box? _pluMappingHistory;     // Optional: for audit trail
+  Box? _pluMappings; // Stores PLU mappings
+  Box? _pluMappingHistory; // Optional: for audit trail
 
   // ===========================================================================
   // GETTERS
   // ===========================================================================
 
   // ============================================================================
-// 🔥 ENHANCED PENDING ITEMS QUERIES
-// ============================================================================
+  // 🔥 ENHANCED PENDING ITEMS QUERIES
+  // ============================================================================
 
   /// Get pending items count for all types
   // ============================================================================
-// 🔥 ENHANCED PENDING COUNTS - INCLUDES ALL TYPES
-// ============================================================================
+  // 🔥 ENHANCED PENDING COUNTS - INCLUDES ALL TYPES
+  // ============================================================================
 
   /// Get total pending items count (invoices + purchases + PLU mappings + counts)
   Future<int> getTotalPendingItemsCount() async {
@@ -90,7 +529,10 @@ class OfflineStorage with ChangeNotifier {
       final mappings = await getPendingPluMappings();
       final counts = pendingCounts;
 
-      return invoices.length + purchases.length + mappings.length + counts.length;
+      return invoices.length +
+          purchases.length +
+          mappings.length +
+          counts.length;
     } catch (e) {
       print('❌ Error getting total pending count: $e');
       return 0;
@@ -120,7 +562,11 @@ class OfflineStorage with ChangeNotifier {
         'purchases': purchases.length,
         'pluMappings': mappings.length,
         'stockCounts': counts.length,
-        'total': invoices.length + purchases.length + mappings.length + counts.length,
+        'total':
+        invoices.length +
+            purchases.length +
+            mappings.length +
+            counts.length,
       };
     } catch (e) {
       print('❌ Error getting detailed pending counts: $e');
@@ -177,38 +623,88 @@ class OfflineStorage with ChangeNotifier {
     final cipher = HiveAesCipher(encryptionKey);
 
     // Open Core Boxes
-    _counts = await Hive.openBox('store_${storeId}_stock_counts', encryptionCipher: cipher);
-    _inventory = await Hive.openBox('store_${storeId}_inventory_items', encryptionCipher: cipher);
-    _locations = await Hive.openBox('store_${storeId}_locations', encryptionCipher: cipher);
-    _audits = await Hive.openBox('store_${storeId}_audits', encryptionCipher: cipher);
-    _masterCatalog = await Hive.openBox('store_${storeId}_master_catalog', encryptionCipher: cipher);
+    _counts = await Hive.openBox(
+      'store_${storeId}_stock_counts',
+      encryptionCipher: cipher,
+    );
+    _inventory = await Hive.openBox(
+      'store_${storeId}_inventory_items',
+      encryptionCipher: cipher,
+    );
+    _locations = await Hive.openBox(
+      'store_${storeId}_locations',
+      encryptionCipher: cipher,
+    );
+    _audits = await Hive.openBox(
+      'store_${storeId}_audits',
+      encryptionCipher: cipher,
+    );
+    _masterCatalog = await Hive.openBox(
+      'store_${storeId}_master_catalog',
+      encryptionCipher: cipher,
+    );
 
     // Open Variance Report Boxes
-    _purchases = await Hive.openBox('store_${storeId}_purchases', encryptionCipher: cipher);
-    _storeSalesData = await Hive.openBox('store_${storeId}_store_sales_data', encryptionCipher: cipher);
-    _itemSalesMap = await Hive.openBox('store_${storeId}_item_sales_map', encryptionCipher: cipher);
+    _purchases = await Hive.openBox(
+      'store_${storeId}_purchases',
+      encryptionCipher: cipher,
+    );
+    _storeSalesData = await Hive.openBox(
+      'store_${storeId}_store_sales_data',
+      encryptionCipher: cipher,
+    );
+    _itemSalesMap = await Hive.openBox(
+      'store_${storeId}_item_sales_map',
+      encryptionCipher: cipher,
+    );
 
     // Open Invoice Details + Master Suppliers boxes
-    _invoiceDetails = await Hive.openBox('store_${storeId}_invoice_details', encryptionCipher: cipher);
-    _masterSuppliers = await Hive.openBox('store_${storeId}_master_suppliers', encryptionCipher: cipher);
-    _supplierMappings = await Hive.openBox('store_${storeId}_supplier_mappings', encryptionCipher: cipher);
+    _invoiceDetails = await Hive.openBox(
+      'store_${storeId}_invoice_details',
+      encryptionCipher: cipher,
+    );
+    _masterSuppliers = await Hive.openBox(
+      'store_${storeId}_master_suppliers',
+      encryptionCipher: cipher,
+    );
+    _supplierMappings = await Hive.openBox(
+      'store_${storeId}_supplier_mappings',
+      encryptionCipher: cipher,
+    );
 
     // Open PLU Mapping boxes (add with other box openings)
-    _pluMappings = await Hive.openBox('store_${storeId}_plu_mappings', encryptionCipher: cipher);
-    _pluMappingHistory = await Hive.openBox('store_${storeId}_plu_mapping_history', encryptionCipher: cipher);
+    _pluMappings = await Hive.openBox(
+      'store_${storeId}_plu_mappings',
+      encryptionCipher: cipher,
+    );
+    _pluMappingHistory = await Hive.openBox(
+      'store_${storeId}_plu_mapping_history',
+      encryptionCipher: cipher,
+    );
 
     //Open StockIssues/GRV Mapping Boxes
-    _itemsIssued = await Hive.openBox('store_${storeId}_items_issued', encryptionCipher: cipher);
-    _stockIssues = await Hive.openBox('store_${storeId}_stock_issues', encryptionCipher: cipher);
-    _itemsIssuedMap = await Hive.openBox('store_${storeId}_items_issued_map', encryptionCipher: cipher);
+    _itemsIssued = await Hive.openBox(
+      'store_${storeId}_items_issued',
+      encryptionCipher: cipher,
+    );
+    _stockIssues = await Hive.openBox(
+      'store_${storeId}_stock_issues',
+      encryptionCipher: cipher,
+    );
+    _itemsIssuedMap = await Hive.openBox(
+      'store_${storeId}_items_issued_map',
+      encryptionCipher: cipher,
+    );
 
     // Rebuild indexes
     await _rebuildIndexes();
-    await _ensureIndexes();  // 👈 ADD THIS LINE
+    await _ensureIndexes(); // 👈 ADD THIS LINE
     await _loadSupplierMappings();
 
     print('  ✅ All Hive boxes opened for store: $storeId');
-    print('  ✅ _googleSheetsService available: ${_googleSheetsService != null}');
+    print(
+      '  ✅ _googleSheetsService available: ${_googleSheetsService != null}',
+    );
     print('  ✅ _scriptUrl available: ${_scriptUrl.isNotEmpty}');
 
     // Load master suppliers - use force: true to ensure fresh load
@@ -233,7 +729,8 @@ class OfflineStorage with ChangeNotifier {
     // Return cached if fresh
     if (_cachedSuppliers != null &&
         _suppliersCacheTime != null &&
-        DateTime.now().difference(_suppliersCacheTime!) < _suppliersCacheDuration) {
+        DateTime.now().difference(_suppliersCacheTime!) <
+            _suppliersCacheDuration) {
       print('📦 Using cached suppliers (${_cachedSuppliers!.length} items)');
       return _cachedSuppliers!;
     }
@@ -248,21 +745,28 @@ class OfflineStorage with ChangeNotifier {
   Future<void> loadMasterSuppliersFromSheet({bool force = false}) async {
     // Prevent multiple simultaneous loads
     if (_isLoadingSuppliers) {
-      print('DEBUG: loadMasterSuppliersFromSheet() already in progress, skipping');
+      print(
+        'DEBUG: loadMasterSuppliersFromSheet() already in progress, skipping',
+      );
       return;
     }
 
     // Add cooldown to prevent repeated calls (unless forced)
     if (!force) {
       if (_lastSupplierLoadTime != null &&
-          DateTime.now().difference(_lastSupplierLoadTime!) < _supplierLoadCooldown) {
-        print('DEBUG: loadMasterSuppliersFromSheet() called too soon, skipping');
+          DateTime.now().difference(_lastSupplierLoadTime!) <
+              _supplierLoadCooldown) {
+        print(
+          'DEBUG: loadMasterSuppliersFromSheet() called too soon, skipping',
+        );
         return;
       }
 
       // Skip if already loaded successfully (unless forced)
       if (_hasLoadedSuppliers && _masterSuppliers?.isNotEmpty == true) {
-        print('DEBUG: Suppliers already loaded (${_masterSuppliers!.length} items), skipping');
+        print(
+          'DEBUG: Suppliers already loaded (${_masterSuppliers!.length} items), skipping',
+        );
         return;
       }
     }
@@ -327,7 +831,7 @@ class OfflineStorage with ChangeNotifier {
           for (var value in _masterSuppliers!.values) {
             if (count < 3) {
               final s = Map<String, dynamic>.from(value as Map);
-              print('    [${count+1}] ${s['supplierID']}: ${s['Supplier']}');
+              print('    [${count + 1}] ${s['supplierID']}: ${s['Supplier']}');
               count++;
             }
           }
@@ -349,7 +853,9 @@ class OfflineStorage with ChangeNotifier {
       print('  ❌ UNKNOWN ERROR: $e');
     } finally {
       _isLoadingSuppliers = false;
-      print('  ✅ Final: _masterSuppliers box has ${_masterSuppliers!.length} items');
+      print(
+        '  ✅ Final: _masterSuppliers box has ${_masterSuppliers!.length} items',
+      );
       print('🔍 ===== LOAD COMPLETE =====');
     }
   }
@@ -366,51 +872,19 @@ class OfflineStorage with ChangeNotifier {
   // ===========================================================================
 
   /// Batch mark invoices as synced for better performance
-  Future<void> bulkMarkInvoicesAsSynced(List<String> ids) async {
-    if (!_isReady || _invoiceDetails == null || ids.isEmpty) return;
-
-    print('🔍 DEBUG: Bulk marking ${ids.length} invoices as synced');
-    final batch = <String, dynamic>{};
-
-    for (var id in ids) {
-      final data = _invoiceDetails!.get(id);
-      if (data != null) {
-        final item = _safeCast(data);
-        item['syncStatus'] = 'synced';
-        item['syncedAt'] = DateTime.now().toIso8601String();
-        batch[id] = item;
-      }
+  Future<void> bulkMarkInvoicesAsSynced(List<String> ids, {PostWriteSnapshot? snapshot}) async {
+    if (snapshot == null || snapshot.table != 'InvoiceDetails' || snapshot.deleting) {
+      throw StateError('A submitted InvoiceDetails snapshot is required to acknowledge a POST.');
     }
-
-    if (batch.isNotEmpty) {
-      await _invoiceDetails!.putAll(batch);
-      notifyListeners();
-      print('✅ Bulk marked ${batch.length} invoices as synced');
-    }
+    await acknowledgePostSnapshot(snapshot, ids);
   }
 
   /// Batch mark purchases as synced for better performance
-  Future<void> bulkMarkPurchasesAsSynced(List<String> ids) async {
-    if (!_isReady || _purchases == null || ids.isEmpty) return;
-
-    print('🔍 DEBUG: Bulk marking ${ids.length} purchases as synced');
-    final batch = <String, dynamic>{};
-
-    for (var id in ids) {
-      final data = _purchases!.get(id);
-      if (data != null) {
-        final item = _safeCast(data);
-        item['syncStatus'] = 'synced';
-        item['syncedAt'] = DateTime.now().toIso8601String();
-        batch[id] = item;
-      }
+  Future<void> bulkMarkPurchasesAsSynced(List<String> ids, {PostWriteSnapshot? snapshot}) async {
+    if (snapshot == null || snapshot.table != 'Purchases' || snapshot.deleting) {
+      throw StateError('A submitted Purchases snapshot is required to acknowledge a POST.');
     }
-
-    if (batch.isNotEmpty) {
-      await _purchases!.putAll(batch);
-      notifyListeners();
-      print('✅ Bulk marked ${batch.length} purchases as synced');
-    }
+    await acknowledgePostSnapshot(snapshot, ids);
   }
 
   /// Batch mark locations as synced for better performance
@@ -483,14 +957,18 @@ class OfflineStorage with ChangeNotifier {
           // (e.g., different dates, different audit periods). Need a composite key.
           final plu = item['PLU']?.toString().trim() ?? '';
           final rowId = item['ROW ID']?.toString().trim() ?? '';
-          final currentAuditDate = item['Current Audit Date']?.toString().trim() ?? '';
-          final lastAuditDate = item['Last Audit Date']?.toString().trim() ?? '';
+          final currentAuditDate =
+              item['Current Audit Date']?.toString().trim() ?? '';
+          final lastAuditDate =
+              item['Last Audit Date']?.toString().trim() ?? '';
 
           // Build a composite key that's unique per row
           String key;
           if (rowId.isNotEmpty) {
             key = rowId;
-          } else if (plu.isNotEmpty && currentAuditDate.isNotEmpty && lastAuditDate.isNotEmpty) {
+          } else if (plu.isNotEmpty &&
+              currentAuditDate.isNotEmpty &&
+              lastAuditDate.isNotEmpty) {
             // Use PLU + date range as composite key
             key = '${plu}_${currentAuditDate}_$lastAuditDate';
           } else if (plu.isNotEmpty) {
@@ -540,6 +1018,7 @@ class OfflineStorage with ChangeNotifier {
 
     notifyListeners();
   }
+
   /// Save StockIssues data from server
   /// Save StockIssues data from server
   /// Save StockIssues data from server
@@ -583,7 +1062,9 @@ class OfflineStorage with ChangeNotifier {
           // deterministic (same line item always gets same key if re-synced).
           final plu = item['Item']?.toString().trim() ?? 'unknown';
           final name = item['Name']?.toString().trim() ?? '';
-          final namePart = name.isNotEmpty ? name.substring(0, min(10, name.length)) : 'unknown';
+          final namePart = name.isNotEmpty
+              ? name.substring(0, min(10, name.length))
+              : 'unknown';
           final key = '${issueNo}_${plu}_${namePart}_$savedCount';
 
           final cleanItem = {
@@ -615,9 +1096,9 @@ class OfflineStorage with ChangeNotifier {
 
     notifyListeners();
   }
-// ============================================================================
-// 🔥 SYNCHRONOUS PENDING COUNTS (For UI badges - no async overhead)
-// ============================================================================
+  // ============================================================================
+  // 🔥 SYNCHRONOUS PENDING COUNTS (For UI badges - no async overhead)
+  // ============================================================================
 
   /// 🔥 Synchronous getter for total pending items (uses cached data)
   /// This is fast and doesn't trigger rebuilds like async methods
@@ -676,8 +1157,8 @@ class OfflineStorage with ChangeNotifier {
   }
 
   // ============================================================================
-// 🔥 SYNCHRONOUS PENDING COUNTS BY TYPE
-// ============================================================================
+  // 🔥 SYNCHRONOUS PENDING COUNTS BY TYPE
+  // ============================================================================
 
   /// 🔥 Synchronous getter for pending invoices count
   int get pendingInvoicesCount {
@@ -763,8 +1244,12 @@ class OfflineStorage with ChangeNotifier {
     for (var purchase in purchases) {
       final invoiceId = purchase['invoiceDetailsID']?.toString();
       final purchaseId = purchase['purchases_ID']?.toString();
-      if (invoiceId != null && invoiceId.isNotEmpty && !invoiceIds.contains(invoiceId)) {
-        issues['orphanedPurchases']!.add('$purchaseId (missing invoice $invoiceId)');
+      if (invoiceId != null &&
+          invoiceId.isNotEmpty &&
+          !invoiceIds.contains(invoiceId)) {
+        issues['orphanedPurchases']!.add(
+          '$purchaseId (missing invoice $invoiceId)',
+        );
       }
     }
 
@@ -774,7 +1259,9 @@ class OfflineStorage with ChangeNotifier {
         final item = _safeCast(data);
         final invoiceId = item['invoiceDetailsID']?.toString();
         if (invoiceId != null) {
-          final hasPurchases = purchases.any((p) => p['invoiceDetailsID']?.toString() == invoiceId);
+          final hasPurchases = purchases.any(
+                (p) => p['invoiceDetailsID']?.toString() == invoiceId,
+          );
           if (!hasPurchases) {
             issues['invoicesWithMissingPurchases']!.add(invoiceId);
           }
@@ -786,7 +1273,9 @@ class OfflineStorage with ChangeNotifier {
   }
 
   /// Clean up old synced data
-  Future<void> cleanupOldData({Duration olderThan = const Duration(days: 30)}) async {
+  Future<void> cleanupOldData({
+    Duration olderThan = const Duration(days: 30),
+  }) async {
     if (!_isReady) return;
 
     final cutoff = DateTime.now().subtract(olderThan);
@@ -797,7 +1286,9 @@ class OfflineStorage with ChangeNotifier {
       for (var data in _invoiceDetails!.values) {
         final item = _safeCast(data);
         final syncedAt = DateTime.tryParse(item['syncedAt'] ?? '');
-        if (syncedAt != null && syncedAt.isBefore(cutoff) && item['syncStatus'] == 'synced') {
+        if (syncedAt != null &&
+            syncedAt.isBefore(cutoff) &&
+            item['syncStatus'] == 'synced') {
           final id = item['invoiceDetailsID']?.toString();
           if (id != null) toDelete.add(id);
         }
@@ -814,7 +1305,9 @@ class OfflineStorage with ChangeNotifier {
       for (var data in _purchases!.values) {
         final item = _safeCast(data);
         final syncedAt = DateTime.tryParse(item['syncedAt'] ?? '');
-        if (syncedAt != null && syncedAt.isBefore(cutoff) && item['syncStatus'] == 'synced') {
+        if (syncedAt != null &&
+            syncedAt.isBefore(cutoff) &&
+            item['syncStatus'] == 'synced') {
           final id = item['purchases_ID']?.toString();
           if (id != null) purchaseIds.add(id);
         }
@@ -852,16 +1345,24 @@ class OfflineStorage with ChangeNotifier {
         await _counts?.putAll(Map<String, dynamic>.from(backup['counts']));
       }
       if (backup.containsKey('inventory') && backup['inventory'] is Map) {
-        await _inventory?.putAll(Map<String, dynamic>.from(backup['inventory']));
+        await _inventory?.putAll(
+          Map<String, dynamic>.from(backup['inventory']),
+        );
       }
       if (backup.containsKey('locations') && backup['locations'] is Map) {
-        await _locations?.putAll(Map<String, dynamic>.from(backup['locations']));
+        await _locations?.putAll(
+          Map<String, dynamic>.from(backup['locations']),
+        );
       }
       if (backup.containsKey('purchases') && backup['purchases'] is Map) {
-        await _purchases?.putAll(Map<String, dynamic>.from(backup['purchases']));
+        await _purchases?.putAll(
+          Map<String, dynamic>.from(backup['purchases']),
+        );
       }
       if (backup.containsKey('invoices') && backup['invoices'] is Map) {
-        await _invoiceDetails?.putAll(Map<String, dynamic>.from(backup['invoices']));
+        await _invoiceDetails?.putAll(
+          Map<String, dynamic>.from(backup['invoices']),
+        );
       }
 
       await _rebuildIndexes();
@@ -892,7 +1393,8 @@ class OfflineStorage with ChangeNotifier {
       'supplierMappings': _supplierMappings?.length ?? 0,
       'pluMappings': _pluMappings?.length ?? 0,
       'itemsIssuedMap': _itemsIssuedMap?.length ?? 0,
-      'total': (_counts?.length ?? 0) +
+      'total':
+      (_counts?.length ?? 0) +
           (_inventory?.length ?? 0) +
           (_purchases?.length ?? 0) +
           (_invoiceDetails?.length ?? 0),
@@ -974,7 +1476,10 @@ class OfflineStorage with ChangeNotifier {
   }
 
   // Add a method to add a mapping
-  Future<void> addSupplierMapping(String normalizedName, String supplierId) async {
+  Future<void> addSupplierMapping(
+      String normalizedName,
+      String supplierId,
+      ) async {
     if (_supplierMappings == null) return;
 
     final key = normalizedName.toLowerCase().trim();
@@ -994,21 +1499,28 @@ class OfflineStorage with ChangeNotifier {
   }
 
   // Method to find supplier ID from any name variation
-  Future<String?> findSupplierIdByAnyName(String supplierName, {bool allowAutoCreate = true}) async {
+  Future<String?> findSupplierIdByAnyName(
+      String supplierName, {
+        bool allowAutoCreate = true,
+      }) async {
     if (supplierName.isEmpty) return null;
 
     final normalized = _normalizeSupplierName(supplierName);
 
     // 1. Check exact match in mappings
     if (_supplierNameToIdMap.containsKey(normalized)) {
-      print('✅ Found exact mapping: "$supplierName" -> ${_supplierNameToIdMap[normalized]}');
+      print(
+        '✅ Found exact mapping: "$supplierName" -> ${_supplierNameToIdMap[normalized]}',
+      );
       return _supplierNameToIdMap[normalized];
     }
 
     // 2. Try fuzzy matching
     for (var entry in _supplierNameToIdMap.entries) {
       if (_fuzzySupplierMatch(entry.key, normalized)) {
-        print('✅ Fuzzy match: "$supplierName" ~ "${entry.key}" -> ${entry.value}');
+        print(
+          '✅ Fuzzy match: "$supplierName" ~ "${entry.key}" -> ${entry.value}',
+        );
         return entry.value;
       }
     }
@@ -1053,7 +1565,9 @@ class OfflineStorage with ChangeNotifier {
       updated['lastUsed'] = DateTime.now().toIso8601String();
       updated['useCount'] = (updated['useCount'] ?? 0) + 1;
       await _masterSuppliers!.put(id, updated);
-      print('📊 Updated existing auto-supplier: "$supplierName" (used ${updated['useCount']} times)');
+      print(
+        '📊 Updated existing auto-supplier: "$supplierName" (used ${updated['useCount']} times)',
+      );
       return id;
     }
 
@@ -1112,8 +1626,8 @@ class OfflineStorage with ChangeNotifier {
   }
 
   // ===========================================================================
-// PUBLIC METHODS - PLU MAPPINGS (for GRV imports)
-// ===========================================================================
+  // PUBLIC METHODS - PLU MAPPINGS (for GRV imports)
+  // ===========================================================================
 
   /// Save a PLU mapping from CSV to correct product
   Future<void> savePluMapping(PluMapping mapping) async {
@@ -1128,7 +1642,9 @@ class OfflineStorage with ChangeNotifier {
     // Check if mapping exists to update confidence
     final existing = await getPluMapping(mapping.supplierId, mapping.csvPlu);
     if (existing != null) {
-      print('📝 Updating existing mapping, confidence was: ${existing.confidence}');
+      print(
+        '📝 Updating existing mapping, confidence was: ${existing.confidence}',
+      );
       mapping = PluMapping(
         csvPlu: mapping.csvPlu,
         csvDescription: mapping.csvDescription,
@@ -1217,7 +1733,6 @@ class OfflineStorage with ChangeNotifier {
     }
   }
 
-
   /// Get all PLU mappings
   Future<List<PluMapping>> getAllPluMappings() async {
     if (!_isReady || _pluMappings == null) {
@@ -1265,18 +1780,21 @@ class OfflineStorage with ChangeNotifier {
   /// Verify a mapping is still valid (product still exists with that PLU)
   Future<bool> verifyPluMapping(PluMapping mapping) async {
     // CHANGE THIS: Use ItemsIssued instead of ItemSales
-    final itemsIssued = await getItemsIssued();  // 🔴 CHANGED
+    final itemsIssued = await getItemsIssued(); // 🔴 CHANGED
 
-    final stillValid = itemsIssued.any((issue) =>
-    issue['PLU']?.toString() == mapping.correctPlu &&
-        _fuzzyMatch(
-            issue['Menu Item']?.toString() ?? '',  // Field from ItemsIssued
-            mapping.productName
-        )
+    final stillValid = itemsIssued.any(
+          (issue) =>
+      issue['PLU']?.toString() == mapping.correctPlu &&
+          _fuzzyMatch(
+            issue['Menu Item']?.toString() ?? '', // Field from ItemsIssued
+            mapping.productName,
+          ),
     );
 
     if (!stillValid) {
-      print('⚠️ Mapping may be outdated: ${mapping.csvPlu} -> ${mapping.correctPlu}');
+      print(
+        '⚠️ Mapping may be outdated: ${mapping.csvPlu} -> ${mapping.correctPlu}',
+      );
     }
 
     return stillValid;
@@ -1302,7 +1820,7 @@ class OfflineStorage with ChangeNotifier {
   /// Find correct PLU for a product name from ItemsIssued
   Future<String?> findPluByProductName(String productName) async {
     // CHANGE THIS: Use ItemsIssued instead of ItemSales
-    final itemsIssued = await getItemsIssued();  // 🔴 CHANGED
+    final itemsIssued = await getItemsIssued(); // 🔴 CHANGED
 
     final match = itemsIssued.firstWhere(
           (issue) => _fuzzyMatch(issue['Menu Item']?.toString() ?? '', productName),
@@ -1312,7 +1830,7 @@ class OfflineStorage with ChangeNotifier {
     return match['PLU']?.toString();
   }
 
-// ADD new method for StockIssues lookup if needed
+  // ADD new method for StockIssues lookup if needed
   Future<Map<String, dynamic>?> findProductByStockIssue(String itemName) async {
     final stockIssues = await getStockIssues();
 
@@ -1328,19 +1846,25 @@ class OfflineStorage with ChangeNotifier {
   // PUBLIC METHODS - COSTS
   // ===========================================================================
 
-  Future<double?> getCostBySupplierAndBottleId(String supplierID, String supplierBottleID) async {
+  Future<double?> getCostBySupplierAndBottleId(
+      String supplierID,
+      String supplierBottleID,
+      ) async {
     if (!_isReady || _masterCatalog == null) {
       print('🔍 getCostBySupplierAndBottleId: Storage not ready');
       return null;
     }
 
     final allCosts = await getMasterCosts();
-    print('🔍 Looking up cost for supplierID: $supplierID, supplierBottleID: $supplierBottleID');
+    print(
+      '🔍 Looking up cost for supplierID: $supplierID, supplierBottleID: $supplierBottleID',
+    );
     print('📊 Total costs available: ${allCosts.length}');
 
     // Strategy 1: Match by supplierID + supplierBottleID (most specific)
     var match = allCosts.firstWhere(
-          (c) => c['supplierID']?.toString() == supplierID &&
+          (c) =>
+      c['supplierID']?.toString() == supplierID &&
           c['supplierBottleID']?.toString() == supplierBottleID,
       orElse: () => <String, dynamic>{},
     );
@@ -1351,12 +1875,15 @@ class OfflineStorage with ChangeNotifier {
     }
 
     // Strategy 2: Match by supplierID + product name (find product name from supplierBottleID)
-    final productName = await _getProductNameBySupplierBottleId(supplierBottleID);
+    final productName = await _getProductNameBySupplierBottleId(
+      supplierBottleID,
+    );
     if (productName != null) {
       print('🔍 Strategy 2: Trying to match by product name: "$productName"');
 
       match = allCosts.firstWhere(
-            (c) => c['supplierID']?.toString() == supplierID &&
+            (c) =>
+        c['supplierID']?.toString() == supplierID &&
             _fuzzyMatch(c['Product Name']?.toString() ?? '', productName),
         orElse: () => <String, dynamic>{},
       );
@@ -1367,7 +1894,9 @@ class OfflineStorage with ChangeNotifier {
       }
     }
 
-    print('❌ No cost found for supplierID: $supplierID, supplierBottleID: $supplierBottleID');
+    print(
+      '❌ No cost found for supplierID: $supplierID, supplierBottleID: $supplierBottleID',
+    );
     return null;
   }
 
@@ -1380,36 +1909,41 @@ class OfflineStorage with ChangeNotifier {
     try {
       final costs = _masterCatalog!.values
           .map(_safeCast)
-          .where((c) =>
-      c['Cost Price'] != null ||
-          c['cost'] != null ||
-          c['avgCost'] != null)
-          .map((c) => {
-        // ✅ Use supplierBottleID from the data
-        'supplierBottleID': c['supplierBottleID']?.toString() ?? '',
+          .where(
+            (c) =>
+        c['Cost Price'] != null ||
+            c['cost'] != null ||
+            c['avgCost'] != null,
+      )
+          .map(
+            (c) => {
+          // ✅ Use supplierBottleID from the data
+          'supplierBottleID': c['supplierBottleID']?.toString() ?? '',
 
-        // ✅ Try multiple field names for bottleID
-        'bottleID': c['bottleID']?.toString() ??
-            c['supplierBottleID']?.toString() ?? '',
+          // ✅ Try multiple field names for bottleID
+          'bottleID':
+          c['bottleID']?.toString() ??
+              c['supplierBottleID']?.toString() ??
+              '',
 
-        // ✅ supplierID is correct
-        'supplierID': c['supplierID']?.toString() ?? '',
+          // ✅ supplierID is correct
+          'supplierID': c['supplierID']?.toString() ?? '',
 
-        // ✅ Try multiple field names for product name
-        'Product Name': c['Inventory Product Name']?.toString() ??
-            c['Product Name']?.toString() ??
-            c['productName']?.toString() ?? '',
+          // ✅ Try multiple field names for product name
+          'Product Name':
+          c['Inventory Product Name']?.toString() ??
+              c['Product Name']?.toString() ??
+              c['productName']?.toString() ??
+              '',
 
-        // ✅ Try multiple field names for supplier
-        'Supplier': c['Supplier']?.toString() ??
-            c['supplier']?.toString() ?? '',
+          // ✅ Try multiple field names for supplier
+          'Supplier':
+          c['Supplier']?.toString() ?? c['supplier']?.toString() ?? '',
 
-        // ✅ Try multiple field names for cost - prioritize Cost Price
-        'Cost Price': c['Cost Price'] ??
-            c['cost'] ??
-            c['avgCost'] ??
-            0.0,
-      })
+          // ✅ Try multiple field names for cost - prioritize Cost Price
+          'Cost Price': c['Cost Price'] ?? c['cost'] ?? c['avgCost'] ?? 0.0,
+        },
+      )
           .toList();
 
       // print('🔍 DEBUG: getMasterCosts found ${costs.length} cost entries');
@@ -1452,7 +1986,9 @@ class OfflineStorage with ChangeNotifier {
 
     if (safeDetails.containsKey('Invoice Number')) {
       safeDetails['Invoice Number'] = safeDetails['Invoice Number'].toString();
-      print('🔍 saveInvoiceDetails: Invoice Number = "${safeDetails['Invoice Number']}"');
+      print(
+        '🔍 saveInvoiceDetails: Invoice Number = "${safeDetails['Invoice Number']}"',
+      );
     }
 
     // 🔥 FIX: Use the ID provided, don't look for duplicates
@@ -1479,13 +2015,16 @@ class OfflineStorage with ChangeNotifier {
 
     // 🔥 Save directly - don't check for duplicates
     await _invoiceDetails!.put(finalId, safeDetails);
-    print('✅ Invoice saved with ID: $finalId, Number: "${safeDetails['Invoice Number']}"');
+    print(
+      '✅ Invoice saved with ID: $finalId, Number: "${safeDetails['Invoice Number']}"',
+    );
 
     notifyListeners();
 
     // 🔥 Return the final ID
     return finalId;
   }
+
   /// Save a single invoice
   Future<void> saveInvoice(Map<String, dynamic> invoice) async {
     if (!_isReady || _invoiceDetails == null) {
@@ -1509,7 +2048,10 @@ class OfflineStorage with ChangeNotifier {
 
   /// Save multiple invoices (bulk operation)
   /// Save multiple invoices (bulk operation) - REPLACES existing data
-  Future<void> saveInvoices(List<Map<String, dynamic>> items, {bool replace = true}) async {
+  Future<void> saveInvoices(
+      List<Map<String, dynamic>> items, {
+        bool replace = true,
+      }) async {
     if (!_isReady || _invoiceDetails == null) {
       print('🔍 DEBUG: saveInvoices - Storage not ready');
       return;
@@ -1610,14 +2152,16 @@ class OfflineStorage with ChangeNotifier {
     required String invoiceNumber,
     String? grvReference,
     String? supplierId,
-    String? deliveryDate,  // 🔥 NEW: Check delivery date
+    String? deliveryDate, // 🔥 NEW: Check delivery date
   }) async {
     if (!_isReady || _invoiceDetails == null) return null;
 
     if (invoiceNumber.isEmpty || supplierName.isEmpty) return null;
 
     try {
-      final allInvoices = _invoiceDetails!.values.map((v) => _safeCast(v)).toList();
+      final allInvoices = _invoiceDetails!.values
+          .map((v) => _safeCast(v))
+          .toList();
 
       for (var invoice in allInvoices) {
         final existingNumber = invoice['Invoice Number']?.toString() ?? '';
@@ -1627,19 +2171,23 @@ class OfflineStorage with ChangeNotifier {
         final existingDeliveryDate = invoice['Delivery Date']?.toString() ?? '';
 
         // 🔥 PRIMARY: Check ALL 4 factors for exact duplicate
-        if (supplierId != null && supplierId.isNotEmpty &&
+        if (supplierId != null &&
+            supplierId.isNotEmpty &&
             existingNumber == invoiceNumber &&
             existingSupplierId == supplierId) {
-
           // Check GRV Reference (if provided)
           if (grvReference != null && grvReference.isNotEmpty) {
             // GRV matches = exact duplicate
             if (existingGrvRef == grvReference) {
-              print('🔍 Found exact duplicate: Supplier $supplierId #$invoiceNumber GRV $grvReference');
+              print(
+                '🔍 Found exact duplicate: Supplier $supplierId #$invoiceNumber GRV $grvReference',
+              );
               return invoice;
             }
             // GRV differs - NOT a duplicate
-            print('📝 Different GRV: $existingGrvRef vs $grvReference - treating as new');
+            print(
+              '📝 Different GRV: $existingGrvRef vs $grvReference - treating as new',
+            );
             return null;
           }
 
@@ -1647,40 +2195,53 @@ class OfflineStorage with ChangeNotifier {
           if (deliveryDate != null && deliveryDate.isNotEmpty) {
             // Dates match = duplicate
             if (existingDeliveryDate == deliveryDate) {
-              print('🔍 Found duplicate by date: Supplier $supplierId #$invoiceNumber on $deliveryDate');
+              print(
+                '🔍 Found duplicate by date: Supplier $supplierId #$invoiceNumber on $deliveryDate',
+              );
               return invoice;
             }
             // Dates differ - NOT a duplicate
-            print('📝 Different delivery date: $existingDeliveryDate vs $deliveryDate - treating as new');
+            print(
+              '📝 Different delivery date: $existingDeliveryDate vs $deliveryDate - treating as new',
+            );
             return null;
           }
 
           // No GRV or date provided - use old logic (less strict)
-          print('🔍 Found existing invoice: Supplier $supplierId #$invoiceNumber');
+          print(
+            '🔍 Found existing invoice: Supplier $supplierId #$invoiceNumber',
+          );
           return invoice;
         }
 
         // 🔥 SECONDARY: Check by supplier name + invoice number (fallback for legacy data)
         if (existingNumber == invoiceNumber &&
             existingSupplierName.toLowerCase() == supplierName.toLowerCase()) {
-
           // Check GRV Reference (if provided)
           if (grvReference != null && grvReference.isNotEmpty) {
             if (existingGrvRef == grvReference) {
-              print('🔍 Found exact duplicate with same GRV reference: $grvReference');
+              print(
+                '🔍 Found exact duplicate with same GRV reference: $grvReference',
+              );
               return invoice;
             }
-            print('📝 Different GRV: $existingGrvRef vs $grvReference - treating as new');
+            print(
+              '📝 Different GRV: $existingGrvRef vs $grvReference - treating as new',
+            );
             return null;
           }
 
           // Check Delivery Date (if provided and no GRV)
           if (deliveryDate != null && deliveryDate.isNotEmpty) {
             if (existingDeliveryDate == deliveryDate) {
-              print('🔍 Found duplicate by date: $invoiceNumber on $deliveryDate');
+              print(
+                '🔍 Found duplicate by date: $invoiceNumber on $deliveryDate',
+              );
               return invoice;
             }
-            print('📝 Different delivery date: $existingDeliveryDate vs $deliveryDate - treating as new');
+            print(
+              '📝 Different delivery date: $existingDeliveryDate vs $deliveryDate - treating as new',
+            );
             return null;
           }
 
@@ -1717,7 +2278,8 @@ class OfflineStorage with ChangeNotifier {
       return;
     }
 
-    if (details['syncStatus'] != 'synced' && details['syncStatus'] != 'deleted') {
+    if (details['syncStatus'] != 'synced' &&
+        details['syncStatus'] != 'deleted') {
       details['syncStatus'] = 'pending';
     }
     details['updatedAt'] = DateTime.now().toIso8601String();
@@ -1793,7 +2355,8 @@ class OfflineStorage with ChangeNotifier {
     }
 
     // Check if invoice exists
-    final invoiceExists = _invoiceDetails != null && _invoiceDetails!.containsKey(invoiceId);
+    final invoiceExists =
+        _invoiceDetails != null && _invoiceDetails!.containsKey(invoiceId);
     print('📋 Invoice exists in box: $invoiceExists');
 
     // Delete invoice
@@ -1834,7 +2397,9 @@ class OfflineStorage with ChangeNotifier {
               print('  ⚠️ Purchase not found in box: $purchaseId');
             }
           } else {
-            print('  ⚠️ Purchase has no ID: ${purchase.toString().substring(0, math.min(100, purchase.toString().length))}');
+            print(
+              '  ⚠️ Purchase has no ID: ${purchase.toString().substring(0, math.min(100, purchase.toString().length))}',
+            );
           }
         }
         print('✅ Deleted $deletedCount/${purchases.length} purchases');
@@ -1853,7 +2418,9 @@ class OfflineStorage with ChangeNotifier {
 
     if (_purchases != null) {
       final remainingPurchases = await getPurchasesByInvoiceId(invoiceId);
-      print('📋 Final verification - Remaining purchases: ${remainingPurchases.length}');
+      print(
+        '📋 Final verification - Remaining purchases: ${remainingPurchases.length}',
+      );
     }
 
     notifyListeners();
@@ -1893,7 +2460,8 @@ class OfflineStorage with ChangeNotifier {
   Future<void> savePurchase(Map<String, dynamic> purchase) async {
     if (!_isReady || _purchases == null) return;
 
-    final id = purchase['purchases_ID'] ?? _generateUuid();    purchase['purchases_ID'] = id;
+    final id = purchase['purchases_ID'] ?? _generateUuid();
+    purchase['purchases_ID'] = id;
     purchase['syncStatus'] = purchase['syncStatus'] ?? 'pending';
 
     await _purchases!.put(id, purchase);
@@ -1941,7 +2509,9 @@ class OfflineStorage with ChangeNotifier {
 
     // Get existing purchases for this invoice
     final existingPurchases = await getPurchasesByInvoiceId(invoiceId);
-    print('🔄 Merging ${newPurchases.length} new items with ${existingPurchases.length} existing items');
+    print(
+      '🔄 Merging ${newPurchases.length} new items with ${existingPurchases.length} existing items',
+    );
 
     // Create a map of existing items by composite key (including GRV)
     final existingMap = <String, Map<String, dynamic>>{};
@@ -1991,7 +2561,9 @@ class OfflineStorage with ChangeNotifier {
         final existingPrice = _safeDouble(existing['Cost Per Bottle']);
 
         if (newQuantity != existingQuantity || newPrice != existingPrice) {
-          print('📝 Updating item: $productName (Qty: $existingQuantity → $newQuantity)');
+          print(
+            '📝 Updating item: $productName (Qty: $existingQuantity → $newQuantity)',
+          );
 
           // Preserve the original purchase ID
           final updatedItem = Map<String, dynamic>.from(newItem);
@@ -2017,7 +2589,8 @@ class OfflineStorage with ChangeNotifier {
 
         // 🔥 Include GRV in the purchase ID
         final grvToUse = grvRef.isNotEmpty ? grvRef : 'NOGRV';
-        final newId = 'purchase_${invoiceId}_${grvToUse}_${productKey}_line$maxLineIndex';
+        final newId =
+            'purchase_${invoiceId}_${grvToUse}_${productKey}_line$maxLineIndex';
 
         newItem['purchases_ID'] = newId;
         newItem['syncStatus'] = 'pending';
@@ -2082,7 +2655,9 @@ class OfflineStorage with ChangeNotifier {
   }
 
   /// Get purchases by invoice ID (uses index for O(1) lookup)
-  Future<List<Map<String, dynamic>>> getPurchasesByInvoiceId(String invoiceId) async {
+  Future<List<Map<String, dynamic>>> getPurchasesByInvoiceId(
+      String invoiceId,
+      ) async {
     if (!_isReady || _purchases == null) {
       print('🔍 DEBUG: getPurchasesByInvoiceId - Storage not ready');
       return [];
@@ -2180,7 +2755,6 @@ class OfflineStorage with ChangeNotifier {
       final end = (offset + limit).clamp(0, allPurchases.length);
 
       return allPurchases.sublist(start, end);
-
     } catch (e) {
       print('❌ Error in getPurchasesByInvoiceIdPaginated: $e');
       return [];
@@ -2236,7 +2810,6 @@ class OfflineStorage with ChangeNotifier {
       }
 
       return count;
-
     } catch (e) {
       print('❌ Error in getPurchaseCountByInvoiceId: $e');
       return 0;
@@ -2250,9 +2823,11 @@ class OfflineStorage with ChangeNotifier {
     try {
       final pending = _purchases!.values
           .map((e) => _safeCast(e))
-          .where((item) =>
-      item['syncStatus'] == 'pending' &&
-          item['syncStatus'] != 'deleted')  // ✅ EXCLUDE DELETED
+          .where(
+            (item) =>
+        item['syncStatus'] == 'pending' &&
+            item['syncStatus'] != 'deleted',
+      ) // ✅ EXCLUDE DELETED
           .toList();
 
       // print('🔍 DEBUG: getPendingPurchases found ${pending.length} pending items');
@@ -2300,7 +2875,10 @@ class OfflineStorage with ChangeNotifier {
   }
 
   /// Update an existing purchase
-  Future<void> updatePurchaseItem(String purchaseId, Map<String, dynamic> updates) async {
+  Future<void> updatePurchaseItem(
+      String purchaseId,
+      Map<String, dynamic> updates,
+      ) async {
     if (!_isReady || _purchases == null) return;
 
     final existing = _purchases!.get(purchaseId);
@@ -2319,7 +2897,9 @@ class OfflineStorage with ChangeNotifier {
   ///
   /// Uses Hive batch operations for O(1) writes instead of O(n) sequential writes
   /// Reduces save time from O(n * write_cost) to O(write_cost)
-  Future<void> batchUpdatePurchases(Map<String, Map<String, dynamic>> updates) async {
+  Future<void> batchUpdatePurchases(
+      Map<String, Map<String, dynamic>> updates,
+      ) async {
     if (!_isReady || _purchases == null) {
       print('❌ batchUpdatePurchases: Storage not ready');
       return;
@@ -2425,7 +3005,9 @@ class OfflineStorage with ChangeNotifier {
     try {
       return _inventory!.values
           .map(_safeCast)
-          .where((item) => item['Inventory Product Name']?.toString() == productName)
+          .where(
+            (item) => item['Inventory Product Name']?.toString() == productName,
+      )
           .map((item) => item['Barcode']?.toString() ?? '')
           .where((barcode) => barcode.isNotEmpty)
           .toList();
@@ -2456,13 +3038,16 @@ class OfflineStorage with ChangeNotifier {
     for (final rawItem in items) {
       if (rawItem is Map) {
         final item = Map<String, dynamic>.from(rawItem);
-        final barcode = item['Barcode']?.toString() ?? item['barcode']?.toString() ?? '';
-        if (item['Inventory Product Name'] == null && item['Product Name'] != null) {
+        final barcode =
+            item['Barcode']?.toString() ?? item['barcode']?.toString() ?? '';
+        if (item['Inventory Product Name'] == null &&
+            item['Product Name'] != null) {
           item['Inventory Product Name'] = item['Product Name'];
         }
         if (barcode.isNotEmpty) {
           batch[barcode] = item;
-          _productNameByBarcode[barcode] = item['Inventory Product Name']?.toString() ?? '';
+          _productNameByBarcode[barcode] =
+              item['Inventory Product Name']?.toString() ?? '';
         }
       }
     }
@@ -2479,7 +3064,8 @@ class OfflineStorage with ChangeNotifier {
     product['syncStatus'] = 'pending';
 
     await _inventory!.put(barcode, product);
-    _productNameByBarcode[barcode] = product['Inventory Product Name']?.toString() ?? '';
+    _productNameByBarcode[barcode] =
+        product['Inventory Product Name']?.toString() ?? '';
     notifyListeners();
   }
 
@@ -2487,7 +3073,9 @@ class OfflineStorage with ChangeNotifier {
     if (!_isReady) return [];
     return _inventory!.values
         .map((e) => _safeCast(e))
-        .where((item) => item['isLocal'] == true && item['syncStatus'] == 'pending')
+        .where(
+          (item) => item['isLocal'] == true && item['syncStatus'] == 'pending',
+    )
         .toList();
   }
 
@@ -2540,29 +3128,38 @@ class OfflineStorage with ChangeNotifier {
 
           // Generate a unique key for each cost entry
           // Use supplierBottleID + supplierID if available, otherwise use product name
-          final key = item['supplierBottleID']?.toString() ??
-              item['bottleID']?.toString() ??
-              'cost_${item['productName']?.toString() ?? ''}_$validItems';
+          final key =
+              item['supplierBottleID']?.toString() ??
+                  item['bottleID']?.toString() ??
+                  'cost_${item['productName']?.toString() ?? ''}_$validItems';
 
           // Ensure we have all the fields we need for lookups
           final enrichedItem = {
             ...item,
-            'supplierBottleID': item['supplierBottleID']?.toString() ??
-                item['bottleID']?.toString() ?? '',
-            'bottleID': item['bottleID']?.toString() ??
-                item['supplierBottleID']?.toString() ?? '',
+            'supplierBottleID':
+            item['supplierBottleID']?.toString() ??
+                item['bottleID']?.toString() ??
+                '',
+            'bottleID':
+            item['bottleID']?.toString() ??
+                item['supplierBottleID']?.toString() ??
+                '',
             'supplierID': item['supplierID']?.toString() ?? '',
-            'Product Name': item['Product Name']?.toString() ??
-                item['productName']?.toString() ?? '',
-            'Inventory Product Name': item['Inventory Product Name']?.toString() ??
+            'Product Name':
+            item['Product Name']?.toString() ??
+                item['productName']?.toString() ??
+                '',
+            'Inventory Product Name':
+            item['Inventory Product Name']?.toString() ??
                 item['Product Name']?.toString() ??
-                item['productName']?.toString() ?? '',
-            'Supplier': item['Supplier']?.toString() ??
-                item['supplier']?.toString() ?? '',
-            'Cost Price': item['Cost Price'] ??
-                item['cost'] ??
-                item['avgCost'] ??
-                0.0,
+                item['productName']?.toString() ??
+                '',
+            'Supplier':
+            item['Supplier']?.toString() ??
+                item['supplier']?.toString() ??
+                '',
+            'Cost Price':
+            item['Cost Price'] ?? item['cost'] ?? item['avgCost'] ?? 0.0,
           };
 
           batch[key] = enrichedItem;
@@ -2595,7 +3192,8 @@ class OfflineStorage with ChangeNotifier {
     masterItem['syncStatus'] = 'synced';
     masterItem['isLocal'] = false;
     await _inventory!.put(barcode, masterItem);
-    _productNameByBarcode[barcode] = masterItem['Inventory Product Name']?.toString() ?? '';
+    _productNameByBarcode[barcode] =
+        masterItem['Inventory Product Name']?.toString() ?? '';
     notifyListeners();
   }
 
@@ -2605,9 +3203,10 @@ class OfflineStorage with ChangeNotifier {
 
   Future<void> saveLocation(Map<String, dynamic> location) async {
     if (!_isReady) return;
-    final locationId = location['locationID']?.toString() ??
-        location['id']?.toString() ??
-        DateTime.now().millisecondsSinceEpoch.toString();
+    final locationId =
+        location['locationID']?.toString() ??
+            location['id']?.toString() ??
+            DateTime.now().millisecondsSinceEpoch.toString();
 
     location['locationID'] = locationId;
     location['syncStatus'] = 'pending';
@@ -2634,9 +3233,7 @@ class OfflineStorage with ChangeNotifier {
     for (final rawLoc in locations) {
       if (rawLoc is Map) {
         final loc = Map<String, dynamic>.from(rawLoc);
-        final id = loc['locationID']?.toString() ??
-            loc['id']?.toString() ??
-            '';
+        final id = loc['locationID']?.toString() ?? loc['id']?.toString() ?? '';
 
         if (id.isNotEmpty) {
           batch[id] = loc;
@@ -2674,8 +3271,8 @@ class OfflineStorage with ChangeNotifier {
   // ===========================================================================
 
   // ============================================================================
-// 🔥 ENHANCED: Generate Unique StockTake_ID
-// ============================================================================
+  // 🔥 ENHANCED: Generate Unique StockTake_ID
+  // ============================================================================
 
   String _generateStockId({
     required String date,
@@ -2726,7 +3323,8 @@ class OfflineStorage with ChangeNotifier {
   }
 
   String _generateShortId() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     String result = '';
     for (int i = 0; i < 6; i++) {
       result += chars[math.Random.secure().nextInt(chars.length)];
@@ -2734,9 +3332,9 @@ class OfflineStorage with ChangeNotifier {
     return result;
   }
 
-// ============================================================================
-// 🔥 UPDATED: saveStockCount with new ID generation
-// ============================================================================
+  // ============================================================================
+  // 🔥 UPDATED: saveStockCount with new ID generation
+  // ============================================================================
 
   Future<void> saveStockCount(Map<String, dynamic> count) async {
     if (_isDisposed) return;
@@ -2744,17 +3342,25 @@ class OfflineStorage with ChangeNotifier {
     try {
       // 🔥 Get date and time from the count
       final now = DateTime.now();
-      final date = count['date']?.toString() ?? now.toIso8601String().split('T').first;
-      final time = now.toIso8601String().split('T').last.split('.').first; // HH:MM:SS
+      final date =
+          count['date']?.toString() ?? now.toIso8601String().split('T').first;
+      final time = now
+          .toIso8601String()
+          .split('T')
+          .last
+          .split('.')
+          .first; // HH:MM:SS
 
       // 🔥 Generate unique ID with sanitized values
-      final id = count['id'] ?? _generateStockId(
-        date: date,
-        time: time,
-        barcode: count['barcode']?.toString() ?? '',
-        productName: count['productName']?.toString() ?? '',
-        location: count['location']?.toString() ?? '',
-      );
+      final id =
+          count['id'] ??
+              _generateStockId(
+                date: date,
+                time: time,
+                barcode: count['barcode']?.toString() ?? '',
+                productName: count['productName']?.toString() ?? '',
+                location: count['location']?.toString() ?? '',
+              );
 
       // 🔥 Ensure the ID is consistent
       count['id'] = id;
@@ -2763,10 +3369,15 @@ class OfflineStorage with ChangeNotifier {
       count['createdAt'] = now.toIso8601String();
 
       // 🔥 Trim long fields to prevent GAS memory issues
-      if (count['productName'] != null && count['productName'].toString().length > 100) {
-        count['productName'] = count['productName'].toString().substring(0, 100);
+      if (count['productName'] != null &&
+          count['productName'].toString().length > 100) {
+        count['productName'] = count['productName'].toString().substring(
+          0,
+          100,
+        );
       }
-      if (count['location'] != null && count['location'].toString().length > 50) {
+      if (count['location'] != null &&
+          count['location'].toString().length > 50) {
         count['location'] = count['location'].toString().substring(0, 50);
       }
 
@@ -2783,6 +3394,8 @@ class OfflineStorage with ChangeNotifier {
     if (!_isReady) return;
     final id = count['id'];
     if (id == null) return;
+    final previous = _counts!.get(id);
+    count = mergeStockRecord(previous == null ? <String, dynamic>{} : _safeCast(previous), count);
     count['syncStatus'] = 'pending';
     count['updatedAt'] = DateTime.now().toIso8601String();
     await _counts!.put(id, count);
@@ -2804,8 +3417,11 @@ class OfflineStorage with ChangeNotifier {
     }
   }
 
-
-  Future<List<Map<String, dynamic>>> getStockCounts({String? location, String? date, String? auditId}) async {
+  Future<List<Map<String, dynamic>>> getStockCounts({
+    String? location,
+    String? date,
+    String? auditId,
+  }) async {
     if (!_isReady) return [];
     var counts = _counts!.values
         .map((e) => _safeCast(e))
@@ -2843,16 +3459,69 @@ class OfflineStorage with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> saveRemoteStockCounts(List<Map<String, dynamic>> remoteCounts) async {
+  Future<List<String>> markStockSnapshotsAsSyncedV2(
+      List<String> confirmedIds,
+      List<Map<String, dynamic>> submitted,
+      String? expectedStoreId,
+      ) async {
+    if (!_isReady ||
+        expectedStoreId == null ||
+        currentStoreId != expectedStoreId)
+      return [];
+    final box =
+    _counts!; // Never dereference a newly switched store's box after await.
+    final snapshots = <String, Map<String, dynamic>>{
+      for (final row in submitted)
+        (row['id'] ?? row['stock_id'] ?? row['stockId']).toString(): row,
+    };
+    final marked = <String>[];
+    for (final id in confirmedIds.toSet()) {
+      if (!_isReady ||
+          currentStoreId != expectedStoreId ||
+          !identical(_counts, box) ||
+          !box.isOpen)
+        break;
+      final expected = snapshots[id];
+      final stored = box.get(id);
+      if (expected == null || stored == null) continue;
+      final current = _safeCast(stored);
+      // A newer edit/deletion must stay pending, even if an older version was saved.
+      if (!mapEquals(current, expected)) continue;
+      if (current['syncStatus'] == 'deleted') {
+        await box.delete(id);
+      } else if (current['syncStatus'] == 'pending') {
+        current['syncStatus'] = 'synced';
+        current['syncedAt'] = DateTime.now().toIso8601String();
+        await box.put(id, current);
+      } else {
+        continue;
+      }
+      marked.add(id);
+    }
+    if (_isReady &&
+        currentStoreId == expectedStoreId &&
+        identical(_counts, box)) {
+      _updatePendingCounts();
+      notifyListeners();
+    }
+    return marked;
+  }
+
+  Future<void> saveRemoteStockCounts(
+      List<Map<String, dynamic>> remoteCounts,
+      ) async {
     if (!_isReady) return;
 
-    print('📊 saveRemoteStockCounts: Processing ${remoteCounts.length} remote counts');
+    print(
+      '📊 saveRemoteStockCounts: Processing ${remoteCounts.length} remote counts',
+    );
 
     // 🔥 FILTER OUT DELETED RECORDS
     final filteredCounts = remoteCounts.where((row) {
-      final isDeleted = row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
+      final isDeleted =
+          row['deleted'] == true ||
+              row['deleted'] == 'true' ||
+              row['deleted']?.toString().toLowerCase() == 'true';
       return !isDeleted;
     }).toList();
 
@@ -2866,7 +3535,9 @@ class OfflineStorage with ChangeNotifier {
 
     for (var row in filteredCounts) {
       // Try multiple possible ID fields
-      final id = (row['id'] ?? row['stock_id'] ?? row['stockTake_ID'])?.toString() ?? '';
+      final id =
+          (row['id'] ?? row['stock_id'] ?? row['stockTake_ID'])?.toString() ??
+              '';
       if (id.isEmpty) {
         print('⚠️ Skipping remote count with empty ID');
         continue;
@@ -2878,7 +3549,8 @@ class OfflineStorage with ChangeNotifier {
       if (localData != null) {
         final localMap = _safeCast(localData);
         // 🔥 Preserve pending/deleted status
-        if (localMap['syncStatus'] == 'pending' || localMap['syncStatus'] == 'deleted') {
+        if (localMap['syncStatus'] == 'pending' ||
+            localMap['syncStatus'] == 'deleted') {
           skipped++;
           print('⏭️ Keeping local pending/deleted record: $id');
           continue;
@@ -2886,29 +3558,19 @@ class OfflineStorage with ChangeNotifier {
       }
 
       // 🔥 Map remote fields to local field names
-      final count = {
-        'id': id,
-        'stock_id': id,
-        'date': row['date'] ?? row['Date'] ?? '',
-        'barcode': row['barcode'] ?? row['Barcode'] ?? '',
-        'productName': row['productName'] ?? row['Product Name'] ?? '',
-        'mainCategory': row['mainCategory'] ?? row['Main Category'] ?? '',
-        'category': row['category'] ?? row['Category'] ?? '',
-        'location': row['location'] ?? row['Location'] ?? '',
-        'pack_size': row['pack_size'] ?? row['Case/Pack Size'] ?? '',
-        'count': _safeDouble(row['count'] ?? row['Count'] ?? 0),
-        'weight': _safeDouble(row['weight'] ?? row['Weight (g)'] ?? 0),
-        'total_bottles': _safeDouble(row['total_bottles'] ?? row['Total Bottles on Hand'] ?? 0),
-        'syncStatus': 'synced',
-        'syncedAt': DateTime.now().toIso8601String(),
-        'createdAt': row['createdAt'] ?? row['created_at'] ?? DateTime.now().toIso8601String(),
-        'updatedAt': row['updatedAt'] ?? row['updated_at'],
-        'deleted': false,
+      final count = <String, dynamic>{
+        ...mergeStockRecord(localData == null ? <String, dynamic>{} : _safeCast(localData), row),
+        'id': id, 'stock_id': id, 'syncStatus': 'synced',
+        'syncedAt': DateTime.now().toIso8601String(), 'deleted': false,
       };
 
       // 🔥 Trim long fields
-      if (count['productName'] != null && count['productName'].toString().length > 100) {
-        count['productName'] = count['productName'].toString().substring(0, 100);
+      if (count['productName'] != null &&
+          count['productName'].toString().length > 100) {
+        count['productName'] = count['productName'].toString().substring(
+          0,
+          100,
+        );
       }
 
       if (localData != null) {
@@ -2927,97 +3589,127 @@ class OfflineStorage with ChangeNotifier {
     // Deletion is already signalled explicitly via row['deleted'] == true,
     // which is filtered out above, so absence alone must never delete.
 
-    print('📊 saveRemoteStockCounts result: +$added added, $updated updated, $skipped skipped');
+    print(
+      '📊 saveRemoteStockCounts result: +$added added, $updated updated, $skipped skipped',
+    );
 
     _updatePendingCounts();
     notifyListeners();
   }
 
-  Future<void> overwriteLocalCounts(List<Map<String, dynamic>> remoteCounts) async {
+  Future<void> overwriteLocalCounts(
+      List<Map<String, dynamic>> remoteCounts,
+      ) async {
     print('🔍 ===== OVERWRITE LOCAL COUNTS =====');
     print('  - remoteCounts.length: ${remoteCounts.length}');
     print('  - _isReady: $_isReady');
     print('  - _counts box exists: ${_counts != null}');
 
-    if (!_isReady) {
-      print('  ❌ Not ready - aborting');
+    if (!_isReady || _counts == null) {
+      print('  ❌ Storage not ready - aborting');
       return;
     }
 
-    // 🔥 FILTER OUT DELETED RECORDS
+    // 1. FILTER OUT DELETED RECORDS
     final filteredCounts = remoteCounts.where((row) {
-      final isDeleted = row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
+      final isDeleted =
+          row['deleted'] == true ||
+              row['deleted'] == 'true' ||
+              row['deleted']?.toString().toLowerCase() == 'true';
       return !isDeleted;
     }).toList();
 
     print('  - After filtering deleted: ${filteredCounts.length} records');
     print('  📊 Before - _counts box has ${_counts!.length} items');
 
-    // 🔥 SAFETY: this clears and rebuilds the whole box. Never do that
-    // from a payload that looks suspiciously small compared to what's
-    // already stored — that almost always means a partial/empty fetch,
-    // not a genuinely emptied store.
+    if (filteredCounts.isNotEmpty) {
+      print(
+        '  🔑 Sample keys in first record: ${filteredCounts.first.keys.take(10).join(', ')}',
+      );
+    }
+
+    // 2. SAFETY CHECK: Refuse to wipe existing data on an unexpectedly small payload
     final existingSize = _counts!.length;
     if (existingSize > 0 && filteredCounts.length < existingSize * 0.5) {
-      print('  ⚠️ Refusing to overwrite: incoming (${filteredCounts.length}) is far smaller than existing ($existingSize)');
+      print(
+        '  ⚠️ Refusing to overwrite: incoming (${filteredCounts.length}) is far smaller than existing ($existingSize)',
+      );
       return;
     }
 
+    // 3. BACKUP PENDING LOCAL ITEMS (Never lose unsynced counts)
     final pendingItems = _counts!.values
         .map((e) => _safeCast(e))
-        .where((c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted')
+        .where(
+          (c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted',
+    )
         .toList();
 
+    final beforeById = <String, Map<String, dynamic>>{
+      for (final entry in _counts!.toMap().entries) entry.key.toString(): _safeCast(entry.value),
+    };
     await _counts!.clear();
     print('  - After clear: ${_counts!.length} items');
 
     int added = 0;
     int skipped = 0;
-    for (var row in filteredCounts) {
-      // Try multiple possible ID fields
-      final id = row['stockTake_ID']?.toString() ??
-          row['id']?.toString() ??
-          row['stock_id']?.toString() ?? '';
+    final batchEntries = <String, Map<String, dynamic>>{};
+
+    for (int i = 0; i < filteredCounts.length; i++) {
+      final row = filteredCounts[i];
+
+      // Extract ID with multi-key and case-insensitive fallback
+      String id = _extractStockCountId(row);
+
+      // Fallback: If Column B in the sheet was blank, derive a deterministic ID
+      if (id.isEmpty) {
+        final barcode = (row['Barcode'] ?? row['barcode'] ?? '')
+            .toString()
+            .trim();
+        final date = (row['Date'] ?? row['date'] ?? '').toString().trim();
+        final loc = (row['Location'] ?? row['location'] ?? '')
+            .toString()
+            .trim();
+        final product = (row['Product Name'] ?? row['productName'] ?? '')
+            .toString()
+            .trim();
+
+        if (barcode.isNotEmpty || product.isNotEmpty) {
+          id = 'derived_${date}_${barcode}_${loc}_$i'.replaceAll(
+            RegExp(r'[^a-zA-Z0-9_-]'),
+            '_',
+          );
+        }
+      }
 
       if (id.isEmpty) {
-        print('  ⚠️ Skipping row with no ID');
         skipped++;
         continue;
       }
 
-      final count = {
-        'id': id,
-        'stock_id': id,
-        'date': row['Date'] ?? row['date'] ?? '',
-        'barcode': row['Barcode'] ?? row['barcode'] ?? '',
-        'productName': row['Product Name'] ?? row['productName'] ?? '',
-        'mainCategory': row['Main Category'] ?? row['mainCategory'] ?? '',
-        'category': row['Category'] ?? row['category'] ?? '',
-        'location': row['Location'] ?? row['location'] ?? '',
-        'pack_size': row['Case/Pack Size'] ?? row['pack_size'] ?? '',
-        'count': double.tryParse(row['Count']?.toString() ?? row['count']?.toString() ?? '0') ?? 0.0,
-        'weight': double.tryParse(row['Weight (g)']?.toString() ?? row['weight']?.toString() ?? '0') ?? 0.0,
-        'total_bottles': double.tryParse(row['Total Bottles on Hand']?.toString() ?? row['total_bottles']?.toString() ?? '0') ?? 0.0,
-        'syncStatus': 'synced',
-        'syncedAt': DateTime.now().toIso8601String(),
-        'createdAt': row['created_at'] ?? row['createdAt'] ?? DateTime.now().toIso8601String(),
-        'updatedAt': row['updated_at'] ?? row['updatedAt'],
-        'deleted': false,
+      final count = <String, dynamic>{
+        ...mergeStockRecord(beforeById[id] ?? <String, dynamic>{}, row),
+        'id': id, 'stock_id': id, 'syncStatus': 'synced',
+        'syncedAt': DateTime.now().toIso8601String(), 'deleted': false,
       };
-      await _counts!.put(id, count);
+
+      batchEntries[id] = count;
       added++;
     }
 
+    // 4. BATCH WRITE TO HIVE (Instantaneous compared to loop puts)
+    if (batchEntries.isNotEmpty) {
+      await _counts!.putAll(batchEntries);
+    }
     print('  - Added $added remote counts ($skipped skipped)');
 
+    // 5. RESTORE PENDING ITEMS
     int restored = 0;
-    for (var p in pendingItems) {
-      await _counts!.put(p['id'], p);
-      restored++;
+    if (pendingItems.isNotEmpty) {
+      final pendingMap = {for (var p in pendingItems) p['id'].toString(): p};
+      await _counts!.putAll(pendingMap);
+      restored = pendingItems.length;
     }
-
     print('  - Restored $restored pending items');
 
     _updatePendingCounts();
@@ -3025,6 +3717,39 @@ class OfflineStorage with ChangeNotifier {
 
     print('  - Final box size: ${_counts!.length}');
     print('🔍 ===== OVERWRITE COMPLETE =====');
+  }
+
+  /// Helper to reliably find an ID across differing Google Sheet and API casings
+  String _extractStockCountId(Map<String, dynamic> row) {
+    const candidateKeys = [
+      'stockTake_ID',
+      'id',
+      'stock_id',
+      'stockId',
+      'StockTake_ID',
+      'StockTakeID',
+      'Stock ID',
+      'stock_take_id',
+    ];
+
+    for (final key in candidateKeys) {
+      final val = row[key]?.toString().trim();
+      if (val != null && val.isNotEmpty) return val;
+    }
+
+    // Case-insensitive clean check
+    for (final entry in row.entries) {
+      final clean = entry.key.toLowerCase().replaceAll(
+        RegExp(r'[^a-z0-9]'),
+        '',
+      );
+      if (clean == 'stocktakeid' || clean == 'stockid' || clean == 'id') {
+        final val = entry.value?.toString().trim();
+        if (val != null && val.isNotEmpty) return val;
+      }
+    }
+
+    return '';
   }
 
   // ===========================================================================
@@ -3093,8 +3818,8 @@ class OfflineStorage with ChangeNotifier {
   }
 
   // ===========================================================================
-// PUBLIC METHODS - ITEMS ISSUED MAP
-// ===========================================================================
+  // PUBLIC METHODS - ITEMS ISSUED MAP
+  // ===========================================================================
 
   /// Save ItemsIssuedMap data from server
   Future<void> saveItemsIssuedMap(List<dynamic> items) async {
@@ -3170,21 +3895,25 @@ class OfflineStorage with ChangeNotifier {
       final category = row['Category']?.toString().trim() ?? '';
 
       // Only store if not already mapped or if product is more specific
-      if (!map.containsKey(plu) || (product.isNotEmpty && map[plu]!['Product']?.toString().isEmpty == true)) {
+      if (!map.containsKey(plu) ||
+          (product.isNotEmpty &&
+              map[plu]!['Product']?.toString().isEmpty == true)) {
         map[plu] = {
           'PLU': plu,
           'Menu Item': menuItem,
           'Product': product.isNotEmpty ? product : menuItem,
           'Quantity': quantity ?? 1,
-          'Measure': measure ?? '',
-          'Main Category': mainCategory ?? '',
-          'Category': category ?? '',
+          'Measure': measure,
+          'Main Category': mainCategory,
+          'Category': category,
         };
       }
     }
 
     final result = map.values.toList();
-    print('📋 Built virtual ItemsIssuedMap with ${result.length} entries from ${itemsIssued.length} ItemsIssued records');
+    print(
+      '📋 Built virtual ItemsIssuedMap with ${result.length} entries from ${itemsIssued.length} ItemsIssued records',
+    );
     return result;
   }
 
@@ -3200,7 +3929,9 @@ class OfflineStorage with ChangeNotifier {
       final virtualMap = await getVirtualItemsIssuedMap();
 
       if (virtualMap.isNotEmpty) {
-        print('🔍 DEBUG: getItemsIssuedMap returning ${virtualMap.length} virtual entries');
+        print(
+          '🔍 DEBUG: getItemsIssuedMap returning ${virtualMap.length} virtual entries',
+        );
         return virtualMap;
       }
 
@@ -3211,7 +3942,9 @@ class OfflineStorage with ChangeNotifier {
             .where((item) => item.isNotEmpty)
             .toList();
 
-        print('🔍 DEBUG: getItemsIssuedMap found ${mappings.length} real entries');
+        print(
+          '🔍 DEBUG: getItemsIssuedMap found ${mappings.length} real entries',
+        );
         return mappings;
       }
 
@@ -3243,7 +3976,9 @@ class OfflineStorage with ChangeNotifier {
       final plu = item['Item']?.toString().trim() ?? '';
       if (plu == '7') {
         heinekenCount++;
-        print('  ✅ Found Heineken: ${item['Name']}, Qty: ${item['Issued']}, Date: ${item['Date']}');
+        print(
+          '  ✅ Found Heineken: ${item['Name']}, Qty: ${item['Issued']}, Date: ${item['Date']}',
+        );
       }
     }
 
@@ -3254,7 +3989,9 @@ class OfflineStorage with ChangeNotifier {
       for (var value in _stockIssues!.values) {
         if (i < 5) {
           final item = _safeCast(value);
-          print('    Sample $i: Item="${item['Item']}", Name="${item['Name']}", Date="${item['Date']}"');
+          print(
+            '    Sample $i: Item="${item['Item']}", Name="${item['Name']}", Date="${item['Date']}"',
+          );
           i++;
         }
       }
@@ -3297,7 +4034,9 @@ class OfflineStorage with ChangeNotifier {
 
         if (plu == '7') {
           heinekenCount++;
-          print('  ✅ Found Heineken: PLU="$plu", Name="$name", Issued=$issued, Date=$date');
+          print(
+            '  ✅ Found Heineken: PLU="$plu", Name="$name", Issued=$issued, Date=$date',
+          );
         }
       }
     }
@@ -3315,7 +4054,9 @@ class OfflineStorage with ChangeNotifier {
         final plu = item['Item']?.toString().trim() ?? '';
         final name = item['Name']?.toString().trim() ?? '';
         if (plu.isNotEmpty || name.isNotEmpty) {
-          print('    Sample ${printed+1}: Item="$plu", Name="$name", Date=${item['Date']}');
+          print(
+            '    Sample ${printed + 1}: Item="$plu", Name="$name", Date=${item['Date']}',
+          );
           printed++;
         }
       }
@@ -3348,15 +4089,20 @@ class OfflineStorage with ChangeNotifier {
     if (match.isEmpty) return null;
 
     // 3. Get Product Name
-    final productName = match['Product']?.toString().trim() ??
-        match['Menu Item']?.toString().trim() ?? '';
+    final productName =
+        match['Product']?.toString().trim() ??
+            match['Menu Item']?.toString().trim() ??
+            '';
 
     if (productName.isEmpty) return null;
 
     // 4. Find in inventory by Product Name (fuzzy match)
     final allInventory = await getAllInventory();
     return allInventory.firstWhere(
-          (item) => _fuzzyMatch(item['Inventory Product Name']?.toString() ?? '', productName),
+          (item) => _fuzzyMatch(
+        item['Inventory Product Name']?.toString() ?? '',
+        productName,
+      ),
       orElse: () => <String, dynamic>{},
     );
   }
@@ -3494,6 +4240,7 @@ class OfflineStorage with ChangeNotifier {
       print('✅ No purchases needed migration.');
     }
   }
+
   /// Clear ALL cached data (invoices, purchases, inventory, etc.)
   /// ⚠️ WARNING: This will delete ALL local data and require a full refresh
   Future<void> clearAllData() async {
@@ -3559,7 +4306,9 @@ class OfflineStorage with ChangeNotifier {
       final pendingInvoices = await getPendingInvoiceDetails();
       final pendingPurchases = await getPendingPurchases();
 
-      print('📊 getDatabaseStats → Pending Invoices: ${pendingInvoices.length} | Pending Purchases: ${pendingPurchases.length}');
+      print(
+        '📊 getDatabaseStats → Pending Invoices: ${pendingInvoices.length} | Pending Purchases: ${pendingPurchases.length}',
+      );
 
       return {
         'stockCounts': _counts?.length ?? 0,
@@ -3567,9 +4316,9 @@ class OfflineStorage with ChangeNotifier {
         'locations': _locations?.length ?? 0,
         'audits': _audits?.length ?? 0,
         'pendingSync': _pendingCounts.length,
-        'purchases': pendingPurchases.length,           // ← FIXED: Pending only
+        'purchases': pendingPurchases.length, // ← FIXED: Pending only
         'sales': _storeSalesData?.length ?? 0,
-        'invoices': pendingInvoices.length,             // ← FIXED: Pending only
+        'invoices': pendingInvoices.length, // ← FIXED: Pending only
         'suppliers': _masterSuppliers?.length ?? 0,
 
         // Extra helpful keys for debugging
@@ -3606,7 +4355,9 @@ class OfflineStorage with ChangeNotifier {
       for (var value in _counts!.values) {
         if (i < 3) {
           final item = _safeCast(value);
-          print('    [${i+1}] ${item['productName']} (${item['id']}) - ${item['syncStatus']}');
+          print(
+            '    [${i + 1}] ${item['productName']} (${item['id']}) - ${item['syncStatus']}',
+          );
           i++;
         }
       }
@@ -3647,7 +4398,7 @@ class OfflineStorage with ChangeNotifier {
       for (var value in _masterCatalog!.values) {
         if (i < 3) {
           final item = _safeCast(value);
-          print('    [${i+1}] Keys: ${item.keys.join(', ')}');
+          print('    [${i + 1}] Keys: ${item.keys.join(', ')}');
           if (item.containsKey('Product Name')) {
             print('        Product: ${item['Product Name']}');
           }
@@ -3670,7 +4421,9 @@ class OfflineStorage with ChangeNotifier {
           itemsWithCost++;
         }
       }
-      print('  📊 Inventory items with costs: $itemsWithCost / ${_inventory!.length}');
+      print(
+        '  📊 Inventory items with costs: $itemsWithCost / ${_inventory!.length}',
+      );
     }
 
     print('🔍 ===== DEBUG END =====');
@@ -3683,7 +4436,9 @@ class OfflineStorage with ChangeNotifier {
     final pendingInvoices = await getPendingInvoiceDetails();
     print('📋 Pending invoices: ${pendingInvoices.length}');
     for (var inv in pendingInvoices) {
-      print('  - ${inv['Invoice Number']} (${inv['invoiceDetailsID']}) - ${inv['syncStatus']}');
+      print(
+        '  - ${inv['Invoice Number']} (${inv['invoiceDetailsID']}) - ${inv['syncStatus']}',
+      );
     }
 
     final deletedInvoices = await getDeletedInvoices();
@@ -3722,7 +4477,9 @@ class OfflineStorage with ChangeNotifier {
       int i = 0;
       for (var value in _masterSuppliers!.values) {
         final supplier = Map<String, dynamic>.from(value as Map);
-        print('    [${i+1}] ${supplier['supplierID']}: ${supplier['Supplier']}');
+        print(
+          '    [${i + 1}] ${supplier['supplierID']}: ${supplier['Supplier']}',
+        );
         i++;
       }
     } else {
@@ -3736,7 +4493,9 @@ class OfflineStorage with ChangeNotifier {
         print('  - GoogleSheetsService is available, attempting fetch...');
         try {
           final suppliers = await _googleSheetsService!.fetchMasterSuppliers();
-          print('  - fetchMasterSuppliers() returned ${suppliers.length} items');
+          print(
+            '  - fetchMasterSuppliers() returned ${suppliers.length} items',
+          );
         } catch (e) {
           print('  - Error fetching: $e');
         }
@@ -3764,7 +4523,9 @@ class OfflineStorage with ChangeNotifier {
     print('💾 Local has ${localSuppliers.length} suppliers');
 
     if (serverSuppliers.length > localSuppliers.length) {
-      print('⚠️ Missing ${serverSuppliers.length - localSuppliers.length} suppliers locally');
+      print(
+        '⚠️ Missing ${serverSuppliers.length - localSuppliers.length} suppliers locally',
+      );
 
       // Find which ones are missing
       final localIds = localSuppliers
@@ -3809,23 +4570,36 @@ class OfflineStorage with ChangeNotifier {
   // ===========================================================================
 
   Future<void> _closeBoxes() async {
-    if (_isDisposed) return;
+    _refreshStoreGeneration++;
+    _isReady = false;
+    // Let a captured-box write settle before closing or opening another store.
+    await _refreshSaveTail;
 
     if (_counts != null && _counts!.isOpen) await _counts!.close();
     if (_inventory != null && _inventory!.isOpen) await _inventory!.close();
     if (_locations != null && _locations!.isOpen) await _locations!.close();
     if (_audits != null && _audits!.isOpen) await _audits!.close();
-    if (_masterCatalog != null && _masterCatalog!.isOpen) await _masterCatalog!.close();
+    if (_masterCatalog != null && _masterCatalog!.isOpen)
+      await _masterCatalog!.close();
     if (_purchases != null && _purchases!.isOpen) await _purchases!.close();
-    if (_storeSalesData != null && _storeSalesData!.isOpen) await _storeSalesData!.close();
-    if (_itemSalesMap != null && _itemSalesMap!.isOpen) await _itemSalesMap!.close();
-    if (_invoiceDetails != null && _invoiceDetails!.isOpen) await _invoiceDetails!.close();
-    if (_masterSuppliers != null && _masterSuppliers!.isOpen) await _masterSuppliers!.close();
-    if (_pluMappings != null && _pluMappings!.isOpen) await _pluMappings!.close();
-    if (_pluMappingHistory != null && _pluMappingHistory!.isOpen) await _pluMappingHistory!.close();
-    if (_itemsIssued != null && _itemsIssued!.isOpen) await _itemsIssued!.close();
-    if (_stockIssues != null && _stockIssues!.isOpen) await _stockIssues!.close();
-    if (_itemsIssuedMap != null && _itemsIssuedMap!.isOpen) await _itemsIssuedMap!.close();
+    if (_storeSalesData != null && _storeSalesData!.isOpen)
+      await _storeSalesData!.close();
+    if (_itemSalesMap != null && _itemSalesMap!.isOpen)
+      await _itemSalesMap!.close();
+    if (_invoiceDetails != null && _invoiceDetails!.isOpen)
+      await _invoiceDetails!.close();
+    if (_masterSuppliers != null && _masterSuppliers!.isOpen)
+      await _masterSuppliers!.close();
+    if (_pluMappings != null && _pluMappings!.isOpen)
+      await _pluMappings!.close();
+    if (_pluMappingHistory != null && _pluMappingHistory!.isOpen)
+      await _pluMappingHistory!.close();
+    if (_itemsIssued != null && _itemsIssued!.isOpen)
+      await _itemsIssued!.close();
+    if (_stockIssues != null && _stockIssues!.isOpen)
+      await _stockIssues!.close();
+    if (_itemsIssuedMap != null && _itemsIssuedMap!.isOpen)
+      await _itemsIssuedMap!.close();
   }
 
   Future<bool> _checkConnectivity() async {
@@ -3846,13 +4620,14 @@ class OfflineStorage with ChangeNotifier {
     try {
       _pendingCounts = _counts!.values
           .map((e) => _safeCast(e))
-          .where((c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted') // 👈 Keep only this
+          .where(
+            (c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted',
+      ) // 👈 Keep only this
           .toList();
     } catch (e) {
       _pendingCounts = [];
     }
   }
-
 
   /// Rebuild in-memory indexes for faster lookups
   Future<void> _rebuildIndexes() async {
@@ -3873,9 +4648,11 @@ class OfflineStorage with ChangeNotifier {
     if (_inventory != null) {
       for (var data in _inventory!.values) {
         final item = _safeCast(data);
-        final barcode = item['Barcode']?.toString() ?? item['barcode']?.toString() ?? '';
+        final barcode =
+            item['Barcode']?.toString() ?? item['barcode']?.toString() ?? '';
         if (barcode.isNotEmpty) {
-          _productNameByBarcode[barcode] = item['Inventory Product Name']?.toString() ?? '';
+          _productNameByBarcode[barcode] =
+              item['Inventory Product Name']?.toString() ?? '';
         }
       }
     }
@@ -3918,16 +4695,19 @@ class OfflineStorage with ChangeNotifier {
   }
 
   double? _extractCost(Map<String, dynamic> costEntry) {
-    final dynamic costValue = costEntry['Cost Price'] ??
-        costEntry['cost'] ??
-        costEntry['avgCost'] ??
-        costEntry['Unit Cost'] ??
-        costEntry['Cost'];
+    final dynamic costValue =
+        costEntry['Cost Price'] ??
+            costEntry['cost'] ??
+            costEntry['avgCost'] ??
+            costEntry['Unit Cost'] ??
+            costEntry['Cost'];
 
     if (costValue == null) return null;
     if (costValue is num) return costValue.toDouble();
     if (costValue is String) {
-      final cleaned = costValue.replaceAll(',', '').replaceAll(RegExp(r'[^\d.]'), '');
+      final cleaned = costValue
+          .replaceAll(',', '')
+          .replaceAll(RegExp(r'[^\d.]'), '');
       return double.tryParse(cleaned);
     }
     return null;
@@ -3941,42 +4721,42 @@ class OfflineStorage with ChangeNotifier {
     return union > 0 && (intersection / union) >= 0.85;
   }
 
-  Future<String?> _getProductNameBySupplierBottleId(String supplierBottleID) async {
+  Future<String?> _getProductNameBySupplierBottleId(
+      String supplierBottleID,
+      ) async {
     if (!_isReady || _masterCatalog == null) {
       print('🔍 _getProductNameBySupplierBottleId: Storage not ready');
       return null;
     }
 
     try {
-      final match = _masterCatalog!.values
-          .map(_safeCast)
-          .firstWhere(
-            (item) {
-          return item['supplierBottleID']?.toString() == supplierBottleID ||
-              item['bottleID']?.toString() == supplierBottleID;
-        },
-        orElse: () => <String, dynamic>{},
-      );
+      final match = _masterCatalog!.values.map(_safeCast).firstWhere((item) {
+        return item['supplierBottleID']?.toString() == supplierBottleID ||
+            item['bottleID']?.toString() == supplierBottleID;
+      }, orElse: () => <String, dynamic>{});
 
       if (match.isNotEmpty) {
-        final productName = match['Inventory Product Name']?.toString() ??
-            match['Product Name']?.toString() ??
-            match['productName']?.toString();
+        final productName =
+            match['Inventory Product Name']?.toString() ??
+                match['Product Name']?.toString() ??
+                match['productName']?.toString();
 
         if (productName != null && productName.isNotEmpty) {
-          print('✅ Found product name "$productName" for supplierBottleID: $supplierBottleID');
+          print(
+            '✅ Found product name "$productName" for supplierBottleID: $supplierBottleID',
+          );
           return productName;
         }
       }
 
       print('⚠️ No product found for supplierBottleID: $supplierBottleID');
       return null;
-
     } catch (e) {
       print('❌ Error in _getProductNameBySupplierBottleId: $e');
       return null;
     }
   }
+
   /// Generate 8-character hex ID (matches server format)
   String _generateUuid() {
     final rnd = math.Random.secure();
@@ -3996,8 +4776,12 @@ class OfflineStorage with ChangeNotifier {
       // which are already created in _rebuildIndexes()
 
       print('✅ Indexes verified:');
-      print('   - Purchases by Invoice ID: ${_purchasesByInvoiceId.length} entries');
-      print('   - Purchases by Supplier ID: ${_purchasesBySupplierId.length} entries');
+      print(
+        '   - Purchases by Invoice ID: ${_purchasesByInvoiceId.length} entries',
+      );
+      print(
+        '   - Purchases by Supplier ID: ${_purchasesBySupplierId.length} entries',
+      );
       print('   - Product by Barcode: ${_productNameByBarcode.length} entries');
     } catch (e) {
       print('⚠️ Error ensuring indexes: $e');
@@ -4031,4 +4815,131 @@ class OfflineStorage with ChangeNotifier {
     }
   }
 
+  /// Persist server table version hashes so restarts don't trigger full re-downloads
+  Future<void> saveTableVersions(Map<String, String> versions) async {
+    if (!_isReady || versions.isEmpty) return;
+    try {
+      final box = await Hive.openBox('store_${_currentStoreId}_table_versions');
+      await box.putAll(versions);
+    } catch (e) {
+      print('⚠️ Failed to save table versions: $e');
+    }
+  }
+
+  Future<void> saveStoredBlockHashes(
+      String table,
+      Map<int, String> hashes,
+      ) async {
+    if (!_isReady || hashes.isEmpty) return;
+    try {
+      final box = await Hive.openBox(
+        'store_${_currentStoreId}_${table}_block_hashes',
+      );
+      final stringKeyMap = {
+        for (final e in hashes.entries) e.key.toString(): e.value,
+      };
+      await box.putAll(stringKeyMap);
+    } catch (e) {
+      print('⚠️ Failed to save block hashes: $e');
+    }
+  }
+
+  Future<Map<int, String>> getStoredBlockHashes(String table) async {
+    if (!_isReady) return {};
+    try {
+      final box = await Hive.openBox(
+        'store_${_currentStoreId}_${table}_block_hashes',
+      );
+      final result = <int, String>{};
+      for (final entry in box.toMap().entries) {
+        final idx = int.tryParse(entry.key.toString());
+        if (idx != null) result[idx] = entry.value.toString();
+      }
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Reads existing rows from Hive so that unchanged tables don't need re-downloading on app restart
+  Map<String, List<Map<String, dynamic>>> getStoredTableRows() {
+    if (!_isReady) return {};
+
+    final boxes = <String, Box?>{
+      'Inventory': _inventory,
+      'Locations': _locations,
+      'AuditCalendar': _audits,
+      'Purchases': _purchases,
+      'StoreSalesData': _storeSalesData,
+      'ItemSales': _itemSalesMap,
+      'MasterCostsComputed': _masterCatalog,
+      'InvoiceDetails': _invoiceDetails,
+      'ItemsIssued': _itemsIssued,
+      'StockIssues': _stockIssues,
+      'ItemsIssuedMap': _itemsIssuedMap,
+      'PluMappings': _pluMappings,
+    };
+
+    final result = <String, List<Map<String, dynamic>>>{};
+
+    for (final entry in boxes.entries) {
+      final box = entry.value;
+      if (box != null && box.isOpen && box.isNotEmpty) {
+        result[entry.key] = box.values.map((v) => _safeCast(v)).toList();
+      }
+    }
+
+    return result;
+  }
+
+  /// Get stored table version hashes from previous syncs
+  Future<Map<String, String>> getStoredTableVersions() async {
+    if (!_isReady) return {};
+    try {
+      final box = await Hive.openBox('store_${_currentStoreId}_table_versions');
+      return Map<String, String>.from(box.toMap());
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Separate raw download snapshot: never populated from locally merged rows.
+  Future<String?> getDownloadSnapshot(String storeId) async {
+    if (!_isReady || _currentStoreId != storeId) return null;
+    try {
+      final box = await Hive.openBox('store_${storeId}_download_snapshot_v2');
+      if (!_isReady || _currentStoreId != storeId) return null;
+      final value = box.get('snapshot');
+      return value is String ? value : null;
+    } catch (e) {
+      print('Download snapshot unavailable: $e');
+      return null;
+    }
+  }
+
+  Future<void> saveDownloadSnapshot(String storeId, String snapshot) async {
+    if (!_isReady || _currentStoreId != storeId) return;
+    try {
+      final box = await Hive.openBox('store_${storeId}_download_snapshot_v2');
+      if (!_isReady || _currentStoreId != storeId) return;
+      // One value keeps rows and their snapshot envelope together.
+      await box.put('snapshot', snapshot);
+    } catch (e) {
+      print(
+        'Download snapshot not persisted; data tables remain available: $e',
+      );
+    }
+  }
+}
+class PostWriteSnapshot {
+  final String table;
+  final String storeId;
+  final int generation;
+  final Box _box;
+  final Box? _childrenBox;
+  final Map<String, Map<String, dynamic>> rows;
+  final Map<String, Map<String, dynamic>> children;
+  final bool deleting;
+  PostWriteSnapshot._(this.table, this.storeId, this.generation, this._box,
+      this._childrenBox, this.rows, this.children, this.deleting);
 }

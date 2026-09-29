@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
 import '../models/grv_models.dart';
 import 'grv_add_line_item_screen.dart';
+import '../utils/safe_date_utils.dart';
 
 class NumberParser {
   static double parse(dynamic value) {
@@ -109,13 +110,17 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     }
   }
 
-  DateTime _parseDate(dynamic dateStr) {
-    if (dateStr == null) return DateTime.now();
-    try {
-      return DateTime.parse(dateStr.toString());
-    } catch (e) {
+  DateTime _parseDate(dynamic value) {
+    final parsed = SafeDateUtils.parseDate(value);
+
+    // GRV dates must also be valid for this screen's date picker.
+    // Invalid / legacy-corrupted values (for example 1946) fall back to today
+    // rather than being passed to showDatePicker outside its allowed range.
+    if (parsed == null || parsed.year < 2000 || parsed.year > 2100) {
       return DateTime.now();
     }
+
+    return DateTime(parsed.year, parsed.month, parsed.day);
   }
 
   String _formatCurrency(dynamic value) {
@@ -246,12 +251,20 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   }
 
   Future<void> _selectDate(BuildContext context, bool isDelivery) async {
-    final initialDate = isDelivery ? _deliveryDate : _purchaseDate;
+    final firstDate = DateTime(2000);
+    final lastDate = DateTime(2100);
+    final storedDate = isDelivery ? _deliveryDate : _purchaseDate;
+    final today = DateTime.now();
+    final fallbackDate = DateTime(today.year, today.month, today.day);
+    final initialDate = storedDate.isBefore(firstDate) || storedDate.isAfter(lastDate)
+        ? fallbackDate
+        : storedDate;
+
     final picked = await showDatePicker(
       context: context,
       initialDate: initialDate,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
+      firstDate: firstDate,
+      lastDate: lastDate,
     );
 
     if (picked != null) {
@@ -545,8 +558,8 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           final String productKey = (purchase['supplierBottleID'] ?? purchase['purSupplierBottleID'])?.toString().isNotEmpty == true
               ? (purchase['supplierBottleID'] ?? purchase['purSupplierBottleID']).toString()
               : (purchase['Barcode']?.toString().isNotEmpty == true
-                  ? purchase['Barcode'].toString()
-                  : 'unknown');
+              ? purchase['Barcode'].toString()
+              : 'unknown');
 
           final canonicalId = 'purchase_${widget.invoice['invoiceDetailsID']}_${grvRef}_${productKey}_line$maxLineIndex';
 
@@ -694,6 +707,12 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     final grandTotal = _calculateTotal();
     final isCreditNote = grandTotal < 0;
 
+    // Responsive layout:
+    // Mobile (< 700px): compact Delete/Save in AppBar and full-width
+    // Add Product button below the Items / Total row.
+    // Desktop/tablet (>= 700px): retain the original AppBar toolbar.
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Edit Invoice: ${widget.invoice['Invoice Number'] ?? ''}'),
@@ -704,47 +723,69 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
               child: Icon(Icons.circle, color: Colors.orange, size: 12),
             ),
 
-          // 🔵 ADD PRODUCT (was the floating button)
-          ElevatedButton.icon(
-            onPressed: _addNewProduct,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Product'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
+          if (isMobile) ...[
+            // MOBILE: compact document actions so nothing is cut off.
+            IconButton(
+              onPressed: _isSaving ? null : _deleteInvoice,
+              icon: const Icon(Icons.delete_outline),
+              color: Colors.red,
+              tooltip: 'Delete GRV/Credit Note',
             ),
-          ),
-          const SizedBox(width: 8),
-
-          // 🔴 DELETE GRV/CREDIT NOTE (was the red bin)
-          ElevatedButton.icon(
-            onPressed: _isSaving ? null : _deleteInvoice,
-            icon: const Icon(Icons.delete_outline, size: 18),
-            label: const Text('Delete GRV/Credit Note'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
+            IconButton(
+              onPressed: _isSaving ? null : _saveChanges,
+              icon: _isSaving
+                  ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+                  : const Icon(Icons.save),
+              color: Colors.green,
+              tooltip: 'Save GRV/Credit Note',
             ),
-          ),
-          const SizedBox(width: 8),
-
-          // 🟢 SAVE GRV/CREDIT NOTE (was the floppy disk)
-          ElevatedButton.icon(
-            onPressed: _isSaving ? null : _saveChanges,
-            icon: _isSaving
-                ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            )
-                : const Icon(Icons.save, size: 18),
-            label: const Text('Save GRV/Credit Note'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
+            const SizedBox(width: 4),
+          ] else ...[
+            // DESKTOP/TABLET: preserve the original toolbar.
+            ElevatedButton.icon(
+              onPressed: _addNewProduct,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Add Product'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
             ),
-          ),
-          const SizedBox(width: 12),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: _isSaving ? null : _deleteInvoice,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Delete GRV/Credit Note'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: _isSaving ? null : _saveChanges,
+              icon: _isSaving
+                  ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+                  : const Icon(Icons.save, size: 18),
+              label: const Text('Save GRV/Credit Note'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
         ],
       ),
       body: _isLoading
@@ -865,6 +906,33 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
                   ),
                 ],
               ),
+
+              // MOBILE ONLY: full-width Add Product directly below Items / Total.
+              if (isMobile) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton.icon(
+                    onPressed: _addNewProduct,
+                    icon: const Icon(Icons.add),
+                    label: const Text(
+                      'Add Product',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
 
               const SizedBox(height: 16),
 

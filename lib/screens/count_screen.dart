@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../widgets/count_location_field.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../services/store_manager.dart';
@@ -7,6 +8,7 @@ import '../services/logger_service.dart';
 import '../widgets/barcode_scanner.dart';
 import 'add_product_screen.dart';
 import 'package:intl/intl.dart';
+import '../services/stock_record_fields.dart';
 
 // ============================================================================
 // 🔥 PURE PRICING RESOLVER - Testable, decoupled from UI
@@ -42,7 +44,9 @@ class PricingResolver {
     required Map<String, dynamic> product,
     required Map<String, double> salesIndex,
   }) {
-    final name = product['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
+    final name =
+        product['Inventory Product Name']?.toString().toLowerCase().trim() ??
+            '';
     double unitCost = _safeDouble(product['Cost Price']);
     double unitRetail = salesIndex[name] ?? 0.0;
     bool costFellBack = false;
@@ -113,20 +117,37 @@ class _CountScreenState extends State<CountScreen> {
 
   final List<String> _drinkPackSizes = [
     'Open Bottle',
-    'Case 1', 'Case 4', 'Case 6', 'Case 12', 'Case 24',
-    'Case 36', 'Case 48',
-    'Keg 1', '5 Ltr Cartons', '10 Ltr Cartons',
+    'Case 1',
+    'Case 4',
+    'Case 6',
+    'Case 12',
+    'Case 24',
+    'Case 36',
+    'Case 48',
+    'Keg 1',
+    '5 Ltr Cartons',
+    '10 Ltr Cartons',
   ];
 
   final List<String> _foodPackSizes = [
-    'Loose (kg)', 'Loose (g)',
-    'Each', 'Portion',
-    'Pack', 'Box',
-    'Case 1', 'Case 6', 'Case 12', 'Case 24'
+    'Loose (kg)',
+    'Loose (g)',
+    'Each',
+    'Portion',
+    'Pack',
+    'Box',
+    'Case 1',
+    'Case 6',
+    'Case 12',
+    'Case 24',
   ];
 
   final List<String> _tobaccoPackSizes = [
-    'Loose', 'Pack 10', 'Pack 20', 'Carton', 'Case 1'
+    'Loose',
+    'Pack 10',
+    'Pack 20',
+    'Carton',
+    'Case 1',
   ];
 
   // ============================================================================
@@ -139,7 +160,8 @@ class _CountScreenState extends State<CountScreen> {
 
   List<Map<String, dynamic>> _locations = [];
   List<Map<String, dynamic>> _inventory = [];
-  List<Map<String, dynamic>> _itemSalesRaw = []; // 🔥 Keep raw for index rebuild
+  List<Map<String, dynamic>> _itemSalesRaw =
+  []; // 🔥 Keep raw for index rebuild
   bool _isLoading = true;
   bool _isEditMode = false;
 
@@ -287,6 +309,7 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _loadExistingData(Map<String, dynamic> data, List<Map<String, dynamic>> inventory) async {
+    data = normalizeStockRecord(data);
     final barcode = data['barcode']?.toString() ?? '';
     final name = data['productName']?.toString() ?? '';
     Map<String, dynamic>? product;
@@ -296,6 +319,8 @@ class _CountScreenState extends State<CountScreen> {
     if ((product == null || product.isEmpty) && name.isNotEmpty) {
       product = inventory.firstWhere((i) => i['Inventory Product Name']?.toString() == name, orElse: () => {});
     }
+
+    product = stockProductForEdit(data, product);
 
     if (!mounted) return;
     setState(() {
@@ -328,12 +353,16 @@ class _CountScreenState extends State<CountScreen> {
     if (_selectedProduct == null) return;
 
     final storage = context.read<OfflineStorage>();
-    final productName = _selectedProduct!['Inventory Product Name']?.toString() ?? '';
+    final productName =
+        _selectedProduct!['Inventory Product Name']?.toString() ?? '';
 
     final allCounts = await storage.getStockCounts();
-    final productCounts = allCounts.where((c) =>
-    c['productName'] == productName && c['syncStatus'] != 'deleted'
-    ).toList();
+    final productCounts = allCounts
+        .where(
+          (c) =>
+      c['productName'] == productName && c['syncStatus'] != 'deleted',
+    )
+        .toList();
 
     final dateToUse = widget.initialDate ?? DateTime.now();
     final dateStr = dateToUse.toIso8601String().split('T')[0];
@@ -355,10 +384,10 @@ class _CountScreenState extends State<CountScreen> {
     }
 
     final sortedKeys = historyMap.keys.toList()..sort((a, b) => b.compareTo(a));
-    final historyList = sortedKeys.take(3).map((k) => {
-      'date': k,
-      'total': historyMap[k]
-    }).toList();
+    final historyList = sortedKeys
+        .take(3)
+        .map((k) => {'date': k, 'total': historyMap[k]})
+        .toList();
 
     if (!mounted) return;
     setState(() {
@@ -396,7 +425,8 @@ class _CountScreenState extends State<CountScreen> {
     // Build a quick lookup map for inventory by product name
     final inventoryByName = <String, Map<String, dynamic>>{};
     for (var p in inventory) {
-      final name = p['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
+      final name =
+          p['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
       if (name.isNotEmpty && !inventoryByName.containsKey(name)) {
         inventoryByName[name] = p;
       }
@@ -406,7 +436,8 @@ class _CountScreenState extends State<CountScreen> {
       final name = row['Product']?.toString().toLowerCase().trim() ?? '';
       if (name.isEmpty) continue;
 
-      final mainCat = row['Main Category']?.toString().toLowerCase().trim() ?? '';
+      final mainCat =
+          row['Main Category']?.toString().toLowerCase().trim() ?? '';
       if (_exclusionRegex.hasMatch(mainCat)) continue;
 
       final sellPrice = _safeDouble(row['Sell']);
@@ -469,10 +500,13 @@ class _CountScreenState extends State<CountScreen> {
       salesIndex: _salesPriceIndex,
     );
 
+    final saved = widget.existingCount;
+    final recordedCost = saved == null ? null : stockRecordedUnitValue(saved, 'cost_value');
+    final recordedRetail = saved == null ? null : stockRecordedUnitValue(saved, 'retail_value');
     if (!mounted) return;
     setState(() {
-      _resolvedUnitCost = result.unitCost;
-      _resolvedUnitRetail = result.unitRetail;
+      _resolvedUnitCost = recordedCost ?? result.unitCost;
+      _resolvedUnitRetail = recordedRetail ?? result.unitRetail;
       _costFellBack = result.costFellBack;
       _retailFellBack = result.retailFellBack;
     });
@@ -483,7 +517,6 @@ class _CountScreenState extends State<CountScreen> {
       _logger?.info('💰 ${result.describeFallback(name)}');
     }
   }
-
   // ============================================================================
   // CATEGORY HELPERS
   // ============================================================================
@@ -492,7 +525,23 @@ class _CountScreenState extends State<CountScreen> {
     if (product == null) return false;
     final cat = product['Category']?.toString().toLowerCase() ?? '';
     final mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
-    const foodTerms = ['meat', 'poultry', 'seafood', 'dairy', 'vegetables', 'fruit', 'dry goods', 'spices', 'bakery', 'prepared food', 'perishables', 'pantry', 'proteins', 'consumables', 'food'];
+    const foodTerms = [
+      'meat',
+      'poultry',
+      'seafood',
+      'dairy',
+      'vegetables',
+      'fruit',
+      'dry goods',
+      'spices',
+      'bakery',
+      'prepared food',
+      'perishables',
+      'pantry',
+      'proteins',
+      'consumables',
+      'food',
+    ];
     return foodTerms.contains(cat) || foodTerms.contains(mainCat);
   }
 
@@ -500,7 +549,8 @@ class _CountScreenState extends State<CountScreen> {
     if (product == null) return false;
     final cat = product['Category']?.toString().toLowerCase() ?? '';
     final mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
-    return ['cigars', 'cigarettes', 'tobacco'].contains(cat) || ['cigars', 'cigarettes', 'tobacco'].contains(mainCat);
+    return ['cigars', 'cigarettes', 'tobacco'].contains(cat) ||
+        ['cigars', 'cigarettes', 'tobacco'].contains(mainCat);
   }
 
   List<String> _getFilteredPackSizes() {
@@ -525,7 +575,8 @@ class _CountScreenState extends State<CountScreen> {
     setState(() {
       _filteredProducts = _inventory.where((product) {
         final barcode = product['Barcode']?.toString().toLowerCase() ?? '';
-        final productName = product['Inventory Product Name']?.toString().toLowerCase() ?? '';
+        final productName =
+            product['Inventory Product Name']?.toString().toLowerCase() ?? '';
         return barcode.contains(query) || productName.contains(query);
       }).toList();
       _showProductSuggestions = _filteredProducts.isNotEmpty;
@@ -540,7 +591,11 @@ class _CountScreenState extends State<CountScreen> {
 
     if (gradient != 0) {
       _measurementType = 'Weight';
-    } else if (mainCat.contains('spirit') || cat.contains('whiskey') || cat.contains('vodka') || cat.contains('gin') || cat.contains('tequila')) {
+    } else if (mainCat.contains('spirit') ||
+        cat.contains('whiskey') ||
+        cat.contains('vodka') ||
+        cat.contains('gin') ||
+        cat.contains('tequila')) {
       _measurementType = 'Shots';
     } else {
       _measurementType = 'Volume';
@@ -572,26 +627,36 @@ class _CountScreenState extends State<CountScreen> {
     product = await storage.getMasterCatalogItem(barcode);
     if (product != null) {
       if (!mounted) return;
-      bool confirm = await showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Found in Master Catalog'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Name: ${product?['Inventory Product Name']}'),
-              Text('Size: ${product?['Single Unit Volume']} ${product?['UoM']}'),
-              const Divider(),
-              const Text('Add this product to your Store Inventory?'),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Add & Count')),
-          ],
-        ),
-      ) ?? false;
+      bool confirm =
+          await showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Found in Master Catalog'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Name: ${product?['Inventory Product Name']}'),
+                  Text(
+                    'Size: ${product?['Single Unit Volume']} ${product?['UoM']}',
+                  ),
+                  const Divider(),
+                  const Text('Add this product to your Store Inventory?'),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Add & Count'),
+                ),
+              ],
+            ),
+          ) ??
+              false;
       if (confirm) {
         await storage.importFromMasterToLocal(product);
         final newInv = await storage.getAllInventory();
@@ -610,7 +675,8 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _openManualAdd({String? initialBarcode}) async {
-    final storeName = context.read<StoreManager>().activeStore?['name'] ?? 'Unknown Store';
+    final storeName =
+        context.read<StoreManager>().activeStore?['name'] ?? 'Unknown Store';
     final newProduct = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -636,7 +702,9 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   bool _isWeightBased(String? packSize) {
-    return packSize == 'Open Bottle' || packSize == 'Loose (kg)' || packSize == 'Loose (g)';
+    return packSize == 'Open Bottle' ||
+        packSize == 'Loose (kg)' ||
+        packSize == 'Loose (g)';
   }
 
   double _safeDouble(dynamic value) {
@@ -656,12 +724,15 @@ class _CountScreenState extends State<CountScreen> {
     double count = double.tryParse(_countController.text) ?? 0.0;
     double inputVal = double.tryParse(_weightController.text) ?? 0.0;
 
-    double singleUnitSize = _safeDouble(_selectedProduct?['Single Unit Volume']);
+    double singleUnitSize = _safeDouble(
+      _selectedProduct?['Single Unit Volume'],
+    );
     double gradient = _safeDouble(_selectedProduct?['Gradient']);
     double intercept = _safeDouble(_selectedProduct?['Intercept']);
 
     double bottleUoM = _safeDouble(_selectedProduct?['Bottle UoM']);
-    if (bottleUoM == 0) bottleUoM = (singleUnitSize > 0) ? (singleUnitSize / 25.0) : 30.0;
+    if (bottleUoM == 0)
+      bottleUoM = (singleUnitSize > 0) ? (singleUnitSize / 25.0) : 30.0;
 
     double calculatedWeightOrVol = 0.0;
     double totalUnits = 0.0;
@@ -696,26 +767,65 @@ class _CountScreenState extends State<CountScreen> {
     } else {
       double multiplier = 0;
       switch (_selectedPackSize) {
-        case "Pack": multiplier = 1; break;
-        case "Box": multiplier = 1; break;
-        case "Each": multiplier = 1; break;
-        case "Portion": multiplier = 1; break;
-        case "Loose": multiplier = 1; break;
-        case "Pack 10": multiplier = 10; break;
-        case "Pack 20": multiplier = 20; break;
-        case "Carton": multiplier = 200; break;
-        case "Case 1": multiplier = 1; break;
-        case "Case 2": multiplier = 2; break;
-        case "Case 4": multiplier = 4; break;
-        case "Case 6": multiplier = 6; break;
-        case "Case 12": multiplier = 12; break;
-        case "Case 24": multiplier = 24; break;
-        case "Case 36": multiplier = 36; break;
-        case "Case 48": multiplier = 48; break;
-        case "Keg 1": multiplier = 1000; break;
-        case "5 Ltr Cartons": multiplier = 5000; break;
-        case "10 Ltr Cartons": multiplier = 10000; break;
-        default: multiplier = 1;
+        case "Pack":
+          multiplier = 1;
+          break;
+        case "Box":
+          multiplier = 1;
+          break;
+        case "Each":
+          multiplier = 1;
+          break;
+        case "Portion":
+          multiplier = 1;
+          break;
+        case "Loose":
+          multiplier = 1;
+          break;
+        case "Pack 10":
+          multiplier = 10;
+          break;
+        case "Pack 20":
+          multiplier = 20;
+          break;
+        case "Carton":
+          multiplier = 200;
+          break;
+        case "Case 1":
+          multiplier = 1;
+          break;
+        case "Case 2":
+          multiplier = 2;
+          break;
+        case "Case 4":
+          multiplier = 4;
+          break;
+        case "Case 6":
+          multiplier = 6;
+          break;
+        case "Case 12":
+          multiplier = 12;
+          break;
+        case "Case 24":
+          multiplier = 24;
+          break;
+        case "Case 36":
+          multiplier = 36;
+          break;
+        case "Case 48":
+          multiplier = 48;
+          break;
+        case "Keg 1":
+          multiplier = 1000;
+          break;
+        case "5 Ltr Cartons":
+          multiplier = 5000;
+          break;
+        case "10 Ltr Cartons":
+          multiplier = 10000;
+          break;
+        default:
+          multiplier = 1;
       }
       totalUnits = count * multiplier;
       calculatedWeightOrVol = totalUnits * singleUnitSize;
@@ -748,11 +858,13 @@ class _CountScreenState extends State<CountScreen> {
     setState(() {
       _selectedProduct = product;
       _selectedBarcode = product['Barcode']?.toString() ?? '';
-      _productController.text = product['Inventory Product Name']?.toString() ?? '';
+      _productController.text =
+          product['Inventory Product Name']?.toString() ?? '';
       _showProductSuggestions = false;
 
       final validPackSizes = _getFilteredPackSizes();
-      if (_selectedPackSize != null && !validPackSizes.contains(_selectedPackSize)) {
+      if (_selectedPackSize != null &&
+          !validPackSizes.contains(_selectedPackSize)) {
         _selectedPackSize = null;
       }
 
@@ -783,10 +895,18 @@ class _CountScreenState extends State<CountScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Entry?'),
-        content: const Text('This will remove this count permanently from the device.'),
+        content: const Text(
+          'This will remove this count permanently from the device.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
@@ -802,19 +922,21 @@ class _CountScreenState extends State<CountScreen> {
       // recreating the doc a few seconds later, which is why `deleted`
       // kept reverting to false)
       final syncService = context.read<StoreManager>().syncService;
-      if (syncService.firestore != null && storage.currentStoreId != null) {
+      if (syncService.firestore != null && storage.firestoreKey != null) {
         final deletedData = <String, dynamic>{
           'id': id,
           'deleted': true,
           'deletedAt': DateTime.now().toIso8601String(),
         };
-        await syncService.firestore!.saveStockCount(storage.currentStoreId!, deletedData);
+        await syncService.firestore!.saveStockCount(
+          storage.firestoreKey!,
+          deletedData,
+        );
       }
 
       if (mounted) Navigator.pop(context);
     }
   }
-
 
   // ============================================================================
   // DUPLICATE INTERVENTION & SAVE
@@ -823,15 +945,21 @@ class _CountScreenState extends State<CountScreen> {
   Future<void> _processSave() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedProduct == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a product from the list')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a product from the list')),
+      );
       return;
     }
     if (_selectedLocation == null && widget.initialLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Location')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Missing Location')));
       return;
     }
     if (_selectedPackSize == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Pack Size')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Missing Pack Size')));
       return;
     }
 
@@ -850,15 +978,17 @@ class _CountScreenState extends State<CountScreen> {
         : DateTime.now().toIso8601String().split('T')[0];
 
     final locationToUse = widget.initialLocation ?? _selectedLocation!;
-    final productName = _selectedProduct?['Inventory Product Name'] ?? _productController.text;
+    final productName =
+        _selectedProduct?['Inventory Product Name'] ?? _productController.text;
 
     try {
-      final existingEntry = allCounts.firstWhere((c) =>
-      c['date'].toString().startsWith(dateToUse) &&
-          c['location'] == locationToUse &&
-          c['productName'] == productName &&
-          c['pack_size'] == _selectedPackSize &&
-          c['syncStatus'] != 'deleted'
+      final existingEntry = allCounts.firstWhere(
+            (c) =>
+        c['date'].toString().startsWith(dateToUse) &&
+            c['location'] == locationToUse &&
+            c['productName'] == productName &&
+            c['pack_size'] == _selectedPackSize &&
+            c['syncStatus'] != 'deleted',
       );
 
       if (mounted) {
@@ -869,8 +999,11 @@ class _CountScreenState extends State<CountScreen> {
     }
   }
 
-  Future<void> _showDuplicateInterventionDialog(Map<String, dynamic> existingEntry) async {
-    final currentCount = double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
+  Future<void> _showDuplicateInterventionDialog(
+      Map<String, dynamic> existingEntry,
+      ) async {
+    final currentCount =
+        double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
     final newCount = double.tryParse(_countController.text) ?? 0.0;
     final addTotal = currentCount + newCount;
 
@@ -891,16 +1024,34 @@ class _CountScreenState extends State<CountScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Add:', style: TextStyle(color: Colors.green[700], fontWeight: FontWeight.bold)),
-                Text('$currentCount + $newCount = $addTotal', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  'Add:',
+                  style: TextStyle(
+                    color: Colors.green[700],
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  '$currentCount + $newCount = $addTotal',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ],
             ),
             const SizedBox(height: 4),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Edit:', style: TextStyle(color: Colors.blue[700], fontWeight: FontWeight.bold)),
-                Text('New value will be $newCount', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  'Edit:',
+                  style: TextStyle(
+                    color: Colors.blue[700],
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  'New value will be $newCount',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ],
             ),
           ],
@@ -939,7 +1090,9 @@ class _CountScreenState extends State<CountScreen> {
     required String location,
   }) {
     final cleanDate = date.replaceAll(RegExp(r'[^0-9-]'), '');
-    final cleanTime = time.replaceAll(RegExp(r'[^0-9:]'), '').replaceAll(':', '');
+    final cleanTime = time
+        .replaceAll(RegExp(r'[^0-9:]'), '')
+        .replaceAll(':', '');
 
     final rawBarcode = barcode.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
     final cleanBarcode = rawBarcode.isEmpty
@@ -963,7 +1116,8 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   String _generateShortId() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     String result = '';
     for (int i = 0; i < 6; i++) {
       result += chars[math.Random.secure().nextInt(chars.length)];
@@ -974,8 +1128,35 @@ class _CountScreenState extends State<CountScreen> {
   Future<void> _commitSaveToDB({String? existingId, bool isUpdate = false}) async {
     final storage = context.read<OfflineStorage>();
 
+    var preserved = <String, dynamic>{};
+    if (_isEditMode) {
+      preserved = normalizeStockRecord(widget.existingCount!);
+    } else if (existingId != null) {
+      final rows = await storage.getStockCounts();
+      final matches = rows.where((row) => row['id']?.toString() == existingId).toList();
+      if (matches.length != 1) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The existing count changed. Reopen it before editing.')));
+        return;
+      }
+      preserved = normalizeStockRecord(matches.single);
+    }
+    if (_isEditMode || isUpdate) {
+      try {
+        final product = stockProductForEdit(preserved, _selectedProduct);
+        final cost = stockRecordedUnitValue(preserved, 'cost_value') ?? _resolvedUnitCost;
+        final retail = stockRecordedUnitValue(preserved, 'retail_value') ?? _resolvedUnitRetail;
+        validateStockEdit(preserved, product, cost, retail);
+        _selectedProduct = product;
+        _resolvedUnitCost = cost;
+        _resolvedUnitRetail = retail;
+      } catch (error) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+        return;
+      }
+    }
+    if (!mounted) return;
     final dateToUse = _isEditMode
-        ? widget.existingCount!['date']
+        ? preserved['date']
         : (widget.initialDate != null
         ? widget.initialDate!.toIso8601String().split('T')[0]
         : DateTime.now().toIso8601String().split('T')[0]);
@@ -1000,15 +1181,16 @@ class _CountScreenState extends State<CountScreen> {
       );
     }
 
-    final stockId = existingId ?? (_isEditMode ? widget.existingCount!['stock_id'] : id);
+    final stockId = id;
     // 🔥 FIX: Handle both createdAt and created_at to avoid losing the original timestamp
-    final createdDate = _isEditMode 
+    final createdDate = _isEditMode
         ? (widget.existingCount!['createdAt'] ?? widget.existingCount!['created_at'] ?? DateTime.now().toIso8601String())
         : DateTime.now().toIso8601String();
 
     _recalculateTotals();
 
-    final countData = {
+    final countData = <String, dynamic>{
+      ...preserved,
       'id': id,
       'stock_id': stockId,
       'date': dateToUse,
@@ -1028,11 +1210,12 @@ class _CountScreenState extends State<CountScreen> {
       'open_tots': _calcOpenTots,
       'total_bottles': _calcTotalBottles,
       'total_ml': _calcTotalMl,
+      'total_shots': _calcTotalMl / 25.0,
       'cost_value': _calcCostValue,
       'retail_value': _calcRetailValue,
-      'createdAt': createdDate,
+      'createdAt': preserved['createdAt'] ?? createdDate,
       'updatedAt': DateTime.now().toIso8601String(),
-      'auditId': _selectedAudit,
+      'auditId': preserved['auditId'] ?? _selectedAudit,
       'syncStatus': 'pending',
     };
 
@@ -1045,7 +1228,7 @@ class _CountScreenState extends State<CountScreen> {
         if (syncService.firestore != null && storage.currentStoreId != null) {
           final firestoreData = Map<String, dynamic>.from(countData);
           firestoreData['deleted'] = false; // Explicitly ensure active state
-          await syncService.firestore!.saveStockCount(storage.currentStoreId!, firestoreData);
+          await syncService.firestore!.saveStockCount(storage.firestoreKey!, firestoreData);
         }
 
         _logger?.info('Updated: ${_productController.text} ($id)');
@@ -1064,7 +1247,7 @@ class _CountScreenState extends State<CountScreen> {
         if (syncService.firestore != null && storage.currentStoreId != null) {
           final firestoreData = Map<String, dynamic>.from(countData);
           firestoreData['deleted'] = false;
-          await syncService.firestore!.saveStockCount(storage.currentStoreId!, firestoreData);
+          await syncService.firestore!.saveStockCount(storage.firestoreKey!, firestoreData);
         }
 
         _logger?.info('Saved: ${_productController.text} ($id)');
@@ -1081,6 +1264,7 @@ class _CountScreenState extends State<CountScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
     }
   }
+
 
   void _clearForm() {
     if (widget.initialProduct != null) {
@@ -1123,9 +1307,21 @@ class _CountScreenState extends State<CountScreen> {
   // BUILD
   // ============================================================================
 
+  Widget _buildLocationInput() {
+    return CountLocationField(
+      locations: _locations.map((row) => row['Location']?.toString()).toList(),
+      value: widget.initialLocation ?? _selectedLocation,
+      readOnly: widget.initialLocation != null,
+      onChanged: (value) {
+        if (mounted) setState(() => _selectedLocation = value);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isLoading)
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
 
     final costPrice = _resolvedUnitCost;
     final currentPackSizes = _getFilteredPackSizes();
@@ -1133,9 +1329,10 @@ class _CountScreenState extends State<CountScreen> {
     bool isSameDay = false;
     if (widget.initialDate != null) {
       final now = DateTime.now();
-      isSameDay = now.year == widget.initialDate!.year &&
-          now.month == widget.initialDate!.month &&
-          now.day == widget.initialDate!.day;
+      isSameDay =
+          now.year == widget.initialDate!.year &&
+              now.month == widget.initialDate!.month &&
+              now.day == widget.initialDate!.day;
     }
 
     return Scaffold(
@@ -1143,7 +1340,11 @@ class _CountScreenState extends State<CountScreen> {
         title: Text(_isEditMode ? 'Edit Count' : 'New Count'),
         actions: [
           if (_isEditMode)
-            IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: _deleteEntry, tooltip: 'Delete Entry'),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: _deleteEntry,
+              tooltip: 'Delete Entry',
+            ),
         ],
       ),
       body: GestureDetector(
@@ -1165,19 +1366,40 @@ class _CountScreenState extends State<CountScreen> {
                     padding: const EdgeInsets.all(12),
                     margin: const EdgeInsets.only(bottom: 16),
                     decoration: BoxDecoration(
-                      color: isSameDay ? Colors.blue.shade50 : Colors.orange.shade50,
+                      color: isSameDay
+                          ? Colors.blue.shade50
+                          : Colors.orange.shade50,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: isSameDay ? Colors.blue : Colors.orange),
+                      border: Border.all(
+                        color: isSameDay ? Colors.blue : Colors.orange,
+                      ),
                     ),
                     child: Row(
                       children: [
-                        Icon(isSameDay ? Icons.calendar_today : Icons.history, color: isSameDay ? Colors.blue : Colors.orange),
+                        Icon(
+                          isSameDay ? Icons.calendar_today : Icons.history,
+                          color: isSameDay ? Colors.blue : Colors.orange,
+                        ),
                         const SizedBox(width: 8),
                         Text(
-                          isSameDay ? 'Adding Entry for: ' : 'Backdating Entry to: ',
-                          style: TextStyle(fontWeight: FontWeight.bold, color: isSameDay ? Colors.blue[900] : Colors.orange[900]),
+                          isSameDay
+                              ? 'Adding Entry for: '
+                              : 'Backdating Entry to: ',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: isSameDay
+                                ? Colors.blue[900]
+                                : Colors.orange[900],
+                          ),
                         ),
-                        Text(DateFormat('dd MMM yyyy').format(widget.initialDate!), style: TextStyle(color: isSameDay ? Colors.blue[900] : Colors.orange[900])),
+                        Text(
+                          DateFormat('dd MMM yyyy').format(widget.initialDate!),
+                          style: TextStyle(
+                            color: isSameDay
+                                ? Colors.blue[900]
+                                : Colors.orange[900],
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1194,20 +1416,31 @@ class _CountScreenState extends State<CountScreen> {
                           labelText: 'Product',
                           border: const OutlineInputBorder(),
                           prefixIcon: const Icon(Icons.inventory),
-                          suffixIcon: (_isEditMode || widget.initialProduct != null)
+                          suffixIcon:
+                          (_isEditMode || widget.initialProduct != null)
                               ? const Icon(Icons.lock, color: Colors.grey)
-                              : IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _scanBarcode),
+                              : IconButton(
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scanBarcode,
+                          ),
                         ),
                         onTap: () {
-                          if (!_isEditMode && widget.initialProduct == null && _productController.text.isNotEmpty) {
-                            if (mounted) setState(() => _showProductSuggestions = true);
+                          if (!_isEditMode &&
+                              widget.initialProduct == null &&
+                              _productController.text.isNotEmpty) {
+                            if (mounted)
+                              setState(() => _showProductSuggestions = true);
                           }
                         },
                       ),
                     ),
                     if (!_isEditMode && widget.initialProduct == null) ...[
                       const SizedBox(width: 8),
-                      IconButton.filled(icon: const Icon(Icons.add), tooltip: 'Manual Entry', onPressed: _openManualAdd),
+                      IconButton.filled(
+                        icon: const Icon(Icons.add),
+                        tooltip: 'Manual Entry',
+                        onPressed: _openManualAdd,
+                      ),
                     ],
                   ],
                 ),
@@ -1222,7 +1455,9 @@ class _CountScreenState extends State<CountScreen> {
                         itemBuilder: (ctx, i) {
                           final p = _filteredProducts[i];
                           return ListTile(
-                            title: Text(p['Inventory Product Name']?.toString() ?? ''),
+                            title: Text(
+                              p['Inventory Product Name']?.toString() ?? '',
+                            ),
                             subtitle: Text(p['Barcode']?.toString() ?? ''),
                             onTap: () => _selectProductFromList(p),
                           );
@@ -1234,40 +1469,20 @@ class _CountScreenState extends State<CountScreen> {
                 const SizedBox(height: 16),
 
                 // 3. LOCATION INPUT
-                widget.initialLocation != null
-                    ? TextFormField(
-                  initialValue: widget.initialLocation,
-                  readOnly: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Location',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.location_on),
-                    suffixIcon: Icon(Icons.lock, color: Colors.grey),
-                    filled: true,
-                    fillColor: Color(0xFFEEEEEE),
-                  ),
-                )
-                    : DropdownButtonFormField<String>(
-                  decoration: const InputDecoration(labelText: 'Location', border: OutlineInputBorder()),
-                  initialValue: _selectedLocation,
-                  isExpanded: true,
-                  items: _locations.map((l) => DropdownMenuItem(
-                    value: l['Location']?.toString(),
-                    child: Text(l['Location']?.toString() ?? ''),
-                  )).toList(),
-                  onChanged: (val) {
-                    if (mounted) setState(() => _selectedLocation = val);
-                  },
-                ),
-
+                _buildLocationInput(),
                 const SizedBox(height: 16),
 
                 // 4. PACK SIZE INPUT
                 DropdownButtonFormField<String>(
-                  decoration: const InputDecoration(labelText: 'Pack Size', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'Pack Size',
+                    border: OutlineInputBorder(),
+                  ),
                   initialValue: _selectedPackSize,
                   isExpanded: true,
-                  items: currentPackSizes.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+                  items: currentPackSizes
+                      .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+                      .toList(),
                   onChanged: (val) {
                     if (!mounted) return;
                     setState(() {
@@ -1289,10 +1504,22 @@ class _CountScreenState extends State<CountScreen> {
                     padding: const EdgeInsets.only(bottom: 16),
                     child: SegmentedButton<String>(
                       segments: [
-                        const ButtonSegment(value: 'Shots', label: Text('Shots'), icon: Icon(Icons.local_bar)),
-                        const ButtonSegment(value: 'Volume', label: Text('mL'), icon: Icon(Icons.water_drop)),
+                        const ButtonSegment(
+                          value: 'Shots',
+                          label: Text('Shots'),
+                          icon: Icon(Icons.local_bar),
+                        ),
+                        const ButtonSegment(
+                          value: 'Volume',
+                          label: Text('mL'),
+                          icon: Icon(Icons.water_drop),
+                        ),
                         if (_safeDouble(_selectedProduct?['Gradient']) != 0)
-                          const ButtonSegment(value: 'Weight', label: Text('Grams'), icon: Icon(Icons.scale)),
+                          const ButtonSegment(
+                            value: 'Weight',
+                            label: Text('Grams'),
+                            icon: Icon(Icons.scale),
+                          ),
                       ],
                       selected: {_measurementType},
                       onSelectionChanged: (Set<String> newSelection) {
@@ -1314,12 +1541,16 @@ class _CountScreenState extends State<CountScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _countController,
-                          decoration: const InputDecoration(labelText: 'Count (Units)', border: OutlineInputBorder()),
+                          decoration: const InputDecoration(
+                            labelText: 'Count (Units)',
+                            border: OutlineInputBorder(),
+                          ),
                           keyboardType: TextInputType.number,
                         ),
                       ),
 
-                    if (!_isWeightBased(_selectedPackSize)) const SizedBox(width: 16),
+                    if (!_isWeightBased(_selectedPackSize))
+                      const SizedBox(width: 16),
 
                     if (_isWeightBased(_selectedPackSize))
                       Expanded(
@@ -1327,7 +1558,11 @@ class _CountScreenState extends State<CountScreen> {
                           controller: _weightController,
                           decoration: InputDecoration(
                             labelText: _selectedPackSize == 'Open Bottle'
-                                ? (_measurementType == 'Shots' ? 'Number of Shots' : (_measurementType == 'Volume' ? 'Volume (mL)' : 'Weight (g)'))
+                                ? (_measurementType == 'Shots'
+                                ? 'Number of Shots'
+                                : (_measurementType == 'Volume'
+                                ? 'Volume (mL)'
+                                : 'Weight (g)'))
                                 : 'Net Weight',
                             border: const OutlineInputBorder(),
                           ),
@@ -1347,7 +1582,9 @@ class _CountScreenState extends State<CountScreen> {
                         style: IconButton.styleFrom(
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
                       ),
                     ),
@@ -1370,23 +1607,58 @@ class _CountScreenState extends State<CountScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Total Today (All Locs):', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo)),
-                            Text(_todayTotalAcrossAllLocs.toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.indigo)),
+                            const Text(
+                              'Total Today (All Locs):',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.indigo,
+                              ),
+                            ),
+                            Text(
+                              _todayTotalAcrossAllLocs.toStringAsFixed(2),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                                color: Colors.indigo,
+                              ),
+                            ),
                           ],
                         ),
                         if (_historyStats.isNotEmpty) ...[
                           const Divider(height: 16),
-                          const Align(alignment: Alignment.centerLeft, child: Text('History:', style: TextStyle(fontSize: 12, color: Colors.grey))),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'History:',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
                           const SizedBox(height: 4),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: _historyStats.map((h) {
                               String date = h['date'];
-                              try { date = DateFormat('dd MMM').format(DateTime.parse(h['date'])); } catch(e) {}
+                              try {
+                                date = DateFormat(
+                                  'dd MMM',
+                                ).format(DateTime.parse(h['date']));
+                              } catch (e) {}
                               return Column(
                                 children: [
-                                  Text(date, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                                  Text(h['total'].toStringAsFixed(1), style: const TextStyle(fontSize: 12)),
+                                  Text(
+                                    date,
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    h['total'].toStringAsFixed(1),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
                                 ],
                               );
                             }).toList(),
@@ -1407,18 +1679,44 @@ class _CountScreenState extends State<CountScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Product Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue)),
+                          const Text(
+                            'Product Details',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: Colors.blue,
+                            ),
+                          ),
                           const Divider(color: Colors.blue),
-                          _buildDetailRow('Name', _selectedProduct!['Inventory Product Name']),
-                          _buildDetailRow('Category', _selectedProduct!['Category']),
-                          _buildDetailRow('Volume', '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}'),
-                          _buildDetailRow('Unit Cost', NumberFormat.simpleCurrency(name: 'R').format(costPrice)),
+                          _buildDetailRow(
+                            'Name',
+                            _selectedProduct!['Inventory Product Name'],
+                          ),
+                          _buildDetailRow(
+                            'Category',
+                            _selectedProduct!['Category'],
+                          ),
+                          _buildDetailRow(
+                            'Volume',
+                            '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}',
+                          ),
+                          _buildDetailRow(
+                            'Unit Cost',
+                            NumberFormat.simpleCurrency(
+                              name: 'R',
+                            ).format(costPrice),
+                          ),
                           if (_costFellBack || _retailFellBack)
                             Padding(
                               padding: const EdgeInsets.only(top: 4),
                               child: Text(
-                                _costFellBack ? '⚠️ Cost derived from retail/3' : '⚠️ Retail derived from cost×3',
-                                style: TextStyle(fontSize: 11, color: Colors.orange.shade700),
+                                _costFellBack
+                                    ? '⚠️ Cost derived from retail/3'
+                                    : '⚠️ Retail derived from cost×3',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.orange.shade700,
+                                ),
                               ),
                             ),
                         ],
@@ -1435,15 +1733,38 @@ class _CountScreenState extends State<CountScreen> {
                       padding: const EdgeInsets.all(16.0),
                       child: Column(
                         children: [
-                          const Text('CALCULATED TOTALS', style: TextStyle(fontWeight: FontWeight.bold)),
+                          const Text(
+                            'CALCULATED TOTALS',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
                           const Divider(),
                           if (_selectedPackSize == 'Open Bottle') ...[
-                            _buildSummaryRow('Calc Volume:', '${_calcVolumeMl.toStringAsFixed(1)} ml'),
-                            _buildSummaryRow('Open Tots:', _calcOpenTots.toStringAsFixed(2)),
+                            _buildSummaryRow(
+                              'Calc Volume:',
+                              '${_calcVolumeMl.toStringAsFixed(1)} ml',
+                            ),
+                            _buildSummaryRow(
+                              'Open Tots:',
+                              _calcOpenTots.toStringAsFixed(2),
+                            ),
                           ],
-                          _buildSummaryRow('Total Bottles/Units:', _calcTotalBottles.toStringAsFixed(2)),
-                          _buildSummaryRow('Total Cost Value:', NumberFormat.simpleCurrency(name: 'R').format(_calcCostValue)),
-                          _buildSummaryRow('Total Retail Value:', NumberFormat.simpleCurrency(name: 'R').format(_calcRetailValue), isTotal: true),
+                          _buildSummaryRow(
+                            'Total Bottles/Units:',
+                            _calcTotalBottles.toStringAsFixed(2),
+                          ),
+                          _buildSummaryRow(
+                            'Total Cost Value:',
+                            NumberFormat.simpleCurrency(
+                              name: 'R',
+                            ).format(_calcCostValue),
+                          ),
+                          _buildSummaryRow(
+                            'Total Retail Value:',
+                            NumberFormat.simpleCurrency(
+                              name: 'R',
+                            ).format(_calcRetailValue),
+                            isTotal: true,
+                          ),
                         ],
                       ),
                     ),
@@ -1463,8 +1784,23 @@ class _CountScreenState extends State<CountScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 100, child: Text('$label:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Colors.grey[700]))),
-          Expanded(child: Text(value?.toString() ?? '-', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+          SizedBox(
+            width: 100,
+            child: Text(
+              '$label:',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+                color: Colors.grey[700],
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value?.toString() ?? '-',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          ),
         ],
       ),
     );
@@ -1476,8 +1812,18 @@ class _CountScreenState extends State<CountScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(fontWeight: isTotal ? FontWeight.bold : FontWeight.normal)),
-          Text(value, style: TextStyle(fontWeight: isTotal ? FontWeight.bold : FontWeight.normal)),
+          Text(
+            label,
+            style: TextStyle(
+              fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
         ],
       ),
     );

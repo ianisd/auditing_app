@@ -122,19 +122,19 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       unitsPerCase: units,
       pricePerUnit: price,
       productName:
-          _selectedProduct?['Inventory Product Name']?.toString() ??
+      _selectedProduct?['Inventory Product Name']?.toString() ??
           widget.initialItem?.productName,
       barcode:
-          _selectedProduct?['Barcode']?.toString() ??
+      _selectedProduct?['Barcode']?.toString() ??
           widget.initialItem?.barcode,
       supplierBottleID: _foundSupplierBottleID ?? widget.initialItem?.supplierBottleID, // 🔥 Pass the found bottle ID
       // 🔥 FIX: this is what was missing — without it the edit screen wrote
       // empty Category/UoM/volume for manually added lines (the tonic rows).
       mainCategory:
-          _selectedProduct?['Main Category']?.toString() ??
+      _selectedProduct?['Main Category']?.toString() ??
           widget.initialItem?.mainCategory,
       category:
-          _selectedProduct?['Category']?.toString() ??
+      _selectedProduct?['Category']?.toString() ??
           widget.initialItem?.category,
       singleUnitVolume: _selectedProduct != null
           ? _parseNumber(_selectedProduct!['Single Unit Volume'])
@@ -230,10 +230,10 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
   // Enhanced cost lookup with feedback
   Future<void> _lookupCostWithFeedback(
-    String productName,
-    String supplierName,
-    String supplierId,
-  ) async {
+      String productName,
+      String supplierName,
+      String supplierId,
+      ) async {
     try {
       final result = await _lookupCost(productName, supplierName, supplierId);
       if (!_isMounted()) return;
@@ -359,10 +359,10 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   }
 
   Future<Map<String, dynamic>?> _lookupCost(
-    String productName,
-    String supplierName,
-    String supplierId,
-  ) async {
+      String productName,
+      String supplierName,
+      String supplierId,
+      ) async {
     print('🔍 ===== COST LOOKUP START =====');
     print('  📦 Product: "$productName"');
     print('  🏢 Supplier: "$supplierName"');
@@ -373,8 +373,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
       final allSuppliers = await storage.getMasterSuppliers();
       final supplierMatch = allSuppliers.firstWhere(
-        (s) =>
-            s['Supplier']?.toString().toLowerCase().trim() ==
+            (s) =>
+        s['Supplier']?.toString().toLowerCase().trim() ==
             supplierName.toLowerCase().trim(),
         orElse: () => <String, dynamic>{},
       );
@@ -404,8 +404,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
           final searchName = productName.toLowerCase().trim();
 
           return (costName == searchName ||
-                  costName.contains(searchName) ||
-                  searchName.contains(costName)) &&
+              costName.contains(searchName) ||
+              searchName.contains(costName)) &&
               costSupplierId == actualSupplierId;
         }).toList();
 
@@ -422,8 +422,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
               .trim();
           final searchName = productName.toLowerCase().trim();
           return costName == searchName ||
-                 costName.contains(searchName) ||
-                 searchName.contains(costName);
+              costName.contains(searchName) ||
+              searchName.contains(costName);
         }).toList();
 
         if (nameMatches.isNotEmpty) {
@@ -452,9 +452,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   double? _extractCost(Map<String, dynamic> costEntry) {
     final costValue =
         costEntry['Cost Price'] ??
-        costEntry['Unit Cost'] ??
-        costEntry['Cost'] ??
-        costEntry['avgCost'];
+            costEntry['Unit Cost'] ??
+            costEntry['Cost'] ??
+            costEntry['avgCost'];
 
     if (costValue == null) return null;
 
@@ -481,7 +481,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       final storage = context.read<OfflineStorage>();
       final suppliers = await storage.getMasterSuppliers();
       final match = suppliers.firstWhere(
-        (s) => s['Supplier']?.toString() == supplierName,
+            (s) => s['Supplier']?.toString() == supplierName,
         orElse: () => <String, dynamic>{},
       );
       return match['supplierID']?.toString() ?? '';
@@ -564,7 +564,6 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
     );
   }
 
-  @override
   @override
   Widget build(BuildContext context) {
     // 🔥 CX: Pack sizes for the selected product's category (outlined dropdown like CountScreen)

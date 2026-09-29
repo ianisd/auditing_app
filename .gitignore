@@ -48,3 +48,5 @@ app.*.map.json
 key.properties
 **/*.jks
 **/*.keystore
+/test/
+/code.gs

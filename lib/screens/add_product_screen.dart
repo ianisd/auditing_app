@@ -76,7 +76,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
       return "Soft Drinks/Water";
     }
     if (["Whiskey", "Vodka", "Tequila", "Liqueurs", "Gin", "Aperatif", "Cognac", "Bourbon", "Rum", "Brandy", "Cordials", "Schnapps"].contains(category)) {
-      return "Spirits";
+      return "Spirit";
     }
 
     return "Other";
