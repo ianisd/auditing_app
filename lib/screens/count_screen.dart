@@ -7,6 +7,7 @@ import '../services/store_manager.dart';
 import '../services/logger_service.dart';
 import '../widgets/barcode_scanner.dart';
 import 'add_product_screen.dart';
+import '../services/food_stock_fields.dart';
 import 'package:intl/intl.dart';
 import '../services/stock_record_fields.dart';
 
@@ -48,13 +49,13 @@ class PricingResolver {
         product['Inventory Product Name']?.toString().toLowerCase().trim() ??
             '';
     double unitCost = _safeDouble(product['Cost Price']);
-    double unitRetail = salesIndex[name] ?? 0.0;
+    double unitRetail = FoodStockFields.isFood(product) ? 0.0 : salesIndex[name] ?? 0.0;
     bool costFellBack = false;
     bool retailFellBack = false;
 
     // Mirrors GAS recalculateStoreValues() exactly — mutually exclusive by construction.
     // Only apply fallback when ONE of the values is missing, not both.
-    if (unitCost > 0 && unitRetail == 0.0) {
+    if (!FoodStockFields.isFood(product) && unitCost > 0 && unitRetail == 0.0) {
       unitRetail = unitCost * 3;
       retailFellBack = true;
     } else if (unitRetail > 0 && unitCost == 0.0) {
@@ -129,18 +130,7 @@ class _CountScreenState extends State<CountScreen> {
     '10 Ltr Cartons',
   ];
 
-  final List<String> _foodPackSizes = [
-    'Loose (kg)',
-    'Loose (g)',
-    'Each',
-    'Portion',
-    'Pack',
-    'Box',
-    'Case 1',
-    'Case 6',
-    'Case 12',
-    'Case 24',
-  ];
+  final List<String> _foodPackSizes = ['Loose (g)', 'Loose (kg)'];
 
   final List<String> _tobaccoPackSizes = [
     'Loose',
@@ -320,7 +310,7 @@ class _CountScreenState extends State<CountScreen> {
       product = inventory.firstWhere((i) => i['Inventory Product Name']?.toString() == name, orElse: () => {});
     }
 
-    product = stockProductForEdit(data, product);
+    product = _isFoodCategory(product) ? product : stockProductForEdit(data, product);
 
     if (!mounted) return;
     setState(() {
@@ -336,7 +326,10 @@ class _CountScreenState extends State<CountScreen> {
 
       _determineDefaultMeasurementMode(product);
 
-      _countController.text = data['count']?.toString() ?? '0';
+      if (_isFood) _selectedPackSize = 'Loose (g)';
+      _countController.text = _isFood
+          ? (FoodStockFields.isWeightRecord(data) ? FoodStockFields.recordedGrams(data).toString() : '')
+          : data['count']?.toString() ?? '0';
       _weightController.text = data['weight']?.toString() ?? '0';
     });
 
@@ -501,8 +494,8 @@ class _CountScreenState extends State<CountScreen> {
     );
 
     final saved = widget.existingCount;
-    final recordedCost = saved == null ? null : stockRecordedUnitValue(saved, 'cost_value');
-    final recordedRetail = saved == null ? null : stockRecordedUnitValue(saved, 'retail_value');
+    final recordedCost = saved == null || _isFood ? null : stockRecordedUnitValue(saved, 'cost_value');
+    final recordedRetail = saved == null || _isFood ? null : stockRecordedUnitValue(saved, 'retail_value');
     if (!mounted) return;
     setState(() {
       _resolvedUnitCost = recordedCost ?? result.unitCost;
@@ -521,28 +514,21 @@ class _CountScreenState extends State<CountScreen> {
   // CATEGORY HELPERS
   // ============================================================================
 
-  bool _isFoodCategory(Map<String, dynamic>? product) {
-    if (product == null) return false;
-    final cat = product['Category']?.toString().toLowerCase() ?? '';
-    final mainCat = product['Main Category']?.toString().toLowerCase() ?? '';
-    const foodTerms = [
-      'meat',
-      'poultry',
-      'seafood',
-      'dairy',
-      'vegetables',
-      'fruit',
-      'dry goods',
-      'spices',
-      'bakery',
-      'prepared food',
-      'perishables',
-      'pantry',
-      'proteins',
-      'consumables',
-      'food',
-    ];
-    return foodTerms.contains(cat) || foodTerms.contains(mainCat);
+  bool _isFoodCategory(Map<String, dynamic>? product) => FoodStockFields.isFood(product);
+
+  bool get _isFood => _isFoodCategory(_selectedProduct);
+  double get _foodGrams => FoodStockFields.inputGrams(_countController.text, _selectedPackSize);
+
+  String? _foodError() {
+    if (!_isFood) return null;
+    final value = double.tryParse(_countController.text.trim().replaceAll(',', '.'));
+    if (value == null || !value.isFinite || value < 0 || !_foodGrams.isFinite) {
+      return 'Enter a valid non-negative food weight.';
+    }
+    if (FoodStockFields.portionGrams(_selectedProduct) <= 0) {
+      return 'Correct this item in Inventory: portion weight must be greater than zero with UoM g or kg.';
+    }
+    return null;
   }
 
   bool _isTobaccoCategory(Map<String, dynamic>? product) {
@@ -556,6 +542,7 @@ class _CountScreenState extends State<CountScreen> {
   List<String> _getFilteredPackSizes() {
     if (_selectedProduct == null) return _drinkPackSizes;
     if (_isFoodCategory(_selectedProduct)) return _foodPackSizes;
+    if (FoodStockFields.key(_selectedProduct?['Category']) == 'consumables') return ['Each', 'Pack', 'Box'];
     if (_isTobaccoCategory(_selectedProduct)) return _tobaccoPackSizes;
     return _drinkPackSizes;
   }
@@ -702,6 +689,7 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   bool _isWeightBased(String? packSize) {
+    if (_isFood) return false; // Food weight is entered through Count.
     return packSize == 'Open Bottle' ||
         packSize == 'Loose (kg)' ||
         packSize == 'Loose (g)';
@@ -738,8 +726,11 @@ class _CountScreenState extends State<CountScreen> {
     double totalUnits = 0.0;
     double finalOpenTots = 0.0;
 
-    // --- Volume/Weight calculation ---
-    if (_selectedPackSize == 'Open Bottle') {
+    // Food is independent of bottle calibration and 25 ml measures.
+    if (_isFood) {
+      final grams = _foodGrams;
+      totalUnits = FoodStockFields.portions(grams, _selectedProduct);
+    } else if (_selectedPackSize == 'Open Bottle') {
       if (_measurementType == 'Shots') {
         finalOpenTots = inputVal;
         calculatedWeightOrVol = inputVal * 25.0;
@@ -862,6 +853,7 @@ class _CountScreenState extends State<CountScreen> {
           product['Inventory Product Name']?.toString() ?? '';
       _showProductSuggestions = false;
 
+      if (_isFood) _selectedPackSize = 'Loose (g)';
       final validPackSizes = _getFilteredPackSizes();
       if (_selectedPackSize != null &&
           !validPackSizes.contains(_selectedPackSize)) {
@@ -956,6 +948,11 @@ class _CountScreenState extends State<CountScreen> {
       ).showSnackBar(const SnackBar(content: Text('Missing Location')));
       return;
     }
+    final foodError = _foodError();
+    if (foodError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(foodError)));
+      return;
+    }
     if (_selectedPackSize == null) {
       ScaffoldMessenger.of(
         context,
@@ -987,7 +984,7 @@ class _CountScreenState extends State<CountScreen> {
         c['date'].toString().startsWith(dateToUse) &&
             c['location'] == locationToUse &&
             c['productName'] == productName &&
-            c['pack_size'] == _selectedPackSize &&
+            (_isFood ? FoodStockFields.isWeightRecord(c) : c['pack_size'] == _selectedPackSize) &&
             c['syncStatus'] != 'deleted',
       );
 
@@ -1003,8 +1000,9 @@ class _CountScreenState extends State<CountScreen> {
       Map<String, dynamic> existingEntry,
       ) async {
     final currentCount =
-        double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
-    final newCount = double.tryParse(_countController.text) ?? 0.0;
+    _isFood ? FoodStockFields.recordedGrams(existingEntry) :
+    double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
+    final newCount = _isFood ? _foodGrams : double.tryParse(_countController.text) ?? 0.0;
     final addTotal = currentCount + newCount;
 
     await showDialog(
@@ -1016,7 +1014,7 @@ class _CountScreenState extends State<CountScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('You already have $currentCount ${_selectedPackSize}s here.'),
+            Text('You already have $currentCount ${_isFood ? 'g' : '${_selectedPackSize}s'} here.'),
             const SizedBox(height: 8),
             Text('Do you want to ADD to it, or EDIT (Overwrite) it?'),
             const SizedBox(height: 16),
@@ -1071,6 +1069,7 @@ class _CountScreenState extends State<CountScreen> {
           FilledButton(
             onPressed: () {
               Navigator.pop(ctx);
+              if (_isFood) _selectedPackSize = 'Loose (g)';
               _countController.text = addTotal.toString();
               _recalculateTotals();
               _commitSaveToDB(existingId: existingEntry['id'], isUpdate: true);
@@ -1126,6 +1125,11 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _commitSaveToDB({String? existingId, bool isUpdate = false}) async {
+    final foodError = _foodError();
+    if (foodError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(foodError)));
+      return;
+    }
     final storage = context.read<OfflineStorage>();
 
     var preserved = <String, dynamic>{};
@@ -1142,10 +1146,10 @@ class _CountScreenState extends State<CountScreen> {
     }
     if (_isEditMode || isUpdate) {
       try {
-        final product = stockProductForEdit(preserved, _selectedProduct);
-        final cost = stockRecordedUnitValue(preserved, 'cost_value') ?? _resolvedUnitCost;
-        final retail = stockRecordedUnitValue(preserved, 'retail_value') ?? _resolvedUnitRetail;
-        validateStockEdit(preserved, product, cost, retail);
+        final product = _isFood ? _selectedProduct! : stockProductForEdit(preserved, _selectedProduct);
+        final cost = _isFood ? _resolvedUnitCost : stockRecordedUnitValue(preserved, 'cost_value') ?? _resolvedUnitCost;
+        final retail = _isFood ? _resolvedUnitRetail : stockRecordedUnitValue(preserved, 'retail_value') ?? _resolvedUnitRetail;
+        if (!_isFood) validateStockEdit(preserved, product, cost, retail);
         _selectedProduct = product;
         _resolvedUnitCost = cost;
         _resolvedUnitRetail = retail;
@@ -1198,19 +1202,19 @@ class _CountScreenState extends State<CountScreen> {
       'productName': _selectedProduct?['Inventory Product Name'] ?? _productController.text,
       'mainCategory': _selectedProduct?['Main Category'] ?? '',
       'category': _selectedProduct?['Category'] ?? '',
-      'singleUnitVolume': _safeDouble(_selectedProduct?['Single Unit Volume']),
-      'uom': _selectedProduct?['UoM'] ?? '',
+      'singleUnitVolume': _isFood ? FoodStockFields.portionGrams(_selectedProduct) : _safeDouble(_selectedProduct?['Single Unit Volume']),
+      'uom': _isFood ? 'g' : _selectedProduct?['UoM'] ?? '',
       'gradient': _safeDouble(_selectedProduct?['Gradient']),
       'intercept': _safeDouble(_selectedProduct?['Intercept']),
       'location': widget.initialLocation ?? _selectedLocation!,
-      'pack_size': _selectedPackSize,
-      'count': double.tryParse(_countController.text) ?? 0.0,
-      'weight': double.tryParse(_weightController.text) ?? 0.0,
+      'pack_size': _isFood ? 'weight (g)' : _selectedPackSize,
+      'count': _isFood ? _foodGrams : double.tryParse(_countController.text) ?? 0.0,
+      'weight': _isFood ? _foodGrams : double.tryParse(_weightController.text) ?? 0.0,
       'volume_ml': _calcVolumeMl,
       'open_tots': _calcOpenTots,
       'total_bottles': _calcTotalBottles,
       'total_ml': _calcTotalMl,
-      'total_shots': _calcTotalMl / 25.0,
+      'total_shots': _isFood ? _calcTotalBottles : _calcTotalMl / 25.0,
       'cost_value': _calcCostValue,
       'retail_value': _calcRetailValue,
       'createdAt': preserved['createdAt'] ?? createdDate,
@@ -1252,7 +1256,7 @@ class _CountScreenState extends State<CountScreen> {
 
         _logger?.info('Saved: ${_productController.text} ($id)');
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles Bottles'), backgroundColor: Colors.green));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles ${_isFood ? 'portions' : 'Bottles'}'), backgroundColor: Colors.green));
         _clearForm();
       }
 
@@ -1474,18 +1478,23 @@ class _CountScreenState extends State<CountScreen> {
 
                 // 4. PACK SIZE INPUT
                 DropdownButtonFormField<String>(
-                  decoration: const InputDecoration(
-                    labelText: 'Pack Size',
-                    border: OutlineInputBorder(),
+                  key: ValueKey('${_selectedBarcode}_$_selectedPackSize'),
+                  decoration: InputDecoration(
+                    labelText: _isFood ? 'Weigh in' : 'Pack Size',
+                    border: const OutlineInputBorder(),
                   ),
                   initialValue: _selectedPackSize,
                   isExpanded: true,
                   items: currentPackSizes
-                      .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+                      .map((p) => DropdownMenuItem(value: p, child: Text(_isFood ? (p == 'Loose (kg)' ? 'Kilograms (kg)' : 'Grams (g)') : p)))
                       .toList(),
                   onChanged: (val) {
                     if (!mounted) return;
                     setState(() {
+                      if (_isFood && val != null) {
+                        final grams = _foodGrams;
+                        _countController.text = (val == 'Loose (kg)' ? grams / 1000 : grams).toString();
+                      }
                       _selectedPackSize = val;
                       if (_isWeightBased(val)) {
                         _countController.text = '0';
@@ -1533,6 +1542,11 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                   ),
 
+                if (_isFood) ...[
+                  const Text('Weigh net food only (exclude the container). Count is stored in grams; portions = grams ÷ portion weight. Cost Price must be per portion. Retail value is unavailable without food recipe pricing.'),
+                  if (_isEditMode) const Text('Legacy AppSheet weight records load from Weight (g). Check the weight before saving. Older case/unit records must be reweighed.'),
+                  const SizedBox(height: 12),
+                ],
                 // 6. COUNT INPUT ROW + SAVE BUTTON
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -1541,11 +1555,12 @@ class _CountScreenState extends State<CountScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _countController,
-                          decoration: const InputDecoration(
-                            labelText: 'Count (Units)',
-                            border: OutlineInputBorder(),
+                          validator: (_) => _foodError(),
+                          decoration: InputDecoration(
+                            labelText: _isFood ? 'Net weight (${_selectedPackSize == 'Loose (kg)' ? 'kg' : 'g'})' : 'Count (Units)',
+                            border: const OutlineInputBorder(),
                           ),
-                          keyboardType: TextInputType.number,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
 
@@ -1566,7 +1581,7 @@ class _CountScreenState extends State<CountScreen> {
                                 : 'Net Weight',
                             border: const OutlineInputBorder(),
                           ),
-                          keyboardType: TextInputType.number,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
 
@@ -1593,7 +1608,7 @@ class _CountScreenState extends State<CountScreen> {
                 const SizedBox(height: 24),
 
                 // 7. CONTEXT CARD
-                if (_selectedProduct != null)
+                if (_selectedProduct != null && !_isFood)
                   Container(
                     margin: const EdgeInsets.only(bottom: 16),
                     padding: const EdgeInsets.all(12),
@@ -1697,11 +1712,11 @@ class _CountScreenState extends State<CountScreen> {
                             _selectedProduct!['Category'],
                           ),
                           _buildDetailRow(
-                            'Volume',
+                            _isFood ? 'Portion weight' : 'Volume',
                             '${_selectedProduct!['Single Unit Volume']} ${_selectedProduct!['UoM']}',
                           ),
                           _buildDetailRow(
-                            'Unit Cost',
+                            _isFood ? 'Cost per portion' : 'Unit Cost',
                             NumberFormat.simpleCurrency(
                               name: 'R',
                             ).format(costPrice),
@@ -1738,6 +1753,7 @@ class _CountScreenState extends State<CountScreen> {
                             style: TextStyle(fontWeight: FontWeight.bold),
                           ),
                           const Divider(),
+                          if (_isFood) _buildSummaryRow('Net weight:', '${_foodGrams.toStringAsFixed(2)} g'),
                           if (_selectedPackSize == 'Open Bottle') ...[
                             _buildSummaryRow(
                               'Calc Volume:',
@@ -1749,7 +1765,7 @@ class _CountScreenState extends State<CountScreen> {
                             ),
                           ],
                           _buildSummaryRow(
-                            'Total Bottles/Units:',
+                            _isFood ? 'Total portions:' : 'Total Bottles/Units:',
                             _calcTotalBottles.toStringAsFixed(2),
                           ),
                           _buildSummaryRow(
@@ -1759,7 +1775,7 @@ class _CountScreenState extends State<CountScreen> {
                             ).format(_calcCostValue),
                           ),
                           _buildSummaryRow(
-                            'Total Retail Value:',
+                            _isFood ? 'Retail value (not calculated):' : 'Total Retail Value:',
                             NumberFormat.simpleCurrency(
                               name: 'R',
                             ).format(_calcRetailValue),

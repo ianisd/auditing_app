@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../widgets/barcode_scanner.dart';
+import '../services/food_stock_fields.dart';
+
 
 class AddProductScreen extends StatefulWidget {
   final String? initialBarcode;
@@ -21,6 +23,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
   final _costController = TextEditingController();
 
   String _uom = 'ml';
+  bool _saving = false;
+  bool get _isFood => FoodStockFields.mainCategory(_selectedCategory ?? '') != null;
   String? _selectedCategory;
 
   // --- UPDATED: Includes Food Groups ---
@@ -31,11 +35,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
     "Soft Drinks", "Still Water", "Sparkling Water",
     "Whiskey", "Vodka", "Tequila", "Liqueurs", "Gin", "Aperatif", "Cognac", "Bourbon", "Rum", "Brandy", "Cordials", "Schnapps",
 
-    // Group 2: Food & Solids
-    "Meat", "Poultry", "Seafood",
-    "Dairy", "Vegetables", "Fruit",
-    "Dry Goods", "Spices", "Bakery",
-    "Prepared Food", "Consumables"
+    ...FoodStockFields.groups.values.expand((categories) => categories),
+    'Consumables',
   ];
 
   @override
@@ -59,11 +60,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
   // --- UPDATED LOGIC: Handle Food Groups ---
   String _deriveMainCategory(String category) {
-    // Food Mappings
-    if (["Meat", "Poultry", "Seafood"].contains(category)) return "Proteins";
-    if (["Dairy", "Vegetables", "Fruit"].contains(category)) return "Perishables";
-    if (["Dry Goods", "Spices", "Bakery"].contains(category)) return "Pantry";
-    if (["Consumables"].contains(category)) return "Non-Food";
+    final foodGroup = FoodStockFields.mainCategory(category);
+    if (foodGroup != null) return foodGroup;
+    if (category == 'Consumables') return 'Non-Food';
 
     // Drink Mappings
     if (["Coolers", "Cider", "Beer", "Cooler"].contains(category)) {
@@ -97,7 +96,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_saving || !_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
 
     // Logic to set Main Category
     final mainCategory = _selectedCategory != null
@@ -110,19 +110,23 @@ class _AddProductScreenState extends State<AddProductScreen> {
       'Product Name': _nameController.text.trim(), // Keep sync
       'Main Category': mainCategory, // AUTOMATED
       'Category': _selectedCategory ?? 'Other',
-      'Single Unit Volume': double.tryParse(_volumeController.text) ?? 0.0,
-      'UoM': _uom,
-      'Cost Price': double.tryParse(_costController.text) ?? 0.0,
+      'Single Unit Volume': FoodStockFields.number(_volumeController.text) * (_isFood && _uom == 'kg' ? 1000 : 1),
+      'UoM': _isFood ? 'g' : _uom,
+      'Cost Price': FoodStockFields.number(_costController.text),
       'Pack Size': 'Single',
       'Gradient': 0.0,
       'Intercept': 0.0,
     };
 
-    // Save to Local Offline Storage
-    await context.read<OfflineStorage>().saveNewLocalProduct(newItem);
-
-    if (mounted) {
-      Navigator.pop(context, newItem);
+    try {
+      await context.read<OfflineStorage>().saveNewLocalProduct(newItem);
+      if (mounted) Navigator.pop(context, newItem);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save product: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -178,23 +182,40 @@ class _AddProductScreenState extends State<AddProductScreen> {
                 ),
                 initialValue: _selectedCategory,
                 items: _categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                onChanged: (val) => setState(() => _selectedCategory = val),
+                onChanged: (val) => setState(() {
+                  final wasFood = _isFood;
+                  _selectedCategory = val;
+                  if (_isFood != wasFood) {
+                    _uom = _isFood ? 'g' : 'ml';
+                    _volumeController.clear();
+                  }
+                }),
                 validator: (v) => v == null ? 'Required' : null,
               ),
 
               const SizedBox(height: 16),
 
+              if (_selectedCategory != null) ...[
+                Text('Main category: ${_deriveMainCategory(_selectedCategory!)}'),
+                const SizedBox(height: 12),
+              ],
               // VOLUME/WEIGHT & UOM
               Row(
                 children: [
                   Expanded(
                     child: TextFormField(
                       controller: _volumeController,
-                      decoration: const InputDecoration(
-                        labelText: 'Unit Size (Vol/Weight)', // Generic Label
-                        border: OutlineInputBorder(),
+                      validator: (v) {
+                        if (!_isFood) return null;
+                        final size = FoodStockFields.number(v);
+                        final grams = size * (_uom == 'kg' ? 1000 : 1);
+                        return grams.isFinite && grams > 0 ? null : 'Enter a portion weight greater than zero';
+                      },
+                      decoration: InputDecoration(
+                        labelText: _isFood ? 'Portion weight *' : 'Unit Size (Vol/Weight)',
+                        border: const OutlineInputBorder(),
                       ),
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -205,27 +226,44 @@ class _AddProductScreenState extends State<AddProductScreen> {
                         labelText: 'UoM',
                         border: OutlineInputBorder(),
                       ),
+                      key: ValueKey(_isFood),
                       initialValue: _uom,
                       // Updated UoM List
-                      items: ['ml', 'Ltr', 'cl', 'kg', 'g', 'lb', 'oz', 'each']
+                      items: (_isFood ? ['g', 'kg'] : ['ml', 'Ltr', 'cl', 'kg', 'g', 'lb', 'oz', 'each'])
                           .map((e) => DropdownMenuItem(value: e, child: Text(e)))
                           .toList(),
-                      onChanged: (v) => setState(() => _uom = v!),
+                      onChanged: (v) => setState(() {
+                        if (v == null) return;
+                        if (_isFood && v != _uom && _volumeController.text.trim().isNotEmpty) {
+                          final size = FoodStockFields.number(_volumeController.text);
+                          _volumeController.text = (_uom == 'kg' ? size * 1000 : size / 1000).toString();
+                        }
+                        _uom = v;
+                      }),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
 
+              if (_isFood) ...[
+                const Text('Enter the weight of one portion, not the delivery pack. For example: 200 g. Counts are saved in grams; portions = weight ÷ portion weight.'),
+                const SizedBox(height: 16),
+              ],
               // COST
               TextFormField(
                 controller: _costController,
-                decoration: const InputDecoration(
-                  labelText: 'Cost Price',
-                  border: OutlineInputBorder(),
-                  prefixText: '\$ ',
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return null;
+                  final cost = double.tryParse(v.trim().replaceAll(',', '.'));
+                  return cost != null && cost.isFinite && cost >= 0 ? null : 'Enter a valid non-negative cost';
+                },
+                decoration: InputDecoration(
+                  labelText: _isFood ? 'Cost per portion (R)' : 'Cost Price',
+                  border: const OutlineInputBorder(),
+                  prefixText: 'R ',
                 ),
-                keyboardType: TextInputType.number,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
 
               const SizedBox(height: 32),
@@ -234,7 +272,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: _save,
+                  onPressed: _saving ? null : _save,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,

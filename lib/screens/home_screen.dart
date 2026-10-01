@@ -18,6 +18,7 @@ import 'setup_store_screen.dart';
 import '../services/store_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'network_status_screen.dart';
+import 'sales_upload_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -36,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const List<_NavItem> _navItems = [
     _NavItem(icon: Icons.cloud_upload, label: 'Sync'),
     _NavItem(icon: Icons.upload_file, label: 'Upload GRV'),
+    _NavItem(icon: Icons.point_of_sale, label: 'Upload Sales'),
     _NavItem(icon: Icons.receipt, label: 'GRV Invoices'),
     _NavItem(icon: Icons.link, label: 'PLU Mappings'),
     _NavItem(icon: Icons.analytics, label: 'Variance'),
@@ -49,6 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const List<Widget> _screens = [
     SyncScreen(),
     GrvUploadScreen(),
+    SalesUploadScreen(),
     GrvListScreen(),
     PluMappingScreen(),
     VarianceReportScreen(),
@@ -58,7 +61,6 @@ class _HomeScreenState extends State<HomeScreen> {
     ViewCountsScreen(),
     CountScreen(),
   ];
-
   bool get _isDesktop =>
       !kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.windows ||

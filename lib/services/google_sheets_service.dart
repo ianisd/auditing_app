@@ -153,6 +153,7 @@ List<Map<String, dynamic>> _parseBatchData(List<dynamic> data) {
 class _Semaphore {
   int _available;
   final _waiters = <Completer<void>>[];
+
   _Semaphore(this._available);
 
   Future<void> acquire() async {
@@ -196,8 +197,10 @@ class GoogleSheetsService {
   bool _versionedRefreshActive = false;
   bool _forceVersionedDownload = false;
   final Set<String> _reusedRefreshTables = {};
+
   Set<String> get reusedRefreshTables => Set.unmodifiable(_reusedRefreshTables);
   final Map<String, String> _bundleErrors = {};
+
   Map<String, String> get bundleErrors => Map.unmodifiable(_bundleErrors);
 
   List<Map<String, dynamic>> _copyDownload(List<Map<String, dynamic>> rows) =>
@@ -739,6 +742,7 @@ class GoogleSheetsService {
 
   // Pool of warm, idle clients for Keep-Alive reuse
   final List<http.Client> _clientPool = [];
+
   // Set of actively leased clients currently in flight
   final Set<http.Client> _leasedClients = {};
   bool _isDisposed = false;
@@ -750,6 +754,7 @@ class GoogleSheetsService {
   static const int defaultBatchSize = 1000;
   static const int largeBatchSize = 2500;
   static const int defaultTimeoutSeconds = 180;
+
   // Mutations must fail fast into pending state instead of occupying the transport for minutes.
   static const int postTimeoutSeconds = 30;
   static const int largeTableTimeoutSeconds = 300;
@@ -758,6 +763,7 @@ class GoogleSheetsService {
   static const int maxSyncRetries = 3;
   static const int chunkSize = 500;
   static const int computeThreshold = 500;
+
   // Reads and writes must never block each other. Keep each lane serialized,
   // but isolate a slow download from mutation traffic.
   static final _Semaphore _getRequestGate = _Semaphore(1);
@@ -2424,8 +2430,8 @@ class GoogleSheetsService {
   }
 
   Future<Map<String, dynamic>> syncInvoiceDetailsWithResult(
-      List<Map<String, dynamic>> invoices,
-      ) async {
+    List<Map<String, dynamic>> invoices,
+  ) async {
     final mappedInvoices = invoices.map(_mapInvoiceFields).toList();
 
     // 🔥 Force syncStatus to 'synced' before uploading
@@ -2479,10 +2485,10 @@ class GoogleSheetsService {
   /// Sync invoices with chunking, retry, and progress reporting
 
   Future<Map<String, dynamic>> syncInvoiceDetailsWithChunking(
-      List<Map<String, dynamic>> records, {
-        Function(int processed, int total)? onProgress,
-        int chunkSize = 25,
-      }) async {
+    List<Map<String, dynamic>> records, {
+    Function(int processed, int total)? onProgress,
+    int chunkSize = 25,
+  }) async {
     if (chunkSize < 1 || chunkSize > 500) {
       throw ArgumentError.value(chunkSize, 'chunkSize', 'Must be 1 to 500');
     }
@@ -2510,10 +2516,16 @@ class GoogleSheetsService {
       if (result['success'] != true) {
         // 🔥 NEW: Localized read-after-unknown reconciliation for Invoices
         final code = result['code']?.toString() ?? '';
-        final unknownOutcome = {'OUTCOME_UNKNOWN', 'HTTP_ERROR', 'POST_ROUTE_MISMATCH'}.contains(code);
+        final unknownOutcome = {
+          'OUTCOME_UNKNOWN',
+          'HTTP_ERROR',
+          'POST_ROUTE_MISMATCH',
+        }.contains(code);
 
         if (unknownOutcome) {
-          print('🔎 Invoice chunk has an unknown POST outcome ($code); verifying before leaving pending.');
+          print(
+            '🔎 Invoice chunk has an unknown POST outcome ($code); verifying before leaving pending.',
+          );
           await Future.delayed(const Duration(seconds: 2));
 
           var allConfirmed = true;
@@ -2528,8 +2540,12 @@ class GoogleSheetsService {
               // 🔥 NEW: Verify key fields match to ensure the creation actually applied
               final expInvNum = inv['Invoice Number']?.toString().trim();
               final remInvNum = remote['Invoice Number']?.toString().trim();
-              if (expInvNum != null && remInvNum != null && expInvNum != remInvNum) {
-                print('⚠️ Invoice verification failed: Invoice Number mismatch for $invId');
+              if (expInvNum != null &&
+                  remInvNum != null &&
+                  expInvNum != remInvNum) {
+                print(
+                  '⚠️ Invoice verification failed: Invoice Number mismatch for $invId',
+                );
                 allConfirmed = false;
                 break;
               }
@@ -2537,10 +2553,14 @@ class GoogleSheetsService {
           }
 
           if (allConfirmed) {
-            print('✅ Invoice chunk confirmed after unknown POST outcome; POST was not replayed.');
+            print(
+              '✅ Invoice chunk confirmed after unknown POST outcome; POST was not replayed.',
+            );
             // Proceed to acknowledge as if it succeeded
           } else {
-            print('⚠️ Invoice chunk verification failed; leaving records pending.');
+            print(
+              '⚠️ Invoice chunk verification failed; leaving records pending.',
+            );
             return {
               'success': false,
               'newCount': added,
@@ -2548,7 +2568,9 @@ class GoogleSheetsService {
               'duplicateCount': duplicateCount,
               'duplicates': duplicates,
               'processed': processed,
-              'message': result['message'] ?? 'Chunk unconfirmed and verification failed',
+              'message':
+                  result['message'] ??
+                  'Chunk unconfirmed and verification failed',
               'code': result['code'],
             };
           }
@@ -2572,7 +2594,11 @@ class GoogleSheetsService {
       duplicateCount += (result['duplicateCount'] as num? ?? 0).toInt();
       final remoteDuplicates = result['duplicates'];
       if (remoteDuplicates is List) {
-        duplicates.addAll(remoteDuplicates.whereType<Map>().map((r) => Map<String, dynamic>.from(r)));
+        duplicates.addAll(
+          remoteDuplicates.whereType<Map>().map(
+            (r) => Map<String, dynamic>.from(r),
+          ),
+        );
       }
       processed += end - offset;
       onProgress?.call(processed, snapshots.length);
@@ -2773,9 +2799,9 @@ class GoogleSheetsService {
   }
 
   bool _purchaseSnapshotMatchesRemote(
-      Map<String, dynamic> expected,
-      Map<String, dynamic> remote,
-      ) {
+    Map<String, dynamic> expected,
+    Map<String, dynamic> remote,
+  ) {
     String text(dynamic value) => (value ?? '').toString().trim();
 
     bool numberEqual(dynamic a, dynamic b) {
@@ -2814,7 +2840,9 @@ class GoogleSheetsService {
         final expNum = double.tryParse(expVal);
         final remNum = double.tryParse(remVal);
         if (expNum == null || remNum == null || expNum != remNum) {
-          print('⚠️ Purchase mismatch on string field "$field": expected="$expVal", remote="$remVal"');
+          print(
+            '⚠️ Purchase mismatch on string field "$field": expected="$expVal", remote="$remVal"',
+          );
           return false;
         }
       }
@@ -2830,12 +2858,194 @@ class GoogleSheetsService {
 
     for (final field in numericFields) {
       if (!numberEqual(expected[field], remote[field])) {
-        print('⚠️ Purchase mismatch on numeric field "$field": expected="${expected[field]}", remote="${remote[field]}"');
+        print(
+          '⚠️ Purchase mismatch on numeric field "$field": expected="${expected[field]}", remote="${remote[field]}"',
+        );
         return false;
       }
     }
 
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+// Store Sales Data
+// ---------------------------------------------------------------------------
+
+  /// Sync raw StoreSalesData rows.
+  ///
+  /// Each record must contain:
+  /// {
+  ///   'salesID': 'unique-row-id',
+  ///   'values': [14 positional values from columns A:N]
+  /// }
+  ///
+  /// The positional representation is intentional because StoreSalesData
+  /// contains two columns both named "Discounts".
+  Future<Map<String, dynamic>> syncStoreSalesData(
+      List<Map<String, dynamic>> rows, {
+        void Function(int completed, int total)? onProgress,
+      }) async {
+    if (rows.isEmpty) {
+      return {
+        'success': true,
+        'syncedIds': <String>[],
+        'processedCount': 0,
+        'totalReceived': 0,
+        'inserted': 0,
+        'updated': 0,
+      };
+    }
+
+    const chunkSize = 400;
+
+    final syncedIds = <String>[];
+    var totalInserted = 0;
+    var totalUpdated = 0;
+    var processed = 0;
+
+    for (var start = 0; start < rows.length; start += chunkSize) {
+      final end = math.min(start + chunkSize, rows.length);
+      final chunk = rows.sublist(start, end);
+
+      final result = await _sendPostRequest(
+        'syncStoreSalesData',
+        {
+          'endpoint': 'syncStoreSalesData',
+          'data': chunk,
+        },
+      );
+
+      var confirmed = result['success'] == true;
+
+      final code = result['code']?.toString() ?? '';
+
+      final unknownOutcome = {
+        'OUTCOME_UNKNOWN',
+        'HTTP_ERROR',
+        'POST_ROUTE_MISMATCH',
+      }.contains(code);
+
+      // ------------------------------------------------------------
+      // Ambiguous POST:
+      // NEVER blindly replay it here.
+      // Verify each salesID against authoritative server state.
+      // ------------------------------------------------------------
+
+      if (!confirmed && unknownOutcome) {
+        print(
+          '🔎 StoreSalesData chunk has an unknown POST outcome; '
+              'verifying salesIDs before failing.',
+        );
+
+        for (var attempt = 1; attempt <= 2 && !confirmed; attempt++) {
+          await Future.delayed(
+            Duration(seconds: attempt == 1 ? 2 : 4),
+          );
+
+          try {
+            var allPresent = true;
+
+            for (final record in chunk) {
+              final salesId =
+              (record['salesID'] ?? '').toString().trim();
+
+              if (salesId.isEmpty) {
+                allPresent = false;
+                break;
+              }
+
+              final remote = await fetchStoreSaleById(salesId);
+
+              if (remote == null) {
+                allPresent = false;
+                break;
+              }
+            }
+
+            if (allPresent) {
+              confirmed = true;
+
+              print(
+                '✅ StoreSalesData chunk confirmed from server '
+                    'after unknown POST outcome.',
+              );
+            }
+          } catch (e) {
+            print(
+              '⚠️ Could not reconcile StoreSalesData '
+                  'attempt $attempt/2: $e',
+            );
+          }
+        }
+      }
+
+      if (!confirmed) {
+        return {
+          'success': false,
+          'syncedIds': syncedIds,
+          'processedCount': processed,
+          'totalReceived': rows.length,
+          'inserted': totalInserted,
+          'updated': totalUpdated,
+          'code': result['code'],
+          'message':
+          result['message'] ??
+              'StoreSalesData upload could not be confirmed.',
+        };
+      }
+
+      final responseIds = result['syncedIds'];
+
+      if (responseIds is List) {
+        syncedIds.addAll(
+          responseIds.map((e) => e.toString()),
+        );
+      } else {
+        // Reconciled response may not contain the original POST receipt.
+        syncedIds.addAll(
+          chunk.map(
+                (row) => row['salesID'].toString(),
+          ),
+        );
+      }
+
+      totalInserted +=
+          int.tryParse('${result['inserted'] ?? 0}') ?? 0;
+
+      totalUpdated +=
+          int.tryParse('${result['updated'] ?? 0}') ?? 0;
+
+      processed += chunk.length;
+
+      onProgress?.call(processed, rows.length);
+    }
+
+    return {
+      'success': true,
+      'syncedIds': syncedIds,
+      'processedCount': processed,
+      'totalReceived': rows.length,
+      'inserted': totalInserted,
+      'updated': totalUpdated,
+      'message': 'Confirmed $processed StoreSalesData rows.',
+    };
+  }
+
+  /// Fetch one StoreSalesData row using its stable salesID.
+  Future<Map<String, dynamic>?> fetchStoreSaleById(
+      String salesId,
+      ) async {
+    final cleanId = salesId.trim();
+
+    if (cleanId.isEmpty) {
+      return null;
+    }
+
+    return fetchRecordById(
+      'StoreSalesData',
+      cleanId,
+    );
   }
 
   /// Sync stock counts with chunking, retry, and progress reporting
@@ -2857,6 +3067,10 @@ class GoogleSheetsService {
         .toList();
     if (allIds.any((id) => id.isEmpty) ||
         allIds.toSet().length != allIds.length) {
+      logger?.error(
+        '❌ Stock sync rejected before POST: missing or repeated stock IDs. '
+        'records=${snapshots.length}',
+      );
       return {
         'success': false,
         'syncedIds': <String>[],
@@ -2867,6 +3081,8 @@ class GoogleSheetsService {
     final confirmed = <String>{};
     final outcomes = <String, String>{};
     String lastError = '';
+    final chunkTotal = (snapshots.length / chunkSize).ceil();
+
     for (int offset = 0; offset < snapshots.length; offset += chunkSize) {
       if (_isDisposed) {
         lastError = 'Service disposed during stock sync.';
@@ -2878,6 +3094,7 @@ class GoogleSheetsService {
           .map(_mapStockCountForSheet)
           .toList();
       final expected = allIds.sublist(offset, end).toSet();
+      final chunkIndex = offset ~/ chunkSize;
 
       // One logical transaction per chunk. Retries of THIS chunk reuse this
       // transaction ID, but a later edit/replay invocation gets a fresh ID.
@@ -2885,34 +3102,83 @@ class GoogleSheetsService {
       // the request/receipt identity.
       final transaction = _generateUuid();
 
+      logger?.info(
+        '📦 Stock sync chunk ${chunkIndex + 1}/$chunkTotal: '
+        'records=${chunk.length}, transactionId=$transaction',
+      );
+
       for (int attempt = 0; attempt < 3; attempt++) {
         if (_isDisposed) {
           lastError = 'Service disposed during stock sync.';
           break;
         }
         if (attempt > 0) await Future.delayed(Duration(seconds: attempt * 2));
+
+        logger?.info(
+          '➡️ Stock POST chunk ${chunkIndex + 1}/$chunkTotal '
+          'attempt ${attempt + 1}/3: transactionId=$transaction',
+        );
+
         try {
           final result = await _sendPostRequest('syncStockCounts', {
             'endpoint': 'syncStockCounts',
             'data': chunk,
             'transactionId': transaction,
-            'chunkIndex': offset ~/ chunkSize,
-            'chunkTotal': (snapshots.length / chunkSize).ceil(),
+            'chunkIndex': chunkIndex,
+            'chunkTotal': chunkTotal,
             'retry': attempt,
           });
-          if (result['receiptVersion'] != 2 &&
+
+          final receiptVersion = result['receiptVersion'];
+          final code = result['code']?.toString() ?? '';
+          final message = result['message']?.toString() ?? '';
+          final syncedCount = result['syncedIds'] is List
+              ? (result['syncedIds'] as List).length
+              : 0;
+          final failedCount = result['failedIds'] is List
+              ? (result['failedIds'] as List).length
+              : 0;
+          final outcomeCount = result['outcomes'] is Map
+              ? (result['outcomes'] as Map).length
+              : 0;
+
+          logger?.info(
+            '⬅️ Stock POST result chunk ${chunkIndex + 1}/$chunkTotal '
+            'attempt ${attempt + 1}/3: success=${result['success'] == true}, '
+            'code=${code.isEmpty ? 'none' : code}, '
+            'receiptVersion=${receiptVersion ?? 'none'}, '
+            'syncedIds=$syncedCount, failedIds=$failedCount, '
+            'outcomes=$outcomeCount, replayed=${result['replayed'] == true}, '
+            'transactionId=$transaction',
+          );
+
+          if (receiptVersion != 2 &&
               [
                 'OUTCOME_UNKNOWN',
                 'HTTP_ERROR',
                 'LOCK_TIMEOUT',
-              ].contains(result['code'])) {
-            lastError =
-                result['message']?.toString() ?? 'Stock request unconfirmed';
+              ].contains(code)) {
+            lastError = message.isNotEmpty
+                ? message
+                : 'Stock request unconfirmed';
+            logger?.info(
+              '⏳ Stock chunk ${chunkIndex + 1}/$chunkTotal remains '
+              'unconfirmed after attempt ${attempt + 1}/3; '
+              'retrying same transactionId if attempts remain. '
+              'code=${code.isEmpty ? 'none' : code}',
+            );
             continue;
           }
-          if (result['receiptVersion'] != 2 || result['syncedIds'] is! List) {
+          if (receiptVersion != 2 || result['syncedIds'] is! List) {
             lastError =
                 'Server did not return version-2 stock acknowledgements. Deploy the GAS patch first.';
+            logger?.error(
+              '❌ Stock chunk ${chunkIndex + 1}/$chunkTotal cannot be '
+              'acknowledged: receiptVersion=${receiptVersion ?? 'none'}, '
+              'syncedIdsType=${result['syncedIds'].runtimeType}, '
+              'code=${code.isEmpty ? 'none' : code}, '
+              'transactionId=$transaction',
+            );
             break; // Never infer acknowledgement from status or aggregate counts.
           }
           final ids = (result['syncedIds'] as List)
@@ -2920,6 +3186,11 @@ class GoogleSheetsService {
               .toSet();
           if (!expected.containsAll(ids)) {
             lastError = 'Server returned IDs that were not in this chunk.';
+            logger?.error(
+              '❌ Stock receipt contained unexpected IDs: '
+              'expected=${expected.length}, returned=${ids.length}, '
+              'transactionId=$transaction',
+            );
             break;
           }
           final remoteOutcomes = result['outcomes'];
@@ -2928,22 +3199,58 @@ class GoogleSheetsService {
               outcomes[id] = remoteOutcomes[id]?.toString() ?? 'confirmed';
             }
           }
+
+          final chunkConfirmed = expected.where(confirmed.contains).length;
+          logger?.info(
+            '✅ Stock receipt processed chunk ${chunkIndex + 1}/$chunkTotal: '
+            'confirmed=$chunkConfirmed/${expected.length}, '
+            'transactionId=$transaction',
+          );
+
           if (confirmed.containsAll(expected)) break;
-          lastError =
-              result['message']?.toString() ??
-              'Some stock records were not confirmed.';
-          if (result['code'] == 'INVALID_INPUT' ||
-              result['code'] == 'INVALID_STORE' ||
-              result['code'] == 'TRANSACTION_CONFLICT')
+          lastError = message.isNotEmpty
+              ? message
+              : 'Some stock records were not confirmed.';
+          if (code == 'INVALID_INPUT' ||
+              code == 'INVALID_STORE' ||
+              code == 'TRANSACTION_CONFLICT') {
+            logger?.error(
+              '❌ Stock chunk ${chunkIndex + 1}/$chunkTotal stopped on '
+              'non-retryable code=$code, transactionId=$transaction',
+            );
             break;
+          }
         } catch (e) {
           lastError = e.toString();
+          logger?.error(
+            '❌ Stock POST exception chunk ${chunkIndex + 1}/$chunkTotal '
+            'attempt ${attempt + 1}/3, transactionId=$transaction: $e',
+          );
         }
+      }
+
+      final chunkUnconfirmed = expected
+          .where((id) => !confirmed.contains(id))
+          .toList();
+      if (chunkUnconfirmed.isNotEmpty) {
+        final preview = chunkUnconfirmed.take(5).join(', ');
+        logger?.info(
+          '⚠️ Stock chunk ${chunkIndex + 1}/$chunkTotal finished with '
+          '${chunkUnconfirmed.length}/${expected.length} unconfirmed. '
+          'first=${preview.isEmpty ? 'none' : preview}',
+        );
       }
       onProgress?.call(confirmed.length, snapshots.length);
     }
     final failed = allIds.where((id) => !confirmed.contains(id)).toList();
     final success = failed.isEmpty;
+
+    logger?.info(
+      '🏁 Stock sync acknowledgement summary: confirmed=${confirmed.length}/'
+      '${snapshots.length}, failed=${failed.length}, success=$success'
+      '${lastError.isEmpty ? '' : ', lastError=$lastError'}',
+    );
+
     return {
       'success': success,
       'count': outcomes.values.where((v) => v == 'inserted').length,
@@ -3387,12 +3694,16 @@ class GoogleSheetsService {
     }.contains(code);
 
     if (unknownOutcome) {
-      print('🔎 deletePurchase has an unknown POST outcome; verifying deletion before failing.');
+      print(
+        '🔎 deletePurchase has an unknown POST outcome; verifying deletion before failing.',
+      );
       await Future.delayed(const Duration(seconds: 2));
 
       final remote = await fetchPurchaseById(purchaseId);
       if (remote == null) {
-        print('✅ deletePurchase confirmed after unknown POST outcome; record is absent.');
+        print(
+          '✅ deletePurchase confirmed after unknown POST outcome; record is absent.',
+        );
         return true;
       }
     }
@@ -3413,7 +3724,9 @@ class GoogleSheetsService {
     final code = result['code']?.toString() ?? '';
 
     // 🔥 NEW: Diagnostic print to reveal why the server rejected the deletion
-    print('⚠️ deletePurchases initial result: success=${result['success']}, code=$code, message=${result['message']}');
+    print(
+      '⚠️ deletePurchases initial result: success=${result['success']}, code=$code, message=${result['message']}',
+    );
 
     final unknownOutcome = {
       'OUTCOME_UNKNOWN',
@@ -3422,7 +3735,9 @@ class GoogleSheetsService {
     }.contains(code);
 
     if (unknownOutcome) {
-      print('🔎 deletePurchases has an unknown POST outcome; verifying deletions before failing.');
+      print(
+        '🔎 deletePurchases has an unknown POST outcome; verifying deletions before failing.',
+      );
       await Future.delayed(const Duration(seconds: 2));
 
       var allGone = true;
@@ -3435,7 +3750,9 @@ class GoogleSheetsService {
       }
 
       if (allGone) {
-        print('✅ deletePurchases confirmed after unknown POST outcome; records are absent.');
+        print(
+          '✅ deletePurchases confirmed after unknown POST outcome; records are absent.',
+        );
         return true;
       }
     }
@@ -3495,7 +3812,9 @@ class GoogleSheetsService {
     }.contains(code);
 
     if (unknownOutcome) {
-      print('🔎 updateInvoice has an unknown POST outcome; verifying before failing.');
+      print(
+        '🔎 updateInvoice has an unknown POST outcome; verifying before failing.',
+      );
       await Future.delayed(const Duration(seconds: 2));
 
       final invId = mapped['invoiceDetailsID']?.toString();
@@ -3505,17 +3824,25 @@ class GoogleSheetsService {
           // Verify key fields match to ensure the update actually applied
           final expInvNum = mapped['Invoice Number']?.toString().trim();
           final remInvNum = remote['Invoice Number']?.toString().trim();
-          if (expInvNum != null && remInvNum != null && expInvNum != remInvNum) {
-            print('⚠️ updateInvoice verification failed: Invoice Number mismatch');
+          if (expInvNum != null &&
+              remInvNum != null &&
+              expInvNum != remInvNum) {
+            print(
+              '⚠️ updateInvoice verification failed: Invoice Number mismatch',
+            );
             return false;
           }
-          print('✅ updateInvoice confirmed after unknown POST outcome; POST was not replayed.');
+          print(
+            '✅ updateInvoice confirmed after unknown POST outcome; POST was not replayed.',
+          );
           return true;
         }
       }
     }
 
-    print('⚠️ updateInvoice failed. Server response: ${result['message']} (Code: $code)');
+    print(
+      '⚠️ updateInvoice failed. Server response: ${result['message']} (Code: $code)',
+    );
     return false;
   }
 
@@ -3535,7 +3862,9 @@ class GoogleSheetsService {
     }.contains(code);
 
     if (unknownOutcome) {
-      print('🔎 updatePurchase has an unknown POST outcome ($code); verifying before failing.');
+      print(
+        '🔎 updatePurchase has an unknown POST outcome ($code); verifying before failing.',
+      );
       await Future.delayed(const Duration(seconds: 2));
 
       final purchaseId = purchase['purchases_ID']?.toString();
@@ -3545,19 +3874,27 @@ class GoogleSheetsService {
           // 🔥 REUSE: Use the same robust numeric-aware matching logic
           // that successfully handles "3.0" vs "3" in the chunked sync.
           if (_purchaseSnapshotMatchesRemote(purchase, remote)) {
-            print('✅ updatePurchase confirmed after unknown POST outcome; POST was not replayed.');
+            print(
+              '✅ updatePurchase confirmed after unknown POST outcome; POST was not replayed.',
+            );
             return true;
           } else {
-            print('⚠️ updatePurchase verification failed: fields do not match remote state.');
+            print(
+              '⚠️ updatePurchase verification failed: fields do not match remote state.',
+            );
             return false;
           }
         } else {
-          print('⚠️ updatePurchase verification failed: Purchase not found after update.');
+          print(
+            '⚠️ updatePurchase verification failed: Purchase not found after update.',
+          );
         }
       }
     }
 
-    print('⚠️ updatePurchase failed. Server response: ${result['message']} (Code: $code)');
+    print(
+      '⚠️ updatePurchase failed. Server response: ${result['message']} (Code: $code)',
+    );
     return false;
   }
 
@@ -3759,14 +4096,17 @@ class _BatchResult {
   final List<Map<String, dynamic>> rows;
   final bool? hasMore;
   final int? total;
+
   _BatchResult({required this.rows, this.hasMore, this.total});
 }
 
 class _RedirectFailure implements Exception {
   final String reason;
   final List<String> trace;
+
   _RedirectFailure(this.reason, List<String> trace)
     : trace = List<String>.unmodifiable(trace);
+
   @override
   String toString() => '$reason (${trace.join('; ')})';
 }
@@ -3775,12 +4115,15 @@ class _VerifiedDownload {
   final String version;
   final List<Map<String, dynamic>> rows;
   final String? rowHash;
+
   _VerifiedDownload(this.version, this.rows, [this.rowHash]);
 }
 
 class TableNotFoundException implements Exception {
   final String message;
+
   TableNotFoundException(this.message);
+
   @override
   String toString() => message;
 }
@@ -3808,9 +4151,11 @@ String _downloadCanonical(Object? value) {
 String _downloadBlockHash(List<Map<String, dynamic>> rows) => sha256
     .convert(utf8.encode('hola-rows-v1|${_downloadCanonical(rows)}'))
     .toString();
+
 String _downloadTableHash(int total, List<String> hashes) => sha256
     .convert(utf8.encode(json.encode(['hola-table-v1', 1500, total, hashes])))
     .toString();
+
 List<String> _downloadHashes(List<Map<String, dynamic>> rows) => [
   for (int i = 0; i < rows.length; i += 1500)
     _downloadBlockHash(rows.sublist(i, math.min(i + 1500, rows.length))),
@@ -3820,6 +4165,7 @@ class _PendingDownload {
   final List<Map<String, dynamic>> rows;
   final List<String> blockHashes;
   final String rowHash;
+
   _PendingDownload(this.rows, this.blockHashes)
     : rowHash = _downloadTableHash(rows.length, blockHashes);
 }
@@ -3827,6 +4173,7 @@ class _PendingDownload {
 class _RefreshManifest {
   final Map<String, String> versions, rowHashes, missing;
   final _SalesBlockPlan? sales;
+
   _RefreshManifest(this.versions, this.rowHashes, this.missing, this.sales);
 }
 
@@ -3834,7 +4181,9 @@ class _SalesBlockPlan {
   final int total;
   final List<String> hashes;
   final String tableHash;
+
   _SalesBlockPlan(this.total, this.hashes, this.tableHash);
+
   static _SalesBlockPlan? parse(dynamic raw, String? expectedRoot) {
     if (raw is! Map ||
         raw['protocol'] != 1 ||
@@ -3859,12 +4208,15 @@ class _SalesBlockPlan {
 
 class _GasReadError extends FormatException {
   final String? code;
+
   _GasReadError(String message, this.code) : super('GAS error: $message');
 }
 
 class _HttpReadFailure implements Exception {
   final int status;
+
   _HttpReadFailure(this.status);
+
   @override
   String toString() => 'HTTP $status';
 }
