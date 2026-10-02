@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
 import '../widgets/sync_status.dart';
 import '../widgets/store_drawer.dart';
-import '../models/sync_model.dart';  // 🔥 ADD THIS
+import '../models/sync_model.dart'; // 🔥 ADD THIS
 import 'count_screen.dart';
 import 'grv_list_screen.dart';
 import 'grv_upload_screen.dart';
@@ -19,6 +19,7 @@ import '../services/store_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'network_status_screen.dart';
 import 'sales_upload_screen.dart';
+import 'sales_report_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -36,9 +37,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   static const List<_NavItem> _navItems = [
     _NavItem(icon: Icons.cloud_upload, label: 'Sync'),
+
     _NavItem(icon: Icons.upload_file, label: 'Upload GRV'),
-    _NavItem(icon: Icons.point_of_sale, label: 'Upload Sales'),
     _NavItem(icon: Icons.receipt, label: 'GRV Invoices'),
+
+    _NavItem(icon: Icons.point_of_sale, label: 'Upload Sales'),
+    _NavItem(icon: Icons.assessment_outlined, label: 'Sales Report'),
+
     _NavItem(icon: Icons.link, label: 'PLU Mappings'),
     _NavItem(icon: Icons.analytics, label: 'Variance'),
     _NavItem(icon: Icons.inventory_2_outlined, label: 'Inventory'),
@@ -50,9 +55,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   static const List<Widget> _screens = [
     SyncScreen(),
+
     GrvUploadScreen(),
-    SalesUploadScreen(),
     GrvListScreen(),
+
+    SalesUploadScreen(),
+    SalesReportScreen(),
+
     PluMappingScreen(),
     VarianceReportScreen(),
     InventoryScreen(),
@@ -61,11 +70,12 @@ class _HomeScreenState extends State<HomeScreen> {
     ViewCountsScreen(),
     CountScreen(),
   ];
+
   bool get _isDesktop =>
       !kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.windows ||
-              defaultTargetPlatform == TargetPlatform.macOS ||
-              defaultTargetPlatform == TargetPlatform.linux);
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
 
   // 🔥 FIX: Listen to storage changes to refresh badge
   @override
@@ -89,18 +99,22 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted || _isPendingCountLoading) return;
     _isPendingCountLoading = true;
     setState(() {
-      _pendingCountFuture = context.read<OfflineStorage>().getTotalPendingItemsCount();
+      _pendingCountFuture = context
+          .read<OfflineStorage>()
+          .getTotalPendingItemsCount();
     });
     // Reset loading flag after the future completes
-    _pendingCountFuture?.then((_) {
-      if (mounted) {
-        _isPendingCountLoading = false;
-      }
-    }).catchError((_) {
-      if (mounted) {
-        _isPendingCountLoading = false;
-      }
-    });
+    _pendingCountFuture
+        ?.then((_) {
+          if (mounted) {
+            _isPendingCountLoading = false;
+          }
+        })
+        .catchError((_) {
+          if (mounted) {
+            _isPendingCountLoading = false;
+          }
+        });
   }
 
   @override
@@ -129,21 +143,28 @@ class _HomeScreenState extends State<HomeScreen> {
             child: IntrinsicHeight(
               child: NavigationRail(
                 selectedIndex: _selectedIndex,
-                onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+                onDestinationSelected: (i) =>
+                    setState(() => _selectedIndex = i),
                 labelType: NavigationRailLabelType.all,
                 minWidth: 88,
                 destinations: _navItems
-                    .map((item) => NavigationRailDestination(
-                  icon: Icon(item.icon),
-                  label: Text(item.label, style: const TextStyle(fontSize: 11)),
-                ))
+                    .map(
+                      (item) => NavigationRailDestination(
+                        icon: Icon(item.icon),
+                        label: Text(
+                          item.label,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    )
                     .toList(),
                 leading: Column(
                   children: [
                     const SizedBox(height: 8),
                     Consumer<StoreManager>(
                       builder: (context, storeManager, _) {
-                        final storeName = storeManager.activeStore?['name'] ?? 'No Store';
+                        final storeName =
+                            storeManager.activeStore?['name'] ?? 'No Store';
                         return Tooltip(
                           message: 'Switch Store: $storeName',
                           child: InkWell(
@@ -151,7 +172,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               width: 72,
-                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 6,
+                                horizontal: 4,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.blue.shade50,
                                 borderRadius: BorderRadius.circular(12),
@@ -159,7 +183,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               child: Column(
                                 children: [
-                                  const Icon(Icons.store, color: Colors.blue, size: 22),
+                                  const Icon(
+                                    Icons.store,
+                                    color: Colors.blue,
+                                    size: 22,
+                                  ),
                                   const SizedBox(height: 4),
                                   Text(
                                     storeName,
@@ -222,125 +250,165 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             const SyncStatusWidget(),
             Expanded(
-              child: Padding(
+              child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16.0),
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      ListView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: 20,
-                        itemBuilder: (context, index) {
-                          switch (index) {
-                            case 0:
-                              return _buildFeatureCard(
-                                icon: Icons.cloud_upload,
-                                title: 'Sync Data',
-                                subtitle: 'Upload counts to server',
-                                color: Colors.orange,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const SyncScreen())),
-                              );
-                            case 1: return const SizedBox(height: 16);
-                            case 2:
-                              return _buildFeatureCard(
-                                icon: Icons.add_circle_outline,
-                                title: 'New Count',
-                                subtitle: 'Scan and count items',
-                                color: Colors.blue,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const CountScreen())),
-                              );
-                            case 3: return const SizedBox(height: 16);
-                            case 4:
-                              return _buildFeatureCard(
-                                icon: Icons.list_alt,
-                                title: 'View Counts',
-                                subtitle: 'Browse and edit counts',
-                                color: Colors.green,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const ViewCountsScreen())),
-                              );
-                            case 5: return const SizedBox(height: 16);
-                            case 6:
-                              return _buildFeatureCard(
-                                icon: Icons.upload_file,
-                                title: 'Upload GRV CSV',
-                                subtitle: 'Auto-extract from CSV file',
-                                color: Colors.brown,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const GrvUploadScreen())),
-                              );
-                            case 7: return const SizedBox(height: 16);
-                            case 8:
-                              return _buildFeatureCard(
-                                icon: Icons.receipt,
-                                title: 'GRV Invoices',
-                                subtitle: 'View saved GRV invoices',
-                                color: Colors.deepOrange,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const GrvListScreen())),
-                              );
-                            case 9: return const SizedBox(height: 16);
-                            case 10:
-                              return _buildFeatureCard(
-                                icon: Icons.link,
-                                title: 'PLU Mappings',
-                                subtitle: 'Manage GRV PLU mappings',
-                                color: Colors.amber.shade700,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const PluMappingScreen())),
-                              );
-                            case 11: return const SizedBox(height: 16);
-                            case 12:
-                              return _buildFeatureCard(
-                                icon: Icons.analytics,
-                                title: 'Variance Report',
-                                subtitle: 'Compare counts vs sales & purchases',
-                                color: Colors.purple,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const VarianceReportScreen())),
-                              );
-                            case 13: return const SizedBox(height: 16);
-                            case 14:
-                              return _buildFeatureCard(
-                                icon: Icons.inventory_2_outlined,
-                                title: 'Inventory',
-                                subtitle: 'View master product list',
-                                color: Colors.indigo,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const InventoryScreen())),
-                              );
-                            case 15: return const SizedBox(height: 16);
-                            case 16:
-                              return _buildFeatureCard(
-                                icon: Icons.location_on,
-                                title: 'Locations',
-                                subtitle: 'View and manage locations',
-                                color: Colors.teal,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const LocationsScreen())),
-                              );
-                            case 17: return const SizedBox(height: 16);
-                            case 18:
-                              return _buildFeatureCard(
-                                icon: Icons.store,
-                                title: 'Manage Stores',
-                                subtitle: 'Add or switch stores',
-                                color: Colors.blueGrey,
-                                onTap: () => Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) => const SetupStoreScreen())),
-                              );
-                            case 19: return const SizedBox(height: 16);
-                            default: return const SizedBox.shrink();
-                          }
-                        },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildFeatureCard(
+                      icon: Icons.cloud_upload,
+                      title: 'Sync Data',
+                      subtitle: 'Upload counts to server',
+                      color: Colors.orange,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SyncScreen()),
                       ),
-                      _buildPendingBadge(),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.add_circle_outline,
+                      title: 'New Count',
+                      subtitle: 'Scan and count items',
+                      color: Colors.blue,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const CountScreen()),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.list_alt,
+                      title: 'View Counts',
+                      subtitle: 'Browse and edit counts',
+                      color: Colors.green,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ViewCountsScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.upload_file,
+                      title: 'Upload GRV CSV',
+                      subtitle: 'Auto-extract from CSV file',
+                      color: Colors.brown,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const GrvUploadScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.receipt,
+                      title: 'GRV Invoices',
+                      subtitle: 'View saved GRV invoices',
+                      color: Colors.deepOrange,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const GrvListScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.point_of_sale,
+                      title: 'Upload Sales',
+                      subtitle: 'Import GAAP sales data',
+                      color: Colors.blue,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SalesUploadScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.assessment_outlined,
+                      title: 'Sales Report',
+                      subtitle: 'Search and review imported sales',
+                      color: Colors.green,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SalesReportScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.link,
+                      title: 'PLU Mappings',
+                      subtitle: 'Manage GRV PLU mappings',
+                      color: Colors.amber.shade700,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PluMappingScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.analytics,
+                      title: 'Variance Report',
+                      subtitle: 'Compare counts vs sales & purchases',
+                      color: Colors.purple,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const VarianceReportScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'Inventory',
+                      subtitle: 'View master product list',
+                      color: Colors.indigo,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const InventoryScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.location_on,
+                      title: 'Locations',
+                      subtitle: 'View and manage locations',
+                      color: Colors.teal,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const LocationsScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFeatureCard(
+                      icon: Icons.store,
+                      title: 'Manage Stores',
+                      subtitle: 'Add or switch stores',
+                      color: Colors.blueGrey,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SetupStoreScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildPendingBadge(),
+                  ],
                 ),
               ),
             ),
@@ -362,8 +430,10 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             icon: const Icon(Icons.storage),
             tooltip: 'Offline Data',
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const OfflineScreen())),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const OfflineScreen()),
+            ),
           ),
         // 🔥 FIX: Use cached future for badge
         Consumer<SyncStatus>(
@@ -377,8 +447,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     if (_isDesktop) {
                       setState(() => _selectedIndex = 0);
                     } else {
-                      Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => const SyncScreen()));
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SyncScreen()),
+                      );
                     }
                   },
                 ),
@@ -392,10 +464,16 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: Colors.red,
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      constraints: const BoxConstraints(
+                        minWidth: 16,
+                        minHeight: 16,
+                      ),
                       child: Text(
                         pendingCount > 9 ? '9+' : pendingCount.toString(),
-                        style: const TextStyle(color: Colors.white, fontSize: 10),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -442,14 +520,19 @@ class _HomeScreenState extends State<HomeScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.orange[800], size: 16),
+              Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.orange[800],
+                size: 16,
+              ),
               const SizedBox(width: 4),
               Text(
                 '$pending pending',
                 style: TextStyle(
-                    color: Colors.orange[800],
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12),
+                  color: Colors.orange[800],
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
               ),
             ],
           ),
@@ -488,12 +571,18 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                     const SizedBox(height: 4),
-                    Text(subtitle,
-                        style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                    Text(
+                      subtitle,
+                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                    ),
                   ],
                 ),
               ),
@@ -510,6 +599,7 @@ class _HomeScreenState extends State<HomeScreen> {
 class _NavItem {
   final IconData icon;
   final String label;
+
   const _NavItem({required this.icon, required this.label});
 }
 
@@ -549,7 +639,9 @@ class NetworkStatusBar extends StatelessWidget {
               TextButton.icon(
                 onPressed: () => Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const NetworkStatusScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => const NetworkStatusScreen(),
+                  ),
                 ),
                 icon: const Icon(Icons.info_outline, size: 16),
                 label: const Text('Details'),

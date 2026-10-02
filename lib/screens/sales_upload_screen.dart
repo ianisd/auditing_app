@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 
 import '../models/sales_import_model.dart';
 import '../services/gaap_sales_parser.dart';
+import '../services/store_manager.dart';
+import 'package:provider/provider.dart';
 
 class SalesUploadScreen extends StatefulWidget {
   const SalesUploadScreen({super.key});
@@ -17,6 +19,11 @@ class SalesUploadScreen extends StatefulWidget {
 }
 
 class _SalesUploadScreenState extends State<SalesUploadScreen> {
+  String _createSalesId(int sourceRowNumber) {
+    final now = DateTime.now().microsecondsSinceEpoch;
+
+    return 'sales_${now}_${sourceRowNumber.toString().padLeft(4, '0')}';
+  }
   DateTime? _auditDate;
   ParsedGaapSalesFile? _parsed;
   String? _fileName;
@@ -24,6 +31,9 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
   bool _isLoading = false;
   bool _isDragging = false;
+  bool _isUploading = false;
+  int _uploadedRows = 0;
+  int _totalUploadRows = 0;
 
   bool get _isDesktop =>
       !kIsWeb &&
@@ -233,6 +243,242 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
         setState(() {
           _isLoading = false;
           _isDragging = false;
+        });
+      }
+    }
+  }
+
+  // ===========================================================================
+  // SALES UPLOAD
+  // ===========================================================================
+
+  List<Map<String, dynamic>> _buildSalesPayload(
+      ParsedGaapSalesFile parsed,
+      DateTime auditDate,
+      ) {
+    // One batch stamp is shared by every row from this upload.
+    // Each row still receives its own permanent salesID.
+    final batchStamp = DateTime.now().microsecondsSinceEpoch;
+
+    return parsed.rows.map((row) {
+      final salesId =
+          'sales_${batchStamp}_${row.sourceRowNumber.toString().padLeft(4, '0')}';
+
+      return <String, dynamic>{
+        'salesID': salesId,
+        'values': row.toStoreSalesDataColumns(
+          auditDate: auditDate,
+          salesId: salesId,
+        ),
+      };
+    }).toList();
+  }
+
+  Future<void> _uploadSales() async {
+    final parsed = _parsed;
+    final auditDate = _auditDate;
+
+    if (parsed == null || auditDate == null) {
+      _showError(
+        'Select an audit date and GAAP sales file first.',
+      );
+      return;
+    }
+
+    if (_isUploading) return;
+
+    // -----------------------------------------------------------------------
+    // Suspicious audit-date confirmation
+    // -----------------------------------------------------------------------
+
+    if (_auditDateNeedsWarning(parsed)) {
+      final reference = _salesReferenceDate(parsed);
+      final gap = _auditDateGap(parsed);
+
+      final continueUpload = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Confirm audit date'),
+            content: Text(
+              'The selected audit date is ${_date(auditDate)}.\n\n'
+                  'The latest date detected in the GAAP document is '
+                  '${_date(reference)}'
+                  '${gap == null ? '' : ' (${gap.abs()} day(s) apart)'}.\n\n'
+                  'Do you want to upload these sales to the '
+                  '${_date(auditDate)} audit?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop(false);
+                },
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.of(context).pop(true);
+                },
+                child: const Text('Upload anyway'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (continueUpload != true || !mounted) {
+        return;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Final upload confirmation
+    // -----------------------------------------------------------------------
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Upload sales?'),
+          content: Text(
+            'File: ${_fileName ?? 'GAAP Sales CSV'}\n'
+                'Audit date: ${_date(auditDate)}\n'
+                'Rows: ${parsed.rowCount}\n\n'
+                'All raw GAAP rows will be uploaded to StoreSalesData.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(false);
+              },
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(context).pop(true);
+              },
+              child: const Text('Upload'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    // IDs are generated once for this upload attempt.
+    final payload = _buildSalesPayload(
+      parsed,
+      auditDate,
+    );
+
+    setState(() {
+      _isUploading = true;
+      _uploadedRows = 0;
+      _totalUploadRows = payload.length;
+      _error = null;
+    });
+
+    if (kDebugMode) {
+      debugPrint('════════════════════════════════════════════');
+      debugPrint('📤 STORE SALES UPLOAD STARTING');
+      debugPrint('File: $_fileName');
+      debugPrint('Audit date: ${_date(auditDate)}');
+      debugPrint('Raw rows: ${parsed.rowCount}');
+      debugPrint('Payload rows: ${payload.length}');
+      if (payload.isNotEmpty) {
+        debugPrint("First salesID: ${payload.first['salesID']}");
+        debugPrint("Last salesID: ${payload.last['salesID']}");
+        debugPrint("First row values: ${payload.first['values']}");
+      }
+      debugPrint('════════════════════════════════════════════');
+    }
+
+    try {
+      final storeManager = context.read<StoreManager>();
+
+      if (kDebugMode) {
+        debugPrint("🏪 Active store: ${storeManager.activeStore?['name']}");
+        debugPrint("🔑 Store sheetId: ${storeManager.activeStore?['sheetId']}");
+      }
+
+      final sheets = storeManager.googleSheetsService;
+
+      if (kDebugMode) {
+        debugPrint('🌐 GoogleSheetsService ready');
+        debugPrint('🚀 Calling syncStoreSalesData...');
+      }
+
+      final result = await sheets.syncStoreSalesData(
+        payload,
+        onProgress: (completed, total) {
+          if (kDebugMode) {
+            debugPrint('📦 StoreSalesData progress: $completed / $total');
+          }
+          if (!mounted) return;
+          setState(() {
+            _uploadedRows = completed;
+            _totalUploadRows = total;
+          });
+        },
+      );
+
+      if (kDebugMode) {
+        debugPrint('════════════════════════════════════════════');
+        debugPrint('📥 STORE SALES SERVER RESPONSE');
+        debugPrint('$result');
+        debugPrint('════════════════════════════════════════════');
+      }
+
+      if (!mounted) return;
+
+      if (result['success'] != true) {
+        throw StateError(
+          result['message']?.toString() ??
+              'Sales upload could not be confirmed.',
+        );
+      }
+
+      final processed =
+          int.tryParse(
+            '${result['processedCount'] ?? payload.length}',
+          ) ??
+              payload.length;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Sales uploaded successfully: '
+                '$processed rows confirmed.',
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      setState(() {
+        _parsed = null;
+        _fileName = null;
+        _uploadedRows = processed;
+      });
+    } catch (e, stackTrace) {
+      if (kDebugMode) {
+        debugPrint('❌ STORE SALES UPLOAD FAILED');
+        debugPrint('Error: $e');
+        debugPrint('Stack trace:');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+
+      if (!mounted) return;
+
+      _showError(
+        'Could not upload sales: $e',
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
         });
       }
     }
@@ -566,6 +812,32 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
                   fontWeight:
                   FontWeight.w600,
                 ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            FilledButton.icon(
+              onPressed: _isUploading
+                  ? null
+                  : _uploadSales,
+              icon: _isUploading
+                  ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                ),
+              )
+                  : const Icon(
+                Icons.cloud_upload,
+              ),
+              label: Text(
+                _isUploading
+                    ? _totalUploadRows > 0
+                    ? 'Uploading $_uploadedRows / $_totalUploadRows...'
+                    : 'Uploading...'
+                    : 'Upload Sales',
               ),
             ),
           ],

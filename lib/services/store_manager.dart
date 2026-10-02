@@ -15,7 +15,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbynuKjJhxMRpdH7GorzCFXlACkY27VZ-L_He6KBZQ5EhSIRlo5y4-IPpZWsZhuBCD4/exec';
+      'https://script.google.com/macros/s/AKfycbyDVZn-vlm4dKzUVqGHOWxzUoJhD8gVnh974fXlzSGub5tq96E0mXXLxj_2IzDHNkU/exec';
   late Box _box;
   bool _initialized = false;
   final LoggerService? _logger;
@@ -37,6 +37,28 @@ class StoreManager with ChangeNotifier {
   bool get isInitialized => _initialized;
   Map<String, dynamic>? get activeStore => _activeStore;
   List<Map<String, dynamic>> get stores => _stores;
+
+  GoogleSheetsService get googleSheetsService {
+    if (_activeStore == null) {
+      throw Exception(
+        'No active store selected - cannot create Google Sheets service',
+      );
+    }
+
+    final storeIdentifier = _getStoreIdentifier();
+
+    if (storeIdentifier.isEmpty) {
+      throw Exception(
+        'Active store has no valid spreadsheet identifier',
+      );
+    }
+
+    return GoogleSheetsService(
+      masterScriptUrl: _masterScriptUrl,
+      storeIdentifier: storeIdentifier,
+      logger: _logger,
+    );
+  }
 
   // 🔥 FIX: Return the sync service (creates it if needed)
   SyncService get syncService {
