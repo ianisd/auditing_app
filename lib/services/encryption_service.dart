@@ -7,16 +7,20 @@ class EncryptionService {
   static Future<Uint8List>? _keyLoad;
   static Future<Uint8List> _loadEncryptionKey() async {
     final stored = await _storage.read(key: _keyName);
-    final key = stored == null ? Uint8List.fromList(Hive.generateSecureKey())
+    final key = stored == null
+        ? Uint8List.fromList(Hive.generateSecureKey())
         : base64.decode(stored);
-    if (key.length != 32) throw StateError('Invalid saved Hive encryption key; recovery required.');
-    if (stored == null) await _storage.write(key: _keyName, value: base64.encode(key));
+    if (key.length != 32)
+      throw StateError('Invalid saved Hive encryption key; recovery required.');
+    if (stored == null)
+      await _storage.write(key: _keyName, value: base64.encode(key));
     _cachedKey = Uint8List.fromList(key);
     return Uint8List.fromList(key);
   }
+
   static const String _keyName = 'hive_encryption_key';
   static final _storage = const FlutterSecureStorage();
-  
+
   static Uint8List? _cachedKey;
 
   /// Get the existing encryption key or generate a new one if it doesn't exist.

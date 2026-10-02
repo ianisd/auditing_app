@@ -62,21 +62,30 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final proceed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.orange,
+          size: 48,
+        ),
         title: const Text('Poor Connection Detected'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Latency: ${pingService.latencyMs} ms'),
-            Text('Quality: ${pingService.connectionQuality}',
-                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            Text(
+              'Quality: ${pingService.connectionQuality}',
+              style: const TextStyle(
+                color: Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 12),
             const Text(
               'Sync operations may fail or take several minutes. Consider:\n'
-                  '• Switching to mobile data\n'
-                  '• Moving closer to your Wi-Fi router\n'
-                  '• Waiting for a better connection',
+              '• Switching to mobile data\n'
+              '• Moving closer to your Wi-Fi router\n'
+              '• Waiting for a better connection',
             ),
           ],
         ),
@@ -107,7 +116,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
     try {
       final syncService = context.read<StoreManager>().syncService;
-      final result = await syncService.refreshMasterData(); // This triggers the merge logic
+      final result = await syncService
+          .refreshMasterData(); // This triggers the merge logic
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -123,7 +133,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync Error: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Sync Error: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -140,11 +153,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
     setState(() {
       _filteredInventory = _inventory.where((item) {
-        final name1 = item['Inventory Product Name']?.toString().toLowerCase() ?? '';
+        final name1 =
+            item['Inventory Product Name']?.toString().toLowerCase() ?? '';
         final name2 = item['Product Name']?.toString().toLowerCase() ?? '';
         final barcode = item['Barcode']?.toString().toLowerCase() ?? '';
 
-        return name1.contains(query) || name2.contains(query) || barcode.contains(query);
+        return name1.contains(query) ||
+            name2.contains(query) ||
+            barcode.contains(query);
       }).toList();
     });
   }
@@ -158,7 +174,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
           // SYNC BUTTON
           IconButton(
             icon: _isSyncing
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.cloud_sync),
             tooltip: 'Sync Master Data',
             onPressed: _isSyncing ? null : _syncInventory,
@@ -188,40 +208,45 @@ class _InventoryScreenState extends State<InventoryScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-        onRefresh: _syncInventory,
-        child: _filteredInventory.isEmpty
-            ? Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.inventory_2_outlined, size: 64, color: Colors.grey),
-              const SizedBox(height: 16),
-              Text(
-                'No inventory items found\n(${_inventory.length} loaded total)',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.cloud_download),
-                label: const Text('Download Master Data'),
-                onPressed: _syncInventory,
-              )
-            ],
-          ),
-        )
-            : InventoryList(
-          items: _filteredInventory,
-          onTap: (item) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ProductDetailScreen(product: item),
-              ),
-            );
-          },
-        ),
-      ),
+              onRefresh: _syncInventory,
+              child: _filteredInventory.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.inventory_2_outlined,
+                            size: 64,
+                            color: Colors.grey,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No inventory items found\n(${_inventory.length} loaded total)',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.cloud_download),
+                            label: const Text('Download Master Data'),
+                            onPressed: _syncInventory,
+                          ),
+                        ],
+                      ),
+                    )
+                  : InventoryList(
+                      items: _filteredInventory,
+                      onTap: (item) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                ProductDetailScreen(product: item),
+                          ),
+                        );
+                      },
+                    ),
+            ),
     );
   }
 }

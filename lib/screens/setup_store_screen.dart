@@ -79,15 +79,18 @@ class _SetupStoreScreenState extends State<SetupStoreScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.store_mall_directory, size: 64, color: Colors.blue),
+              const Icon(
+                Icons.store_mall_directory,
+                size: 64,
+                color: Colors.blue,
+              ),
               const SizedBox(height: 24),
               const Text(
-                  'Scan or paste the store link provided by your admin — the store name comes through automatically.',
+                'Scan or paste the store link provided by your admin — the store name comes through automatically.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey),
               ),
               const SizedBox(height: 32),
-
 
               // 1. URL Input + Scan Button
               Row(
@@ -109,7 +112,9 @@ class _SetupStoreScreenState extends State<SetupStoreScreen> {
                     icon: const Icon(Icons.qr_code_scanner),
                     tooltip: 'Scan QR',
                     style: IconButton.styleFrom(
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
                       padding: const EdgeInsets.all(16),
                     ),
                   ),

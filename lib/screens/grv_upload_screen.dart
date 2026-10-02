@@ -43,9 +43,9 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
     } finally {
       if (mounted) {
         setState(() {
-        _isLoading = false;
-        _isDragging = false;
-      });
+          _isLoading = false;
+          _isDragging = false;
+        });
       }
     }
   }
@@ -99,9 +99,9 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
 
     if (grvData.lineItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No items found in CSV')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('No items found in CSV')));
       }
       return;
     }
@@ -120,7 +120,7 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
     if (supplierId != null) {
       final suppliers = await storage.getMasterSuppliers();
       final supplier = suppliers.firstWhere(
-            (s) => s['supplierID']?.toString() == supplierId,
+        (s) => s['supplierID']?.toString() == supplierId,
         orElse: () => <String, dynamic>{},
       );
       canonicalName = supplier['Supplier']?.toString() ?? grvData.supplierName;
@@ -144,7 +144,8 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
         invoiceNumber: grvData.invoiceNumber,
         grvReference: grvData.grvReference,
         supplierId: supplierId,
-        deliveryDate: grvData.deliveryDate.toIso8601String(), // 🔥 Pass delivery date
+        deliveryDate: grvData.deliveryDate
+            .toIso8601String(), // 🔥 Pass delivery date
       );
     }
 
@@ -165,12 +166,20 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (existingInvoice != null) ...[
-              Text('Invoice #${grvData.invoiceNumber} from $_canonicalSupplierName already exists.'),
+              Text(
+                'Invoice #${grvData.invoiceNumber} from $_canonicalSupplierName already exists.',
+              ),
               const SizedBox(height: 8),
-              Text('Existing date: ${existingInvoice['Delivery Date']?.toString().split('T')[0] ?? existingInvoice['Date of Purchase']?.toString().split('T')[0] ?? 'Unknown'}'),
-              Text('New date: ${grvData.deliveryDate.toIso8601String().split('T')[0]}'),
+              Text(
+                'Existing date: ${existingInvoice['Delivery Date']?.toString().split('T')[0] ?? existingInvoice['Date of Purchase']?.toString().split('T')[0] ?? 'Unknown'}',
+              ),
+              Text(
+                'New date: ${grvData.deliveryDate.toIso8601String().split('T')[0]}',
+              ),
               const SizedBox(height: 4),
-              Text('Existing GRV: ${existingInvoice['GRV Reference'] ?? 'N/A'}'),
+              Text(
+                'Existing GRV: ${existingInvoice['GRV Reference'] ?? 'N/A'}',
+              ),
               Text('New GRV: ${grvData.grvReference}'),
               const SizedBox(height: 16),
               const Text(
@@ -187,14 +196,26 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
                 _buildInfoRow('Mapped To', _canonicalSupplierName!),
               _buildInfoRow('Invoice', grvData.invoiceNumber),
               _buildInfoRow('GRV Ref', grvData.grvReference),
-              _buildInfoRow('Delivery Date', grvData.deliveryDate.toIso8601String().split('T')[0]),
+              _buildInfoRow(
+                'Delivery Date',
+                grvData.deliveryDate.toIso8601String().split('T')[0],
+              ),
               _buildInfoRow('Items', '${grvData.lineItems.length}'),
               const Divider(height: 24),
-              const Text('Items found:', style: TextStyle(fontWeight: FontWeight.bold)),
-              ...grvData.lineItems.take(3).map((item) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text('• ${item.description} (${item.quantityCases} × ${item.unitsPerCase})'),
-              )),
+              const Text(
+                'Items found:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              ...grvData.lineItems
+                  .take(3)
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        '• ${item.description} (${item.quantityCases} × ${item.unitsPerCase})',
+                      ),
+                    ),
+                  ),
               if (grvData.lineItems.length > 3)
                 Text(' ... and ${grvData.lineItems.length - 3} more'),
             ],
@@ -214,7 +235,9 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: existingInvoice != null ? Colors.blue : Colors.green,
+              backgroundColor: existingInvoice != null
+                  ? Colors.blue
+                  : Colors.green,
             ),
             child: Text(existingInvoice != null ? 'UPDATE' : 'CONTINUE'),
           ),
@@ -234,7 +257,8 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
       finalInvoiceId = _generateUuid();
       print('🆕 Creating new GRV with new ID: $finalInvoiceId');
     } else if (existingInvoice != null && confirm == true) {
-      finalInvoiceId = existingInvoice['invoiceDetailsID']?.toString() ?? _generateUuid();
+      finalInvoiceId =
+          existingInvoice['invoiceDetailsID']?.toString() ?? _generateUuid();
       print('🔄 Updating existing GRV with ID: $finalInvoiceId');
     } else {
       finalInvoiceId = _generateUuid();
@@ -289,7 +313,13 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          SizedBox(width: 90, child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.bold))),
+          SizedBox(
+            width: 90,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
           Expanded(child: Text(value)),
         ],
       ),
@@ -298,14 +328,16 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDesktop = !kIsWeb &&
+    final isDesktop =
+        !kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.windows ||
             defaultTargetPlatform == TargetPlatform.macOS ||
             defaultTargetPlatform == TargetPlatform.linux);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Upload GRV CSV')),
-      body: SingleChildScrollView(  // ✅ FIX: Wrap in SingleChildScrollView
+      body: SingleChildScrollView(
+        // ✅ FIX: Wrap in SingleChildScrollView
         padding: const EdgeInsets.all(32),
         child: Center(
           child: ConstrainedBox(
@@ -315,7 +347,6 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 20), // Top spacing
-
                 // Drag-and-drop zone (desktop only)
                 if (isDesktop)
                   DropTarget(
@@ -391,15 +422,21 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
                       Expanded(child: Divider(color: Colors.grey.shade300)),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text('or',
-                            style: TextStyle(color: Colors.grey.shade400)),
+                        child: Text(
+                          'or',
+                          style: TextStyle(color: Colors.grey.shade400),
+                        ),
                       ),
                       Expanded(child: Divider(color: Colors.grey.shade300)),
                     ],
                   ),
 
                 if (!isDesktop) ...[
-                  Icon(Icons.upload_file, size: 80, color: Colors.blue.shade200),
+                  Icon(
+                    Icons.upload_file,
+                    size: 80,
+                    color: Colors.blue.shade200,
+                  ),
                   const SizedBox(height: 24),
                   const Text(
                     'Select a CSV file to upload',
@@ -417,12 +454,14 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
                     onPressed: _isLoading ? null : _pickAndParseCsv,
                     icon: _isLoading
                         ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2))
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.folder_open),
                     label: Text(
-                        _isLoading ? 'Processing...' : 'Browse for CSV File'),
+                      _isLoading ? 'Processing...' : 'Browse for CSV File',
+                    ),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
@@ -440,10 +479,10 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
                   ),
                   child: const Text(
                     'The system will automatically extract:\n'
-                        '• Supplier name\n'
-                        '• Invoice number\n'
-                        '• Delivery date\n'
-                        '• Line items',
+                    '• Supplier name\n'
+                    '• Invoice number\n'
+                    '• Delivery date\n'
+                    '• Line items',
                     style: TextStyle(color: Colors.blueGrey, fontSize: 13),
                   ),
                 ),
@@ -460,7 +499,8 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
   String _generateUuid() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final rnd = Random();
-    return String.fromCharCodes(Iterable.generate(
-        8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+    return String.fromCharCodes(
+      Iterable.generate(8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))),
+    );
   }
 }

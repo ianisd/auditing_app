@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../services/sales_price_index.dart';
 import '../widgets/count_location_field.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
@@ -47,9 +48,11 @@ class PricingResolver {
   }) {
     final name =
         product['Inventory Product Name']?.toString().toLowerCase().trim() ??
-            '';
+        '';
     double unitCost = _safeDouble(product['Cost Price']);
-    double unitRetail = FoodStockFields.isFood(product) ? 0.0 : salesIndex[name] ?? 0.0;
+    double unitRetail = FoodStockFields.isFood(product)
+        ? 0.0
+        : salesIndex[name] ?? 0.0;
     bool costFellBack = false;
     bool retailFellBack = false;
 
@@ -151,7 +154,7 @@ class _CountScreenState extends State<CountScreen> {
   List<Map<String, dynamic>> _locations = [];
   List<Map<String, dynamic>> _inventory = [];
   List<Map<String, dynamic>> _itemSalesRaw =
-  []; // 🔥 Keep raw for index rebuild
+      []; // 🔥 Keep raw for index rebuild
   bool _isLoading = true;
   bool _isEditMode = false;
 
@@ -298,19 +301,30 @@ class _CountScreenState extends State<CountScreen> {
     }
   }
 
-  Future<void> _loadExistingData(Map<String, dynamic> data, List<Map<String, dynamic>> inventory) async {
+  Future<void> _loadExistingData(
+    Map<String, dynamic> data,
+    List<Map<String, dynamic>> inventory,
+  ) async {
     data = normalizeStockRecord(data);
     final barcode = data['barcode']?.toString() ?? '';
     final name = data['productName']?.toString() ?? '';
     Map<String, dynamic>? product;
     if (barcode.isNotEmpty) {
-      product = inventory.firstWhere((i) => i['Barcode']?.toString() == barcode, orElse: () => {});
+      product = inventory.firstWhere(
+        (i) => i['Barcode']?.toString() == barcode,
+        orElse: () => {},
+      );
     }
     if ((product == null || product.isEmpty) && name.isNotEmpty) {
-      product = inventory.firstWhere((i) => i['Inventory Product Name']?.toString() == name, orElse: () => {});
+      product = inventory.firstWhere(
+        (i) => i['Inventory Product Name']?.toString() == name,
+        orElse: () => {},
+      );
     }
 
-    product = _isFoodCategory(product) ? product : stockProductForEdit(data, product);
+    product = _isFoodCategory(product)
+        ? product
+        : stockProductForEdit(data, product);
 
     if (!mounted) return;
     setState(() {
@@ -320,7 +334,9 @@ class _CountScreenState extends State<CountScreen> {
       _selectedLocation = data['location']?.toString();
       _selectedPackSize = data['pack_size']?.toString();
 
-      if (_selectedPackSize == 'Loose' && !_isTobaccoCategory(product) && !_isFoodCategory(product)) {
+      if (_selectedPackSize == 'Loose' &&
+          !_isTobaccoCategory(product) &&
+          !_isFoodCategory(product)) {
         _selectedPackSize = 'Case 1';
       }
 
@@ -328,7 +344,9 @@ class _CountScreenState extends State<CountScreen> {
 
       if (_isFood) _selectedPackSize = 'Loose (g)';
       _countController.text = _isFood
-          ? (FoodStockFields.isWeightRecord(data) ? FoodStockFields.recordedGrams(data).toString() : '')
+          ? (FoodStockFields.isWeightRecord(data)
+                ? FoodStockFields.recordedGrams(data).toString()
+                : '')
           : data['count']?.toString() ?? '0';
       _weightController.text = data['weight']?.toString() ?? '0';
     });
@@ -353,8 +371,8 @@ class _CountScreenState extends State<CountScreen> {
     final productCounts = allCounts
         .where(
           (c) =>
-      c['productName'] == productName && c['syncStatus'] != 'deleted',
-    )
+              c['productName'] == productName && c['syncStatus'] != 'deleted',
+        )
         .toList();
 
     final dateToUse = widget.initialDate ?? DateTime.now();
@@ -397,77 +415,26 @@ class _CountScreenState extends State<CountScreen> {
     _salesPriceIndex = _buildSalesPriceIndex(_itemSalesRaw, _inventory);
   }
 
+  /// Builds a per-product retail price index from ItemSales.
+  ///
+  /// Priority order must match the Google Sheet's `validCats` array exactly,
+  /// so the app and the sheet always resolve a product to the same bottle price.
+  ///
+  /// FIX: the sales sheet already exposes a normalized "Bottle Price" column.
+  /// Do NOT multiply by Bottle UoM again for Shots/Tot measures — that was
+  /// double-counting and produced fabricated costs (e.g. R10,500 for Olmeca).
+  ///
+  /// The returned map is productName (lowercased, trimmed) → bottle retail price.
   Map<String, double> _buildSalesPriceIndex(
-      List<Map<String, dynamic>> itemSalesData,
-      List<Map<String, dynamic>> inventory,
-      ) {
-    final priorityMap = <String, int>{
-      'spirit bottle': 1,
-      'fermented wine': 2,
-      'spirit tot': 3,
-      'fermented wine glass': 4,
-      'mixer bottle': 5,
-      'mixer tot': 6,
-      'beverage': 7,
-    };
-    const int defaultPriority = 99;
-
-    final bestPriority = <String, int>{};
-    final index = <String, double>{};
-
-    // Build a quick lookup map for inventory by product name
-    final inventoryByName = <String, Map<String, dynamic>>{};
-    for (var p in inventory) {
-      final name =
-          p['Inventory Product Name']?.toString().toLowerCase().trim() ?? '';
-      if (name.isNotEmpty && !inventoryByName.containsKey(name)) {
-        inventoryByName[name] = p;
-      }
-    }
-
-    for (var row in itemSalesData) {
-      final name = row['Product']?.toString().toLowerCase().trim() ?? '';
-      if (name.isEmpty) continue;
-
-      final mainCat =
-          row['Main Category']?.toString().toLowerCase().trim() ?? '';
-      if (_exclusionRegex.hasMatch(mainCat)) continue;
-
-      final sellPrice = _safeDouble(row['Sell']);
-      if (sellPrice <= 0) continue;
-
-      // Find product in inventory
-      final matchedProduct = inventoryByName[name];
-      if (matchedProduct == null) continue;
-
-      double bottleUoM = _safeDouble(matchedProduct['Bottle UoM']);
-      double singleUoM = _safeDouble(matchedProduct['Single UoM']);
-      if (bottleUoM == 0) {
-        final vol = _safeDouble(matchedProduct['Single Unit Volume']);
-        bottleUoM = vol > 0 ? vol / 25.0 : 30.0;
-      }
-      if (singleUoM == 0) singleUoM = 1.0;
-
-      final measure = row['Measure']?.toString().toLowerCase() ?? '';
-      double impliedPrice;
-      if (measure.contains('bottle') || measure.contains('can')) {
-        impliedPrice = sellPrice;
-      } else if (measure.contains('shots') || measure.contains('tot')) {
-        impliedPrice = sellPrice * bottleUoM;
-      } else if (measure.contains('glass')) {
-        impliedPrice = sellPrice / singleUoM;
-      } else {
-        impliedPrice = sellPrice;
-      }
-
-      final priority = priorityMap[mainCat] ?? defaultPriority;
-      if (!bestPriority.containsKey(name) || priority < bestPriority[name]!) {
-        index[name] = impliedPrice;
-        bestPriority[name] = priority;
-      }
-    }
-
-    return index;
+    List<Map<String, dynamic>> itemSalesData,
+    List<Map<String, dynamic>> inventory,
+  ) {
+    return buildSalesPriceIndex(
+      itemSalesData: itemSalesData,
+      inventory: inventory,
+      exclusionRegex: _exclusionRegex,
+      safeDouble: _safeDouble,
+    );
   }
 
   // ============================================================================
@@ -494,8 +461,12 @@ class _CountScreenState extends State<CountScreen> {
     );
 
     final saved = widget.existingCount;
-    final recordedCost = saved == null || _isFood ? null : stockRecordedUnitValue(saved, 'cost_value');
-    final recordedRetail = saved == null || _isFood ? null : stockRecordedUnitValue(saved, 'retail_value');
+    final recordedCost = saved == null || _isFood
+        ? null
+        : stockRecordedUnitValue(saved, 'cost_value');
+    final recordedRetail = saved == null || _isFood
+        ? null
+        : stockRecordedUnitValue(saved, 'retail_value');
     if (!mounted) return;
     setState(() {
       _resolvedUnitCost = recordedCost ?? result.unitCost;
@@ -506,7 +477,8 @@ class _CountScreenState extends State<CountScreen> {
 
     // 🔥 Log fallback ONCE when product is selected, not on every keystroke
     if (result.costFellBack || result.retailFellBack) {
-      final name = _selectedProduct!['Inventory Product Name']?.toString() ?? 'Unknown';
+      final name =
+          _selectedProduct!['Inventory Product Name']?.toString() ?? 'Unknown';
       _logger?.info('💰 ${result.describeFallback(name)}');
     }
   }
@@ -514,14 +486,18 @@ class _CountScreenState extends State<CountScreen> {
   // CATEGORY HELPERS
   // ============================================================================
 
-  bool _isFoodCategory(Map<String, dynamic>? product) => FoodStockFields.isFood(product);
+  bool _isFoodCategory(Map<String, dynamic>? product) =>
+      FoodStockFields.isFood(product);
 
   bool get _isFood => _isFoodCategory(_selectedProduct);
-  double get _foodGrams => FoodStockFields.inputGrams(_countController.text, _selectedPackSize);
+  double get _foodGrams =>
+      FoodStockFields.inputGrams(_countController.text, _selectedPackSize);
 
   String? _foodError() {
     if (!_isFood) return null;
-    final value = double.tryParse(_countController.text.trim().replaceAll(',', '.'));
+    final value = double.tryParse(
+      _countController.text.trim().replaceAll(',', '.'),
+    );
     if (value == null || !value.isFinite || value < 0 || !_foodGrams.isFinite) {
       return 'Enter a valid non-negative food weight.';
     }
@@ -542,7 +518,8 @@ class _CountScreenState extends State<CountScreen> {
   List<String> _getFilteredPackSizes() {
     if (_selectedProduct == null) return _drinkPackSizes;
     if (_isFoodCategory(_selectedProduct)) return _foodPackSizes;
-    if (FoodStockFields.key(_selectedProduct?['Category']) == 'consumables') return ['Each', 'Pack', 'Box'];
+    if (FoodStockFields.key(_selectedProduct?['Category']) == 'consumables')
+      return ['Each', 'Pack', 'Box'];
     if (_isTobaccoCategory(_selectedProduct)) return _tobaccoPackSizes;
     return _drinkPackSizes;
   }
@@ -643,7 +620,7 @@ class _CountScreenState extends State<CountScreen> {
               ],
             ),
           ) ??
-              false;
+          false;
       if (confirm) {
         await storage.importFromMasterToLocal(product);
         final newInv = await storage.getAllInventory();
@@ -950,7 +927,9 @@ class _CountScreenState extends State<CountScreen> {
     }
     final foodError = _foodError();
     if (foodError != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(foodError)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(foodError)));
       return;
     }
     if (_selectedPackSize == null) {
@@ -980,11 +959,13 @@ class _CountScreenState extends State<CountScreen> {
 
     try {
       final existingEntry = allCounts.firstWhere(
-            (c) =>
-        c['date'].toString().startsWith(dateToUse) &&
+        (c) =>
+            c['date'].toString().startsWith(dateToUse) &&
             c['location'] == locationToUse &&
             c['productName'] == productName &&
-            (_isFood ? FoodStockFields.isWeightRecord(c) : c['pack_size'] == _selectedPackSize) &&
+            (_isFood
+                ? FoodStockFields.isWeightRecord(c)
+                : c['pack_size'] == _selectedPackSize) &&
             c['syncStatus'] != 'deleted',
       );
 
@@ -997,12 +978,14 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _showDuplicateInterventionDialog(
-      Map<String, dynamic> existingEntry,
-      ) async {
-    final currentCount =
-    _isFood ? FoodStockFields.recordedGrams(existingEntry) :
-    double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
-    final newCount = _isFood ? _foodGrams : double.tryParse(_countController.text) ?? 0.0;
+    Map<String, dynamic> existingEntry,
+  ) async {
+    final currentCount = _isFood
+        ? FoodStockFields.recordedGrams(existingEntry)
+        : double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
+    final newCount = _isFood
+        ? _foodGrams
+        : double.tryParse(_countController.text) ?? 0.0;
     final addTotal = currentCount + newCount;
 
     await showDialog(
@@ -1014,7 +997,9 @@ class _CountScreenState extends State<CountScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('You already have $currentCount ${_isFood ? 'g' : '${_selectedPackSize}s'} here.'),
+            Text(
+              'You already have $currentCount ${_isFood ? 'g' : '${_selectedPackSize}s'} here.',
+            ),
             const SizedBox(height: 8),
             Text('Do you want to ADD to it, or EDIT (Overwrite) it?'),
             const SizedBox(height: 16),
@@ -1124,10 +1109,15 @@ class _CountScreenState extends State<CountScreen> {
     return result;
   }
 
-  Future<void> _commitSaveToDB({String? existingId, bool isUpdate = false}) async {
+  Future<void> _commitSaveToDB({
+    String? existingId,
+    bool isUpdate = false,
+  }) async {
     final foodError = _foodError();
     if (foodError != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(foodError)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(foodError)));
       return;
     }
     final storage = context.read<OfflineStorage>();
@@ -1137,24 +1127,44 @@ class _CountScreenState extends State<CountScreen> {
       preserved = normalizeStockRecord(widget.existingCount!);
     } else if (existingId != null) {
       final rows = await storage.getStockCounts();
-      final matches = rows.where((row) => row['id']?.toString() == existingId).toList();
+      final matches = rows
+          .where((row) => row['id']?.toString() == existingId)
+          .toList();
       if (matches.length != 1) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The existing count changed. Reopen it before editing.')));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'The existing count changed. Reopen it before editing.',
+              ),
+            ),
+          );
         return;
       }
       preserved = normalizeStockRecord(matches.single);
     }
     if (_isEditMode || isUpdate) {
       try {
-        final product = _isFood ? _selectedProduct! : stockProductForEdit(preserved, _selectedProduct);
-        final cost = _isFood ? _resolvedUnitCost : stockRecordedUnitValue(preserved, 'cost_value') ?? _resolvedUnitCost;
-        final retail = _isFood ? _resolvedUnitRetail : stockRecordedUnitValue(preserved, 'retail_value') ?? _resolvedUnitRetail;
+        final product = _isFood
+            ? _selectedProduct!
+            : stockProductForEdit(preserved, _selectedProduct);
+        final cost = _isFood
+            ? _resolvedUnitCost
+            : stockRecordedUnitValue(preserved, 'cost_value') ??
+                  _resolvedUnitCost;
+        final retail = _isFood
+            ? _resolvedUnitRetail
+            : stockRecordedUnitValue(preserved, 'retail_value') ??
+                  _resolvedUnitRetail;
         if (!_isFood) validateStockEdit(preserved, product, cost, retail);
         _selectedProduct = product;
         _resolvedUnitCost = cost;
         _resolvedUnitRetail = retail;
       } catch (error) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('$error')));
         return;
       }
     }
@@ -1162,12 +1172,18 @@ class _CountScreenState extends State<CountScreen> {
     final dateToUse = _isEditMode
         ? preserved['date']
         : (widget.initialDate != null
-        ? widget.initialDate!.toIso8601String().split('T')[0]
-        : DateTime.now().toIso8601String().split('T')[0]);
+              ? widget.initialDate!.toIso8601String().split('T')[0]
+              : DateTime.now().toIso8601String().split('T')[0]);
 
-    final timeToUse = DateTime.now().toIso8601String().split('T').last.split('.').first;
+    final timeToUse = DateTime.now()
+        .toIso8601String()
+        .split('T')
+        .last
+        .split('.')
+        .first;
     final barcode = _selectedBarcode ?? '';
-    final productName = _selectedProduct?['Inventory Product Name'] ?? _productController.text;
+    final productName =
+        _selectedProduct?['Inventory Product Name'] ?? _productController.text;
     final location = widget.initialLocation ?? _selectedLocation ?? '';
 
     String id;
@@ -1188,7 +1204,9 @@ class _CountScreenState extends State<CountScreen> {
     final stockId = id;
     // 🔥 FIX: Handle both createdAt and created_at to avoid losing the original timestamp
     final createdDate = _isEditMode
-        ? (widget.existingCount!['createdAt'] ?? widget.existingCount!['created_at'] ?? DateTime.now().toIso8601String())
+        ? (widget.existingCount!['createdAt'] ??
+              widget.existingCount!['created_at'] ??
+              DateTime.now().toIso8601String())
         : DateTime.now().toIso8601String();
 
     _recalculateTotals();
@@ -1199,17 +1217,25 @@ class _CountScreenState extends State<CountScreen> {
       'stock_id': stockId,
       'date': dateToUse,
       'barcode': _selectedBarcode,
-      'productName': _selectedProduct?['Inventory Product Name'] ?? _productController.text,
+      'productName':
+          _selectedProduct?['Inventory Product Name'] ??
+          _productController.text,
       'mainCategory': _selectedProduct?['Main Category'] ?? '',
       'category': _selectedProduct?['Category'] ?? '',
-      'singleUnitVolume': _isFood ? FoodStockFields.portionGrams(_selectedProduct) : _safeDouble(_selectedProduct?['Single Unit Volume']),
+      'singleUnitVolume': _isFood
+          ? FoodStockFields.portionGrams(_selectedProduct)
+          : _safeDouble(_selectedProduct?['Single Unit Volume']),
       'uom': _isFood ? 'g' : _selectedProduct?['UoM'] ?? '',
       'gradient': _safeDouble(_selectedProduct?['Gradient']),
       'intercept': _safeDouble(_selectedProduct?['Intercept']),
       'location': widget.initialLocation ?? _selectedLocation!,
       'pack_size': _isFood ? 'weight (g)' : _selectedPackSize,
-      'count': _isFood ? _foodGrams : double.tryParse(_countController.text) ?? 0.0,
-      'weight': _isFood ? _foodGrams : double.tryParse(_weightController.text) ?? 0.0,
+      'count': _isFood
+          ? _foodGrams
+          : double.tryParse(_countController.text) ?? 0.0,
+      'weight': _isFood
+          ? _foodGrams
+          : double.tryParse(_weightController.text) ?? 0.0,
       'volume_ml': _calcVolumeMl,
       'open_tots': _calcOpenTots,
       'total_bottles': _calcTotalBottles,
@@ -1232,12 +1258,20 @@ class _CountScreenState extends State<CountScreen> {
         if (syncService.firestore != null && storage.currentStoreId != null) {
           final firestoreData = Map<String, dynamic>.from(countData);
           firestoreData['deleted'] = false; // Explicitly ensure active state
-          await syncService.firestore!.saveStockCount(storage.firestoreKey!, firestoreData);
+          await syncService.firestore!.saveStockCount(
+            storage.firestoreKey!,
+            firestoreData,
+          );
         }
 
         _logger?.info('Updated: ${_productController.text} ($id)');
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entry Updated'), backgroundColor: Colors.blue));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Entry Updated'),
+            backgroundColor: Colors.blue,
+          ),
+        );
         if (_isEditMode) {
           Navigator.pop(context);
         } else {
@@ -1251,24 +1285,34 @@ class _CountScreenState extends State<CountScreen> {
         if (syncService.firestore != null && storage.currentStoreId != null) {
           final firestoreData = Map<String, dynamic>.from(countData);
           firestoreData['deleted'] = false;
-          await syncService.firestore!.saveStockCount(storage.firestoreKey!, firestoreData);
+          await syncService.firestore!.saveStockCount(
+            storage.firestoreKey!,
+            firestoreData,
+          );
         }
 
         _logger?.info('Saved: ${_productController.text} ($id)');
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $_calcTotalBottles ${_isFood ? 'portions' : 'Bottles'}'), backgroundColor: Colors.green));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Saved: $_calcTotalBottles ${_isFood ? 'portions' : 'Bottles'}',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
         _clearForm();
       }
 
       _loadContextData();
-
     } catch (e) {
       _logger?.error('Save Failed', e);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
     }
   }
-
 
   void _clearForm() {
     if (widget.initialProduct != null) {
@@ -1335,8 +1379,8 @@ class _CountScreenState extends State<CountScreen> {
       final now = DateTime.now();
       isSameDay =
           now.year == widget.initialDate!.year &&
-              now.month == widget.initialDate!.month &&
-              now.day == widget.initialDate!.day;
+          now.month == widget.initialDate!.month &&
+          now.day == widget.initialDate!.day;
     }
 
     return Scaffold(
@@ -1421,12 +1465,12 @@ class _CountScreenState extends State<CountScreen> {
                           border: const OutlineInputBorder(),
                           prefixIcon: const Icon(Icons.inventory),
                           suffixIcon:
-                          (_isEditMode || widget.initialProduct != null)
+                              (_isEditMode || widget.initialProduct != null)
                               ? const Icon(Icons.lock, color: Colors.grey)
                               : IconButton(
-                            icon: const Icon(Icons.qr_code_scanner),
-                            onPressed: _scanBarcode,
-                          ),
+                                  icon: const Icon(Icons.qr_code_scanner),
+                                  onPressed: _scanBarcode,
+                                ),
                         ),
                         onTap: () {
                           if (!_isEditMode &&
@@ -1486,14 +1530,27 @@ class _CountScreenState extends State<CountScreen> {
                   initialValue: _selectedPackSize,
                   isExpanded: true,
                   items: currentPackSizes
-                      .map((p) => DropdownMenuItem(value: p, child: Text(_isFood ? (p == 'Loose (kg)' ? 'Kilograms (kg)' : 'Grams (g)') : p)))
+                      .map(
+                        (p) => DropdownMenuItem(
+                          value: p,
+                          child: Text(
+                            _isFood
+                                ? (p == 'Loose (kg)'
+                                      ? 'Kilograms (kg)'
+                                      : 'Grams (g)')
+                                : p,
+                          ),
+                        ),
+                      )
                       .toList(),
                   onChanged: (val) {
                     if (!mounted) return;
                     setState(() {
                       if (_isFood && val != null) {
                         final grams = _foodGrams;
-                        _countController.text = (val == 'Loose (kg)' ? grams / 1000 : grams).toString();
+                        _countController.text =
+                            (val == 'Loose (kg)' ? grams / 1000 : grams)
+                                .toString();
                       }
                       _selectedPackSize = val;
                       if (_isWeightBased(val)) {
@@ -1543,8 +1600,13 @@ class _CountScreenState extends State<CountScreen> {
                   ),
 
                 if (_isFood) ...[
-                  const Text('Weigh net food only (exclude the container). Count is stored in grams; portions = grams ÷ portion weight. Cost Price must be per portion. Retail value is unavailable without food recipe pricing.'),
-                  if (_isEditMode) const Text('Legacy AppSheet weight records load from Weight (g). Check the weight before saving. Older case/unit records must be reweighed.'),
+                  const Text(
+                    'Weigh net food only (exclude the container). Count is stored in grams; portions = grams ÷ portion weight. Cost Price must be per portion. Retail value is unavailable without food recipe pricing.',
+                  ),
+                  if (_isEditMode)
+                    const Text(
+                      'Legacy AppSheet weight records load from Weight (g). Check the weight before saving. Older case/unit records must be reweighed.',
+                    ),
                   const SizedBox(height: 12),
                 ],
                 // 6. COUNT INPUT ROW + SAVE BUTTON
@@ -1557,10 +1619,14 @@ class _CountScreenState extends State<CountScreen> {
                           controller: _countController,
                           validator: (_) => _foodError(),
                           decoration: InputDecoration(
-                            labelText: _isFood ? 'Net weight (${_selectedPackSize == 'Loose (kg)' ? 'kg' : 'g'})' : 'Count (Units)',
+                            labelText: _isFood
+                                ? 'Net weight (${_selectedPackSize == 'Loose (kg)' ? 'kg' : 'g'})'
+                                : 'Count (Units)',
                             border: const OutlineInputBorder(),
                           ),
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
                         ),
                       ),
 
@@ -1574,14 +1640,16 @@ class _CountScreenState extends State<CountScreen> {
                           decoration: InputDecoration(
                             labelText: _selectedPackSize == 'Open Bottle'
                                 ? (_measurementType == 'Shots'
-                                ? 'Number of Shots'
-                                : (_measurementType == 'Volume'
-                                ? 'Volume (mL)'
-                                : 'Weight (g)'))
+                                      ? 'Number of Shots'
+                                      : (_measurementType == 'Volume'
+                                            ? 'Volume (mL)'
+                                            : 'Weight (g)'))
                                 : 'Net Weight',
                             border: const OutlineInputBorder(),
                           ),
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
                         ),
                       ),
 
@@ -1753,7 +1821,11 @@ class _CountScreenState extends State<CountScreen> {
                             style: TextStyle(fontWeight: FontWeight.bold),
                           ),
                           const Divider(),
-                          if (_isFood) _buildSummaryRow('Net weight:', '${_foodGrams.toStringAsFixed(2)} g'),
+                          if (_isFood)
+                            _buildSummaryRow(
+                              'Net weight:',
+                              '${_foodGrams.toStringAsFixed(2)} g',
+                            ),
                           if (_selectedPackSize == 'Open Bottle') ...[
                             _buildSummaryRow(
                               'Calc Volume:',
@@ -1765,7 +1837,9 @@ class _CountScreenState extends State<CountScreen> {
                             ),
                           ],
                           _buildSummaryRow(
-                            _isFood ? 'Total portions:' : 'Total Bottles/Units:',
+                            _isFood
+                                ? 'Total portions:'
+                                : 'Total Bottles/Units:',
                             _calcTotalBottles.toStringAsFixed(2),
                           ),
                           _buildSummaryRow(
@@ -1775,7 +1849,9 @@ class _CountScreenState extends State<CountScreen> {
                             ).format(_calcCostValue),
                           ),
                           _buildSummaryRow(
-                            _isFood ? 'Retail value (not calculated):' : 'Total Retail Value:',
+                            _isFood
+                                ? 'Retail value (not calculated):'
+                                : 'Total Retail Value:',
                             NumberFormat.simpleCurrency(
                               name: 'R',
                             ).format(_calcRetailValue),

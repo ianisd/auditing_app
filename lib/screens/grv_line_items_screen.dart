@@ -77,9 +77,12 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     super.didChangeDependencies();
 
     if (!_hasInitialized) {
-      final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+      final args =
+          ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
 
-      if (args == null && widget.preloadedItems != null && widget.preloadedItems!.isNotEmpty) {
+      if (args == null &&
+          widget.preloadedItems != null &&
+          widget.preloadedItems!.isNotEmpty) {
         // 🔥 Cancel any existing timer
         _debounceTimer?.cancel();
 
@@ -89,7 +92,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
             // 🔥 FIX: Don't check for duplicates here - the invoice was just saved!
             // The upload screen already saved the invoice. Just auto-match.
-            _autoMatchPluItems(widget.preloadedItems!, invoiceId: widget.invoiceDetailsID);
+            _autoMatchPluItems(
+              widget.preloadedItems!,
+              invoiceId: widget.invoiceDetailsID,
+            );
           }
         });
       }
@@ -105,14 +111,13 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     super.dispose();
   }
 
-
   bool _isMounted() => mounted && !_isDisposed;
 
   /// Check if an invoice already exists for this supplier + invoice number
   Future<Map<String, dynamic>?> _checkForExistingInvoice(
-      String invoiceNumber,
-      String supplierName
-      ) async {
+    String invoiceNumber,
+    String supplierName,
+  ) async {
     final storage = context.read<OfflineStorage>();
     return await storage.findInvoiceBySupplierAndNumber(
       supplierName: supplierName,
@@ -161,31 +166,27 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       return 0.0;
     }
 
-// Then:
+    // Then:
     final existingTotal = existingPurchases.fold<double>(
       0.0,
-          (sum, p) => sum + toDouble(p['Cost of Purchases']),
+      (sum, p) => sum + toDouble(p['Cost of Purchases']),
     );
-    final newTotal = items.fold<double>(
-      0.0,
-          (sum, i) => sum + i.totalValue,
-    );
+    final newTotal = items.fold<double>(0.0, (sum, i) => sum + i.totalValue);
     final totalsMatch = (existingTotal - newTotal).abs() < 0.01;
 
     // 6. Check if the items match (by barcode or product name)
-    final existingItems = existingPurchases.map((p) =>
-    '${p['Barcode']}|${p['Purchased Product Name']}'
-    ).toSet();
-    final newItems = items.map((i) =>
-    '${i.barcode}|${i.description}'
-    ).toSet();
-    final itemsMatch = existingItems.containsAll(newItems) &&
+    final existingItems = existingPurchases
+        .map((p) => '${p['Barcode']}|${p['Purchased Product Name']}')
+        .toSet();
+    final newItems = items.map((i) => '${i.barcode}|${i.description}').toSet();
+    final itemsMatch =
+        existingItems.containsAll(newItems) &&
         newItems.containsAll(existingItems);
 
     // 7. Determine duplicate type
     final isExactDuplicate = datesMatch && totalsMatch && itemsMatch;
-    final isPartialDuplicate = !isExactDuplicate &&
-        (datesMatch || totalsMatch || itemsMatch);
+    final isPartialDuplicate =
+        !isExactDuplicate && (datesMatch || totalsMatch || itemsMatch);
 
     print('🔍 Duplicate Analysis:');
     print('  - Exact duplicate: $isExactDuplicate');
@@ -213,55 +214,60 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     required String invoiceNumber,
     required String supplierName,
     required String? existingDate,
-    int existingItemCount = 0,  // 🔥 ADD THIS
-    int newItemCount = 0,       // 🔥 ADD THIS
+    int existingItemCount = 0, // 🔥 ADD THIS
+    int newItemCount = 0, // 🔥 ADD THIS
   }) async {
     return await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('⚠️ Duplicate GRV Detected'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Invoice #$invoiceNumber from $supplierName already exists.'),
-            const SizedBox(height: 8),
-            if (existingDate != null)
-              Text('Existing date: ${existingDate.split('T')[0]}'),
-            const SizedBox(height: 8),
-            // 🔥 Show item counts
-            Text('Existing items: $existingItemCount, New items: $newItemCount'),
-            const SizedBox(height: 16),
-            const Text(
-              'What would you like to do?',
-              style: TextStyle(fontWeight: FontWeight.bold),
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('⚠️ Duplicate GRV Detected'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Invoice #$invoiceNumber from $supplierName already exists.',
+                ),
+                const SizedBox(height: 8),
+                if (existingDate != null)
+                  Text('Existing date: ${existingDate.split('T')[0]}'),
+                const SizedBox(height: 8),
+                // 🔥 Show item counts
+                Text(
+                  'Existing items: $existingItemCount, New items: $newItemCount',
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'What would you like to do?',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                const Text('• UPDATE: Keep existing invoice, add/update items'),
+                const Text('• CREATE NEW: Create a new GRV (keeps both)'),
+                const Text('• CANCEL: Stop this upload'),
+              ],
             ),
-            const SizedBox(height: 8),
-            const Text('• UPDATE: Keep existing invoice, add/update items'),
-            const Text('• CREATE NEW: Create a new GRV (keeps both)'),
-            const Text('• CANCEL: Stop this upload'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'cancel'),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('CANCEL'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, 'cancel'),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text('CANCEL'),
+              ),
+              OutlinedButton(
+                onPressed: () => Navigator.pop(context, 'create_new'),
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+                child: const Text('CREATE NEW'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, 'update'),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+                child: const Text('UPDATE'),
+              ),
+            ],
           ),
-          OutlinedButton(
-            onPressed: () => Navigator.pop(context, 'create_new'),
-            style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
-            child: const Text('CREATE NEW'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, 'update'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-            child: const Text('UPDATE'),
-          ),
-        ],
-      ),
-    ) ?? 'cancel';
+        ) ??
+        'cancel';
   }
 
   //=========================================================================
@@ -271,7 +277,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // Example: _parseNumericValue(String value), _extractFromMap(...)
 
   double? _extractCost(Map<String, dynamic> costEntry) {
-    final costValue = costEntry['Cost Price'] ??
+    final costValue =
+        costEntry['Cost Price'] ??
         costEntry['cost'] ??
         costEntry['avgCost'] ??
         costEntry['Unit Cost'] ??
@@ -281,7 +288,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     if (costValue is num) return costValue.toDouble();
     if (costValue is String) {
-      final cleaned = costValue.replaceAll(',', '').replaceAll(RegExp(r'[^\d.]'), '');
+      final cleaned = costValue
+          .replaceAll(',', '')
+          .replaceAll(RegExp(r'[^\d.]'), '');
       return double.tryParse(cleaned);
     }
     return null;
@@ -293,7 +302,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // TODO: Add helper methods for processing and transforming data
   // Example: _buildProductLookup(), _calculateMatchScore(), _normalizeString()
 
-  Future<Map<String, dynamic>?> _getProductDetailsByName(String productName) async {
+  Future<Map<String, dynamic>?> _getProductDetailsByName(
+    String productName,
+  ) async {
     // Check cache first
     if (_productCache.containsKey(productName)) {
       return _productCache[productName];
@@ -303,7 +314,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     final allInventory = await storage.getAllInventory();
 
     final product = allInventory.firstWhere(
-          (item) => item['Inventory Product Name']?.toString() == productName,
+      (item) => item['Inventory Product Name']?.toString() == productName,
       orElse: () => <String, dynamic>{},
     );
 
@@ -315,15 +326,22 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     return product;
   }
 
-  Future<Map<String, Map<String, dynamic>>> _buildPluLookup(OfflineStorage storage) async {
+  Future<Map<String, Map<String, dynamic>>> _buildPluLookup(
+    OfflineStorage storage,
+  ) async {
     final Map<String, Map<String, dynamic>> productByPlu = {};
 
     try {
       final itemSales = await storage.getItemSalesMap();
       for (var sale in itemSales) {
         final plu = sale['PLU']?.toString().trim();
-        final productName = sale['Product']?.toString().trim() ?? sale['Menu Item']?.toString().trim();
-        if (plu != null && plu.isNotEmpty && productName != null && productName.isNotEmpty) {
+        final productName =
+            sale['Product']?.toString().trim() ??
+            sale['Menu Item']?.toString().trim();
+        if (plu != null &&
+            plu.isNotEmpty &&
+            productName != null &&
+            productName.isNotEmpty) {
           productByPlu[plu] = {'productName': productName};
         }
       }
@@ -335,11 +353,16 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     return productByPlu;
   }
 
-  Future<Map<String, Map<String, dynamic>>> _buildProductNameLookup(List<Map<String, dynamic>> allInventory) async {
+  Future<Map<String, Map<String, dynamic>>> _buildProductNameLookup(
+    List<Map<String, dynamic>> allInventory,
+  ) async {
     final Map<String, Map<String, dynamic>> productByName = {};
 
     for (var product in allInventory) {
-      final name = product['Inventory Product Name']?.toString().toLowerCase().trim();
+      final name = product['Inventory Product Name']
+          ?.toString()
+          .toLowerCase()
+          .trim();
       if (name != null && name.isNotEmpty) {
         productByName[name] = product;
       }
@@ -348,7 +371,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     return productByName;
   }
 
-  Future<Map<String, Map<String, dynamic>>> _buildCostLookup(List<Map<String, dynamic>> allMasterCosts) async {
+  Future<Map<String, Map<String, dynamic>>> _buildCostLookup(
+    List<Map<String, dynamic>> allMasterCosts,
+  ) async {
     final Map<String, Map<String, dynamic>> costsBySupplierAndProduct = {};
 
     for (var cost in allMasterCosts) {
@@ -375,7 +400,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     final productByName = await _buildProductNameLookup(allInventory);
     final costsBySupplierAndProduct = await _buildCostLookup(allMasterCosts);
 
-    print('  📊 Data loaded: ${allInventory.length} products, ${allSuppliers.length} suppliers, ${allMasterCosts.length} costs');
+    print(
+      '  📊 Data loaded: ${allInventory.length} products, ${allSuppliers.length} suppliers, ${allMasterCosts.length} costs',
+    );
 
     return {
       'allInventory': allInventory,
@@ -391,20 +418,19 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     // This method is called with allSuppliers from _buildLookupMaps,
     // which already uses the cached version. No change needed.
     final supplier = allSuppliers.firstWhere(
-          (s) => s['Supplier']?.toString() == widget.supplierName,
+      (s) => s['Supplier']?.toString() == widget.supplierName,
       orElse: () => <String, dynamic>{},
     );
     return supplier['supplierID']?.toString();
   }
 
   Future<GrvLineItemDisplay> _matchSingleItem(
-      ParsedGrvLineItem item,
-      Map<String, Map<String, dynamic>> productByPlu,
-      Map<String, Map<String, dynamic>> productByName,
-      Map<String, Map<String, dynamic>> costsBySupplierAndProduct,
-      List<Map<String, dynamic>> allSuppliers,
-      ) async {
-
+    ParsedGrvLineItem item,
+    Map<String, Map<String, dynamic>> productByPlu,
+    Map<String, Map<String, dynamic>> productByName,
+    Map<String, Map<String, dynamic>> costsBySupplierAndProduct,
+    List<Map<String, dynamic>> allSuppliers,
+  ) async {
     String? productName;
     String? barcode;
     String? supplierBottleID;
@@ -430,13 +456,17 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
           barcode = matchedProduct?['Barcode']?.toString();
           matchedPlu = savedMapping.correctPlu;
           matchedBy = 'saved_mapping';
-          print('    ✅ [SAVED MAPPING] ${item.plu} -> ${savedMapping.correctPlu} -> $productName');
+          print(
+            '    ✅ [SAVED MAPPING] ${item.plu} -> ${savedMapping.correctPlu} -> $productName',
+          );
         } else if (productByPlu.containsKey(savedMapping.correctPlu)) {
           final pluMatch = productByPlu[savedMapping.correctPlu];
           productName = pluMatch?['productName']?.toString();
           matchedPlu = savedMapping.correctPlu;
           matchedBy = 'saved_mapping';
-          print('    ✅ [SAVED MAPPING VIA PLU] ${item.plu} -> ${savedMapping.correctPlu} -> $productName');
+          print(
+            '    ✅ [SAVED MAPPING VIA PLU] ${item.plu} -> ${savedMapping.correctPlu} -> $productName',
+          );
         }
       }
 
@@ -454,9 +484,13 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             productName = inventoryRecord['Inventory Product Name']?.toString();
             barcode = inventoryRecord['Barcode']?.toString();
             matchedBy = 'plu_direct';
-            print('    ✅ [PLU DIRECT] ${item.plu} -> $productName (inventory confirmed)');
+            print(
+              '    ✅ [PLU DIRECT] ${item.plu} -> $productName (inventory confirmed)',
+            );
           } else {
-            print('    ⚠️ [PLU DIRECT] ${item.plu} -> "$candidateName" NOT found in inventory, skipping');
+            print(
+              '    ⚠️ [PLU DIRECT] ${item.plu} -> "$candidateName" NOT found in inventory, skipping',
+            );
           }
         }
       }
@@ -475,7 +509,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         // Removed the fuzzy_single silent auto-accept — a single result above
         // the 0.3 threshold is NOT a confirmed match and must never be
         // written to purchases without user approval.
-        print('    ⚠️ [FUZZY] ${matches.length} possible match(es) - showing dialog');
+        print(
+          '    ⚠️ [FUZZY] ${matches.length} possible match(es) - showing dialog',
+        );
 
         final selectedProduct = await _showProductSelectionDialog(
           context,
@@ -494,7 +530,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             productName = resolvedProduct['Inventory Product Name']?.toString();
             barcode = resolvedProduct['Barcode']?.toString();
             matchedBy = wantsBrowse ? 'manual_browser' : 'manual_selection';
-            print('    ✅ [${wantsBrowse ? 'BROWSE' : 'MANUAL'}] User selected: "$productName"');
+            print(
+              '    ✅ [${wantsBrowse ? 'BROWSE' : 'MANUAL'}] User selected: "$productName"',
+            );
 
             // Offer to save mapping
             if (supplierID != null && item.plu.isNotEmpty) {
@@ -518,7 +556,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                   );
                   await storage.savePluMapping(mapping);
                   print('    💾 [MAPPING SAVED] ${item.plu} -> $correctPlu');
-                  final verifyMapping = await storage.getPluMapping(supplierID, item.plu);
+                  final verifyMapping = await storage.getPluMapping(
+                    supplierID,
+                    item.plu,
+                  );
                   if (verifyMapping != null) {
                     print('    ✅ VERIFICATION: Mapping exists in DB');
                   } else {
@@ -535,14 +576,17 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         } else {
           print('    ⚠️ [FUZZY] User skipped selection');
         }
-
       } else {
         print('    ❌ [FUZZY] No matches found');
 
         if (_isMounted()) {
-          final String? action = await _showNoMatchDialog(context, item.description);
+          final String? action = await _showNoMatchDialog(
+            context,
+            item.description,
+          );
 
-          if (action == 'browser_selected' && _noMatchBrowserSelection != null) {
+          if (action == 'browser_selected' &&
+              _noMatchBrowserSelection != null) {
             // User picked from the full inventory browser
             final selectedProduct = _noMatchBrowserSelection!;
             _noMatchBrowserSelection = null;
@@ -571,9 +615,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             final newProduct = await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => AddProductScreen(
-                  initialName: item.description,
-                ),
+                builder: (context) =>
+                    AddProductScreen(initialName: item.description),
               ),
             );
 
@@ -639,15 +682,18 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   }
 
   List<Map<String, dynamic>> _findBestProductMatches(
-      String description,
-      Map<String, Map<String, dynamic>> productByName, {
-        double threshold = 0.3,
-      }) {
-
+    String description,
+    Map<String, Map<String, dynamic>> productByName, {
+    double threshold = 0.3,
+  }) {
     String normalize(String s) {
-      return s.toLowerCase()
+      return s
+          .toLowerCase()
           .replaceAll(RegExp(r'[^\w\s]'), '')
-          .replaceAll(RegExp(r'\b(the|and|yr|yrs|ml|btl|bottle|pack|case|can|glass)\b'), '')
+          .replaceAll(
+            RegExp(r'\b(the|and|yr|yrs|ml|btl|bottle|pack|case|can|glass)\b'),
+            '',
+          )
           .replaceAll(RegExp(r'\s+'), ' ')
           .trim();
     }
@@ -671,11 +717,11 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       'brut': 'brut',
       'luminous': 'luminous',
       'rich': 'rich',
-      'kranz': 'krans',           // For "DE KRANZ" -> "DE KRANS"
-      'dusse': "d'usse",          // For "DUSSE" -> "D'usse"
-      'corona': 'corona extra',    // For "CCORONA" -> "Corona"
-      'hennessey': 'hennessy',     // Common misspelling
-      'hennessy': 'hennessy vs',   // For "HENNESSEY VSCO" -> "Hennessy VS"
+      'kranz': 'krans', // For "DE KRANZ" -> "DE KRANS"
+      'dusse': "d'usse", // For "DUSSE" -> "D'usse"
+      'corona': 'corona extra', // For "CCORONA" -> "Corona"
+      'hennessey': 'hennessy', // Common misspelling
+      'hennessy': 'hennessy vs', // For "HENNESSEY VSCO" -> "Hennessy VS"
     };
 
     List<MapEntry<Map<String, dynamic>, double>> scored = [];
@@ -705,15 +751,16 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
         if (normalizedProduct.contains(word)) {
           if (normalizedProduct.split(' ').contains(word)) {
-            score += 10;  // Exact word match
+            score += 10; // Exact word match
           } else {
-            score += 5;   // Partial match
+            score += 5; // Partial match
           }
         }
 
         // Check brand mappings
         for (var mapping in brandMappings.entries) {
-          if (word.contains(mapping.key) && normalizedProduct.contains(mapping.value)) {
+          if (word.contains(mapping.key) &&
+              normalizedProduct.contains(mapping.value)) {
             score += 8;
           }
         }
@@ -732,6 +779,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     return scored.map((e) => e.key).toList();
   }
+
   bool _fuzzyMatch(String a, String b) {
     final aNorm = a.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
     final bNorm = b.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '');
@@ -760,7 +808,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
   // NEW method using ItemsIssued
   // NEW improved method using ItemsIssuedMap
-  Future<Map<String, Map<String, dynamic>>> _buildPluLookupFromItemsIssued(OfflineStorage storage) async {
+  Future<Map<String, Map<String, dynamic>>> _buildPluLookupFromItemsIssued(
+    OfflineStorage storage,
+  ) async {
     final Map<String, Map<String, dynamic>> productByPlu = {};
 
     try {
@@ -772,13 +822,17 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         final plu = mapping['PLU']?.toString().trim();
 
         // Try 'Product' first (mapped app product name), fallback to 'Menu Item'
-        final productName = mapping['Product']?.toString().trim() ??
+        final productName =
+            mapping['Product']?.toString().trim() ??
             mapping['Menu Item']?.toString().trim();
 
-        if (plu != null && plu.isNotEmpty && productName != null && productName.isNotEmpty) {
+        if (plu != null &&
+            plu.isNotEmpty &&
+            productName != null &&
+            productName.isNotEmpty) {
           productByPlu[plu] = {
             'productName': productName,
-            'source': 'ItemsIssuedMap'
+            'source': 'ItemsIssuedMap',
           };
           mapCount++;
         }
@@ -794,11 +848,14 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         final menuItem = issue['Menu Item']?.toString().trim();
 
         // Only add if not already in the map (prioritize explicit mappings)
-        if (plu != null && plu.isNotEmpty && menuItem != null && menuItem.isNotEmpty) {
+        if (plu != null &&
+            plu.isNotEmpty &&
+            menuItem != null &&
+            menuItem.isNotEmpty) {
           if (!productByPlu.containsKey(plu)) {
             productByPlu[plu] = {
               'productName': menuItem,
-              'source': 'ItemsIssued'
+              'source': 'ItemsIssued',
             };
             issuedCount++;
           }
@@ -814,12 +871,12 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         final item = issue['Item']?.toString().trim();
         final name = issue['Name']?.toString().trim();
 
-        if (item != null && item.isNotEmpty && name != null && name.isNotEmpty) {
+        if (item != null &&
+            item.isNotEmpty &&
+            name != null &&
+            name.isNotEmpty) {
           if (!productByPlu.containsKey(item)) {
-            productByPlu[item] = {
-              'productName': name,
-              'source': 'StockIssues'
-            };
+            productByPlu[item] = {'productName': name, 'source': 'StockIssues'};
             stockCount++;
           }
         }
@@ -827,7 +884,6 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       print('  📊 StockIssues contributed $stockCount entries');
 
       print('  📊 TOTAL PLU lookup entries: ${productByPlu.length}');
-
     } catch (e) {
       print('  ⚠️ Could not build combined PLU lookup: $e');
     }
@@ -841,7 +897,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // TODO: Add helper methods for consistent UI feedback
   // Example: _showProgressDialog(), _showConfirmationDialog(), _showErrorDialog()
 
-  void _safeShowSnackBar(String message, {Color backgroundColor = Colors.blue}) {
+  void _safeShowSnackBar(
+    String message, {
+    Color backgroundColor = Colors.blue,
+  }) {
     if (!_isMounted()) return;
     print('DEBUG: Showing snackbar: $message');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -872,10 +931,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   }
 
   Future<Map<String, dynamic>?> _showProductSelectionDialog(
-      BuildContext context,
-      String searchTerm,
-      List<Map<String, dynamic>> matches,
-      ) async {
+    BuildContext context,
+    String searchTerm,
+    List<Map<String, dynamic>> matches,
+  ) async {
     final TextEditingController searchController = TextEditingController();
     List<Map<String, dynamic>> filtered = List.from(matches);
 
@@ -891,7 +950,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               children: [
                 Text(
                   'Match: "$searchTerm"',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 TextField(
@@ -902,19 +964,23 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                     prefixIcon: Icon(Icons.search, size: 18),
                     isDense: true,
                     border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    contentPadding: EdgeInsets.symmetric(
+                      vertical: 8,
+                      horizontal: 8,
+                    ),
                   ),
                   onChanged: (val) {
                     setDialogState(() {
                       filtered = val.isEmpty
                           ? List.from(matches)
                           : matches.where((p) {
-                        final name = p['Inventory Product Name']
-                            ?.toString()
-                            .toLowerCase() ??
-                            '';
-                        return name.contains(val.toLowerCase());
-                      }).toList();
+                              final name =
+                                  p['Inventory Product Name']
+                                      ?.toString()
+                                      .toLowerCase() ??
+                                  '';
+                              return name.contains(val.toLowerCase());
+                            }).toList();
                     });
                   },
                 ),
@@ -931,27 +997,27 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               child: filtered.isEmpty
                   ? const Center(child: Text('No results match your filter'))
                   : ListView.builder(
-                shrinkWrap: true,
-                itemCount: filtered.length,
-                itemBuilder: (context, index) {
-                  final product = filtered[index];
-                  return Card(
-                    margin: const EdgeInsets.symmetric(vertical: 3),
-                    child: ListTile(
-                      dense: true,
-                      title: Text(
-                        product['Inventory Product Name'] ?? 'Unknown',
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                      subtitle: Text(
-                        'Category: ${product['Category'] ?? 'N/A'}',
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                      onTap: () => Navigator.pop(context, product),
+                      shrinkWrap: true,
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final product = filtered[index];
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 3),
+                          child: ListTile(
+                            dense: true,
+                            title: Text(
+                              product['Inventory Product Name'] ?? 'Unknown',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            subtitle: Text(
+                              'Category: ${product['Category'] ?? 'N/A'}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            onTap: () => Navigator.pop(context, product),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
             ),
             actions: [
               // Skip this item entirely — leaves it unlinked
@@ -963,7 +1029,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               OutlinedButton.icon(
                 icon: const Icon(Icons.search, size: 16),
                 label: const Text('Browse All'),
-                onPressed: () => Navigator.pop(context, const {'__browse_all__': true}),
+                onPressed: () =>
+                    Navigator.pop(context, const {'__browse_all__': true}),
               ),
             ],
           );
@@ -974,13 +1041,14 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
   // REPLACE the existing _showFullProductBrowser:
   Future<Map<String, dynamic>?> _showFullProductBrowser(
-      BuildContext context,
-      String searchTerm,
-      ) async {
+    BuildContext context,
+    String searchTerm,
+  ) async {
     final storage = context.read<OfflineStorage>();
     final allInventory = await storage.getAllInventory();
-    final TextEditingController searchController =
-    TextEditingController(text: searchTerm);
+    final TextEditingController searchController = TextEditingController(
+      text: searchTerm,
+    );
     List<Map<String, dynamic>> filtered = allInventory.where((p) {
       final name = p['Inventory Product Name']?.toString().toLowerCase() ?? '';
       return name.contains(searchTerm.toLowerCase());
@@ -999,7 +1067,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 Text(
                   'Search inventory for: "$searchTerm"',
                   style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.bold),
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 TextField(
@@ -1010,21 +1080,23 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                     prefixIcon: Icon(Icons.search, size: 18),
                     isDense: true,
                     border: OutlineInputBorder(),
-                    contentPadding:
-                    EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    contentPadding: EdgeInsets.symmetric(
+                      vertical: 8,
+                      horizontal: 8,
+                    ),
                   ),
                   onChanged: (val) {
                     setDialogState(() {
                       filtered = val.isEmpty
                           ? allInventory
                           : allInventory.where((p) {
-                        final name =
-                            p['Inventory Product Name']
-                                ?.toString()
-                                .toLowerCase() ??
-                                '';
-                        return name.contains(val.toLowerCase());
-                      }).toList();
+                              final name =
+                                  p['Inventory Product Name']
+                                      ?.toString()
+                                      .toLowerCase() ??
+                                  '';
+                              return name.contains(val.toLowerCase());
+                            }).toList();
                     });
                   },
                 ),
@@ -1040,29 +1112,30 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               height: 400,
               child: filtered.isEmpty
                   ? const Center(
-                  child: Text('No products found — try a different search'))
+                      child: Text('No products found — try a different search'),
+                    )
                   : ListView.builder(
-                shrinkWrap: true,
-                itemCount: filtered.length,
-                itemBuilder: (context, index) {
-                  final product = filtered[index];
-                  return Card(
-                    margin: const EdgeInsets.symmetric(vertical: 3),
-                    child: ListTile(
-                      dense: true,
-                      title: Text(
-                        product['Inventory Product Name'] ?? 'Unknown',
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                      subtitle: Text(
-                        'Category: ${product['Category'] ?? 'N/A'}  |  Barcode: ${product['Barcode'] ?? 'N/A'}',
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                      onTap: () => Navigator.pop(context, product),
+                      shrinkWrap: true,
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final product = filtered[index];
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 3),
+                          child: ListTile(
+                            dense: true,
+                            title: Text(
+                              product['Inventory Product Name'] ?? 'Unknown',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            subtitle: Text(
+                              'Category: ${product['Category'] ?? 'N/A'}  |  Barcode: ${product['Barcode'] ?? 'N/A'}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            onTap: () => Navigator.pop(context, product),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
             ),
             actions: [
               TextButton(
@@ -1076,7 +1149,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     );
   }
 
-  Future<String?> _showNoMatchDialog(BuildContext context, String description) async {
+  Future<String?> _showNoMatchDialog(
+    BuildContext context,
+    String description,
+  ) async {
     // Skip the intermediate dialog — go straight to the full browser
     // so the user can immediately search the entire inventory.
     // Returns 'skip', 'add_new', or null (user dismissed).
@@ -1112,44 +1188,43 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   }
 
   Future<bool> _showSaveMappingDialog(
-      BuildContext context,
-      ParsedGrvLineItem item,
-      String supplierId,
-      Map<String, dynamic> selectedProduct,
-      ) async {
+    BuildContext context,
+    ParsedGrvLineItem item,
+    String supplierId,
+    Map<String, dynamic> selectedProduct,
+  ) async {
     return await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Save PLU Mapping?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('CSV PLU: ${item.plu}'),
-            Text('CSV Description: ${item.description}'),
-            const Divider(),
-            Text('Mapped to: ${selectedProduct['Inventory Product Name']}'),
-            const SizedBox(height: 8),
-            Text('Supplier: $supplierId'),
-            const SizedBox(height: 16),
-            const Text('This will auto-match this PLU in future imports.'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('No'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Save PLU Mapping?'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('CSV PLU: ${item.plu}'),
+                Text('CSV Description: ${item.description}'),
+                const Divider(),
+                Text('Mapped to: ${selectedProduct['Inventory Product Name']}'),
+                const SizedBox(height: 8),
+                Text('Supplier: $supplierId'),
+                const SizedBox(height: 16),
+                const Text('This will auto-match this PLU in future imports.'),
+              ],
             ),
-            child: const Text('Yes, Save Mapping'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('No'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                child: const Text('Yes, Save Mapping'),
+              ),
+            ],
           ),
-        ],
-      ),
-    ) ?? false;
+        ) ??
+        false;
   }
 
   Future<String?> _findPluForProduct(Map<String, dynamic> product) async {
@@ -1161,7 +1236,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     try {
       final itemsIssued = await storage.getItemsIssued();
       final match = itemsIssued.firstWhere(
-            (issue) => _fuzzyMatch(issue['Menu Item']?.toString() ?? '', productName),
+        (issue) =>
+            _fuzzyMatch(issue['Menu Item']?.toString() ?? '', productName),
         orElse: () => <String, dynamic>{},
       );
       if (match.isNotEmpty && match['PLU'] != null) {
@@ -1176,7 +1252,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     try {
       final stockIssues = await storage.getStockIssues();
       final match = stockIssues.firstWhere(
-            (issue) => _fuzzyMatch(issue['Name']?.toString() ?? issue['Item']?.toString() ?? '', productName),
+        (issue) => _fuzzyMatch(
+          issue['Name']?.toString() ?? issue['Item']?.toString() ?? '',
+          productName,
+        ),
         orElse: () => <String, dynamic>{},
       );
       if (match.isNotEmpty && match['Item'] != null) {
@@ -1189,7 +1268,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
     // 🔴 3. CRITICAL FALLBACK: Use Barcode! This ensures mappings ALWAYS save!
     print('✅ Falling back to Barcode for mapping: ${product['Barcode']}');
-    return product['Barcode']?.toString() ?? 'MAPPED_${DateTime.now().millisecondsSinceEpoch}';
+    return product['Barcode']?.toString() ??
+        'MAPPED_${DateTime.now().millisecondsSinceEpoch}';
   }
 
   //=========================================================================
@@ -1233,7 +1313,11 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  const Icon(Icons.warning_amber, size: 16, color: Colors.orange),
+                  const Icon(
+                    Icons.warning_amber,
+                    size: 16,
+                    color: Colors.orange,
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -1310,10 +1394,14 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
       if (action == 'link') {
         // Open the full inventory browser inline.
-        final selectedProduct = await _showFullProductBrowser(context, item.description);
+        final selectedProduct = await _showFullProductBrowser(
+          context,
+          item.description,
+        );
 
         if (selectedProduct != null && _isMounted()) {
-          final productName = selectedProduct['Inventory Product Name']?.toString();
+          final productName = selectedProduct['Inventory Product Name']
+              ?.toString();
           final barcode = selectedProduct['Barcode']?.toString();
 
           // Try to look up the supplierBottleID from MasterCosts
@@ -1326,8 +1414,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               final allMasterCosts = await storage.getMasterCosts();
               final costKey = '$supplierID|${productName.toLowerCase().trim()}';
               final costMatch = allMasterCosts.firstWhere(
-                    (c) =>
-                '${ c['supplierID']}|${c['Product Name']?.toString().toLowerCase().trim()}' == costKey,
+                (c) =>
+                    '${c['supplierID']}|${c['Product Name']?.toString().toLowerCase().trim()}' ==
+                    costKey,
                 orElse: () => <String, dynamic>{},
               );
               if (costMatch.isNotEmpty) {
@@ -1352,7 +1441,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             final storage = context.read<OfflineStorage>();
             final allSuppliers = await storage.getMasterSuppliers();
             final supplierID = _findSupplierId(allSuppliers);
-            if (supplierID != null && (item.plu?.isNotEmpty ?? false) && productName != null) {
+            if (supplierID != null &&
+                (item.plu?.isNotEmpty ?? false) &&
+                productName != null) {
               final shouldSave = await _showSaveMappingDialog(
                 context,
                 item.toParsedLineItem(),
@@ -1371,7 +1462,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                     createdAt: DateTime.now(),
                   );
                   await storage.savePluMapping(mapping);
-                  print('    💾 [MAPPING SAVED from resolution] ${item.plu} -> $correctPlu');
+                  print(
+                    '    💾 [MAPPING SAVED from resolution] ${item.plu} -> $correctPlu',
+                  );
                 }
               }
             }
@@ -1422,9 +1515,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   // Example: _buildLookupMaps(), _processBatch(), _findBestMatch(), _lookupCost()
 
   Future<void> _autoMatchPluItems(
-      List<ParsedGrvLineItem> items, {
-        String? invoiceId,
-      }) async {
+    List<ParsedGrvLineItem> items, {
+    String? invoiceId,
+  }) async {
     print('DEBUG: _autoMatchPluItems() called with ${items.length} items');
     if (!_isMounted()) return;
     setState(() => _isMatching = true);
@@ -1438,10 +1531,15 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     try {
       final lookups = await _buildLookupMaps();
 
-      final productByPlu = lookups['productByPlu'] as Map<String, Map<String, dynamic>>;
-      final productByName = lookups['productByName'] as Map<String, Map<String, dynamic>>;
-      final costsBySupplierAndProduct = lookups['costsBySupplierAndProduct'] as Map<String, Map<String, dynamic>>;
-      final allSuppliers = lookups['allSuppliers'] as List<Map<String, dynamic>>;
+      final productByPlu =
+          lookups['productByPlu'] as Map<String, Map<String, dynamic>>;
+      final productByName =
+          lookups['productByName'] as Map<String, Map<String, dynamic>>;
+      final costsBySupplierAndProduct =
+          lookups['costsBySupplierAndProduct']
+              as Map<String, Map<String, dynamic>>;
+      final allSuppliers =
+          lookups['allSuppliers'] as List<Map<String, dynamic>>;
 
       // Use the provided invoice ID or fallback to widget
       final effectiveInvoiceId = invoiceId ?? widget.invoiceDetailsID;
@@ -1450,7 +1548,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       for (var i = 0; i < items.length; i++) {
         if (!_isMounted()) return;
 
-        print('  🔄 Processing item ${i + 1}/${items.length}: "${items[i].description}"');
+        print(
+          '  🔄 Processing item ${i + 1}/${items.length}: "${items[i].description}"',
+        );
 
         final result = await _matchSingleItem(
           items[i],
@@ -1497,8 +1597,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   String _generateInvoiceId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final rnd = math.Random();
-    return String.fromCharCodes(Iterable.generate(
-        8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+    return String.fromCharCodes(
+      Iterable.generate(8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))),
+    );
   }
 
   //=========================================================================
@@ -1510,7 +1611,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   Future<void> _saveAllItems() async {
     print('DEBUG: _saveAllItems() called');
     print('  - Total items to save: ${_items.length}');
-    print('  - Current invoice ID: ${_currentInvoiceId ?? widget.invoiceDetailsID}');
+    print(
+      '  - Current invoice ID: ${_currentInvoiceId ?? widget.invoiceDetailsID}',
+    );
     print('  - GRV Reference: ${widget.grvReference}');
 
     if (!_isMounted()) return;
@@ -1531,7 +1634,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         return;
       }
       if (_items.isEmpty) {
-        _safeShowSnackBar('⚠️ No items left to save', backgroundColor: Colors.orange);
+        _safeShowSnackBar(
+          '⚠️ No items left to save',
+          backgroundColor: Colors.orange,
+        );
         return;
       }
     }
@@ -1555,7 +1661,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         final supplierId = await _getSupplierId();
 
         // 🔥 FIX: Ensure GRV Reference is never empty
-        final grvRef = widget.grvReference.isNotEmpty ? widget.grvReference : 'NO_GRV';
+        final grvRef = widget.grvReference.isNotEmpty
+            ? widget.grvReference
+            : 'NO_GRV';
 
         final invoiceData = {
           'invoiceDetailsID': effectiveInvoiceId,
@@ -1572,7 +1680,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         invoice = await storage.getInvoiceDetails(effectiveInvoiceId);
 
         if (invoice == null) {
-          throw Exception('Invoice details not found for ID: $effectiveInvoiceId');
+          throw Exception(
+            'Invoice details not found for ID: $effectiveInvoiceId',
+          );
         }
       }
 
@@ -1610,7 +1720,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       for (var item in matchedItems) {
         if (!_isMounted()) return;
 
-        print('DEBUG: Saving item - Product: ${item.productName}, Quantity: ${item.quantityCases}, Price: ${item.pricePerUnit}');
+        print(
+          'DEBUG: Saving item - Product: ${item.productName}, Quantity: ${item.quantityCases}, Price: ${item.pricePerUnit}',
+        );
 
         Map<String, dynamic>? productDetails;
         if (item.productName != null) {
@@ -1621,7 +1733,8 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             ? item.plu!
             : (item.barcode?.isNotEmpty == true ? item.barcode! : 'unknown');
 
-        final String purchaseId = 'purchase_${effectiveInvoiceId}_${grvToUse}_${productKey}_line$lineIndex';
+        final String purchaseId =
+            'purchase_${effectiveInvoiceId}_${grvToUse}_${productKey}_line$lineIndex';
         print('🔥 FINAL purchaseId: "$purchaseId"');
 
         final purchase = {
@@ -1629,7 +1742,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
           'invoiceDetailsID': effectiveInvoiceId,
           'GRV Reference': grvToUse,
           'Invoice Nr.': invoice['Invoice Number']?.toString() ?? '',
-          'Inv. Date of Purchase': invoice['Date of Purchase']?.toString() ?? widget.deliveryDate.toIso8601String(),
+          'Inv. Date of Purchase':
+              invoice['Date of Purchase']?.toString() ??
+              widget.deliveryDate.toIso8601String(),
           'supplierID': invoice['supplierID'] ?? '',
           'Supplier': widget.supplierName,
           'Barcode': item.barcode ?? productDetails?['Barcode'] ?? '',
@@ -1662,7 +1777,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
 
       // SAVE PURCHASES
       if (purchasesToSave.isNotEmpty) {
-        print('DEBUG: Using merge strategy to save ${purchasesToSave.length} purchases');
+        print(
+          'DEBUG: Using merge strategy to save ${purchasesToSave.length} purchases',
+        );
         await storage.savePurchasesWithMerge(
           invoiceId: effectiveInvoiceId,
           newPurchases: purchasesToSave,
@@ -1670,15 +1787,22 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       }
 
       if (_isMounted()) {
-        print('DEBUG: Save completed successfully - ${purchasesToSave.length} items merged');
+        print(
+          'DEBUG: Save completed successfully - ${purchasesToSave.length} items merged',
+        );
         if (Navigator.canPop(context)) {
           Navigator.pop(context, true);
         }
-        _safeShowSnackBar('✓ Saved ${purchasesToSave.length} items to Purchases');
+        _safeShowSnackBar(
+          '✓ Saved ${purchasesToSave.length} items to Purchases',
+        );
       }
     } catch (e) {
       print('ERROR: Save operation failed: $e');
-      _safeShowSnackBar('Save failed: ${e.toString().split('\n').first}', backgroundColor: Colors.red);
+      _safeShowSnackBar(
+        'Save failed: ${e.toString().split('\n').first}',
+        backgroundColor: Colors.red,
+      );
     } finally {
       if (_isMounted()) setState(() => _isLoading = false);
     }
@@ -1690,7 +1814,7 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     // 🔥 FIX: Use cached version
     final suppliers = await storage.getMasterSuppliersCached();
     final match = suppliers.firstWhere(
-          (s) => s['Supplier']?.toString() == widget.supplierName,
+      (s) => s['Supplier']?.toString() == widget.supplierName,
       orElse: () => <String, dynamic>{},
     );
     return match['supplierID']?.toString() ?? '';
@@ -1735,7 +1859,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     } else {
       print('DEBUG: No item returned from manual entry screen');
       if (result != null) {
-        print('DEBUG: Result was not GrvLineItemDisplay, it was: ${result.runtimeType}');
+        print(
+          'DEBUG: Result was not GrvLineItemDisplay, it was: ${result.runtimeType}',
+        );
       }
     }
   }
@@ -1809,7 +1935,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
   //=========================================================================
   @override
   Widget build(BuildContext context) {
-    print('DEBUG: GrvLineItemsScreen.build() called - Items: ${_items.length}, Total Value: $_totalValue');
+    print(
+      'DEBUG: GrvLineItemsScreen.build() called - Items: ${_items.length}, Total Value: $_totalValue',
+    );
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
@@ -1842,14 +1970,30 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Supplier: ${widget.supplierName}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                  Text('Delivery: ${widget.deliveryDate.toIso8601String().split('T')[0]}', style: const TextStyle(color: Colors.grey)),
+                  Text(
+                    'Supplier: ${widget.supplierName}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    'Delivery: ${widget.deliveryDate.toIso8601String().split('T')[0]}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                   const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('${_items.length} items', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      Text('R${_totalValue.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.green)),
+                      Text(
+                        '${_items.length} items',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        'R${_totalValue.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Colors.green,
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -1869,7 +2013,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
             ),
@@ -1879,19 +2025,22 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             // Items List
             _items.isEmpty
                 ? Center(
-              child: Column(
-                children: [
-                  Icon(Icons.inventory_2, size: 48, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  Text('No items added yet',
-                      style: TextStyle(color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  Text('Tap ADD ITEM to start',
-                      style:
-                      TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
-            )
+                    child: Column(
+                      children: [
+                        Icon(Icons.inventory_2, size: 48, color: Colors.grey),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No items added yet',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap ADD ITEM to start',
+                          style: TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  )
                 : _buildItemsTable(),
 
             const SizedBox(height: 24),
@@ -1901,8 +2050,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
       floatingActionButton: _buildSaveButton(),
     );
   }
+
   Widget _buildItemsTable() {
-    final isDesktop = !kIsWeb &&
+    final isDesktop =
+        !kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.windows ||
             defaultTargetPlatform == TargetPlatform.macOS ||
             defaultTargetPlatform == TargetPlatform.linux);
@@ -1919,8 +2070,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
             margin: const EdgeInsets.only(bottom: 8),
             child: ListTile(
               leading: CircleAvatar(
-                backgroundColor:
-                item.isMatched ? Colors.green.shade100 : Colors.red.shade100,
+                backgroundColor: item.isMatched
+                    ? Colors.green.shade100
+                    : Colors.red.shade100,
                 child: Text(
                   item.plu?.substring(0, math.min(2, item.plu?.length ?? 0)) ??
                       '?',
@@ -1937,14 +2089,16 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                      '${item.quantityCases} × ${item.unitsPerCase} @ R${item.pricePerUnit.toStringAsFixed(2)}/unit'),
+                    '${item.quantityCases} × ${item.unitsPerCase} @ R${item.pricePerUnit.toStringAsFixed(2)}/unit',
+                  ),
                   if (!item.isMatched)
-                    Text('⚠️ Unmatched',
-                        style: TextStyle(color: Colors.red)),
+                    Text('⚠️ Unmatched', style: TextStyle(color: Colors.red)),
                 ],
               ),
-              trailing: Text('R${item.totalValue.toStringAsFixed(2)}',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+              trailing: Text(
+                'R${item.totalValue.toStringAsFixed(2)}',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           );
         },
@@ -1982,28 +2136,27 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                 ),
               ),
               // PLU
-              DataCell(Text(
-                item.plu ?? '—',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              )),
+              DataCell(
+                Text(
+                  item.plu ?? '—',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
               // Description
-              DataCell(Text(
-                item.description,
-                overflow: TextOverflow.ellipsis,
-              )),
+              DataCell(Text(item.description, overflow: TextOverflow.ellipsis)),
               // Cases
               DataCell(Text(item.quantityCases.toString())),
               // Units
               DataCell(Text(item.unitsPerCase.toString())),
               // Price per unit
-              DataCell(Text(
-                'R${item.pricePerUnit.toStringAsFixed(2)}',
-              )),
+              DataCell(Text('R${item.pricePerUnit.toStringAsFixed(2)}')),
               // Total
-              DataCell(Text(
-                'R${item.totalValue.toStringAsFixed(2)}',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              )),
+              DataCell(
+                Text(
+                  'R${item.totalValue.toStringAsFixed(2)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
               // Edit/delete actions
               DataCell(
                 PopupMenuButton<String>(
@@ -2022,8 +2175,10 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
                     PopupMenuItem(value: 'edit', child: Text('Edit')),
                     PopupMenuItem(
                       value: 'delete',
-                      child: Text('Delete',
-                          style: TextStyle(color: Colors.red)),
+                      child: Text(
+                        'Delete',
+                        style: TextStyle(color: Colors.red),
+                      ),
                     ),
                   ],
                 ),
@@ -2039,7 +2194,9 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
     final item = _items[index];
 
     // 🔥 FIX: Ensure GRV Reference is never empty
-    final grvRef = widget.grvReference.isNotEmpty ? widget.grvReference : 'NO_GRV';
+    final grvRef = widget.grvReference.isNotEmpty
+        ? widget.grvReference
+        : 'NO_GRV';
 
     final result = await Navigator.push(
       context,

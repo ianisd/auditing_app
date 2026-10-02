@@ -15,8 +15,9 @@ class LocationHistoryScreen extends StatefulWidget {
 
 class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
   bool _isLoading = true;
-  List<Map<String, dynamic>> _allLocationCounts = []; // Stores ALL data for this location
-  List<Map<String, dynamic>> _filteredCounts = [];    // Stores FILTERED data
+  List<Map<String, dynamic>> _allLocationCounts =
+      []; // Stores ALL data for this location
+  List<Map<String, dynamic>> _filteredCounts = []; // Stores FILTERED data
   Map<String, List<Map<String, dynamic>>> _groupedCounts = {};
 
   final TextEditingController _searchController = TextEditingController();
@@ -60,7 +61,8 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
         // A. Search Filter
         final product = c['productName']?.toString().toLowerCase() ?? '';
         final barcode = c['barcode']?.toString().toLowerCase() ?? '';
-        final matchesSearch = query.isEmpty || product.contains(query) || barcode.contains(query);
+        final matchesSearch =
+            query.isEmpty || product.contains(query) || barcode.contains(query);
 
         // B. Date Filter
         final rawDate = c['date']?.toString() ?? '';
@@ -123,7 +125,9 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
     final sortedDates = availableDates.toList()..sort((a, b) => b.compareTo(a));
 
     if (sortedDates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No dates available')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No dates available')));
       return;
     }
 
@@ -143,7 +147,9 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
                   itemBuilder: (ctx, i) {
                     final dateKey = sortedDates[i];
                     final isSelected = _customSelectedDates.contains(dateKey);
-                    final displayDate = DateFormat('EEE, dd MMM yyyy').format(DateTime.parse(dateKey));
+                    final displayDate = DateFormat(
+                      'EEE, dd MMM yyyy',
+                    ).format(DateTime.parse(dateKey));
 
                     return CheckboxListTile(
                       title: Text(displayDate),
@@ -163,15 +169,17 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
               ),
               actions: [
                 TextButton(
-                    onPressed: () {
-                      setDialogState(() => _customSelectedDates.clear());
-                    },
-                    child: const Text('Clear')
+                  onPressed: () {
+                    setDialogState(() => _customSelectedDates.clear());
+                  },
+                  child: const Text('Clear'),
                 ),
                 FilledButton(
                   onPressed: () {
                     setState(() {
-                      _filterMode = _customSelectedDates.isNotEmpty ? 'Custom' : 'All';
+                      _filterMode = _customSelectedDates.isNotEmpty
+                          ? 'Custom'
+                          : 'All';
                       _applyFilters();
                     });
                     Navigator.pop(context);
@@ -191,7 +199,9 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
   void _editCount(Map<String, dynamic> count) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => CountScreen(existingCount: count)),
+      MaterialPageRoute(
+        builder: (context) => CountScreen(existingCount: count),
+      ),
     );
     _loadHistory();
   }
@@ -224,7 +234,9 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
       );
       _loadHistory();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid Date')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Invalid Date')));
     }
   }
 
@@ -236,7 +248,13 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Location History', style: TextStyle(fontSize: 16)),
-            Text(widget.locationName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal)),
+            Text(
+              widget.locationName,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.normal,
+              ),
+            ),
           ],
         ),
         bottom: PreferredSize(
@@ -252,7 +270,10 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
                     prefixIcon: const Icon(Icons.search),
                     filled: true,
                     fillColor: Colors.white,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
                     contentPadding: const EdgeInsets.symmetric(vertical: 0),
                   ),
                 ),
@@ -262,26 +283,45 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
               // --- FILTER CHIPS ---
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     FilterChip(
                       label: const Text('All Dates'),
                       selected: _filterMode == 'All',
-                      onSelected: (val) { setState(() { _filterMode = 'All'; _applyFilters(); }); },
+                      onSelected: (val) {
+                        setState(() {
+                          _filterMode = 'All';
+                          _applyFilters();
+                        });
+                      },
                     ),
                     const SizedBox(width: 8),
                     FilterChip(
                       label: const Text('Today'),
                       selected: _filterMode == 'Today',
-                      onSelected: (val) { setState(() { _filterMode = 'Today'; _applyFilters(); }); },
+                      onSelected: (val) {
+                        setState(() {
+                          _filterMode = 'Today';
+                          _applyFilters();
+                        });
+                      },
                     ),
                     const SizedBox(width: 8),
                     FilterChip(
-                      label: Text(_filterMode == 'Custom' ? '${_customSelectedDates.length} Selected' : 'Select Dates...'),
+                      label: Text(
+                        _filterMode == 'Custom'
+                            ? '${_customSelectedDates.length} Selected'
+                            : 'Select Dates...',
+                      ),
                       selected: _filterMode == 'Custom',
                       onSelected: (val) => _openDateSelector(),
-                      avatar: _filterMode == 'Custom' ? const Icon(Icons.check_circle, size: 18) : const Icon(Icons.calendar_month, size: 18),
+                      avatar: _filterMode == 'Custom'
+                          ? const Icon(Icons.check_circle, size: 18)
+                          : const Icon(Icons.calendar_month, size: 18),
                     ),
                   ],
                 ),
@@ -299,85 +339,104 @@ class _LocationHistoryScreenState extends State<LocationHistoryScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _groupedCounts.isEmpty
           ? Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.history, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text('No counts found for this filter', style: TextStyle(color: Colors.grey)),
-          ],
-        ),
-      )
-          : ListView.builder(
-        padding: const EdgeInsets.only(left: 8, right: 8, bottom: 80),
-        itemCount: _groupedCounts.keys.length,
-        itemBuilder: (context, index) {
-          final dateKey = _groupedCounts.keys.elementAt(index);
-          final items = _groupedCounts[dateKey]!;
-
-          // Date Formatting
-          String displayDate = dateKey;
-          bool isToday = false;
-          try {
-            final dt = DateTime.parse(dateKey);
-            displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
-
-            final now = DateTime.now();
-            final today = DateTime(now.year, now.month, now.day);
-            final checkDate = DateTime(dt.year, dt.month, dt.day);
-            isToday = checkDate.isAtSameMomentAs(today);
-          } catch (e) {}
-
-          final headerColor = isToday ? Colors.green.shade100 : Colors.grey.shade200;
-          final headerIcon = isToday ? Icons.today : Icons.history;
-
-          return Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            shape: RoundedRectangleBorder(
-              side: BorderSide(color: isToday ? Colors.green : Colors.transparent),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: ExpansionTile(
-              initiallyExpanded: index == 0,
-              collapsedBackgroundColor: headerColor,
-              backgroundColor: headerColor.withOpacity(0.3),
-              leading: Icon(headerIcon, color: isToday ? Colors.green[800] : Colors.blue),
-              title: Text(
-                  isToday ? 'Today ($displayDate)' : displayDate,
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: isToday ? Colors.green[900] : Colors.black87
-                  )
-              ),
-              // --- NEW: Add Button on Header ---
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline, color: Colors.blue),
-                    tooltip: 'Add to this date',
-                    onPressed: () => _addCountToDate(dateKey),
+                  const Icon(Icons.history, size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No counts found for this filter',
+                    style: TextStyle(color: Colors.grey),
                   ),
-                  const Icon(Icons.expand_more),
                 ],
               ),
-              children: items.map((item) {
-                return ListTile(
-                  title: Text(item['productName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.w500)),
-                  subtitle: Text('${item['pack_size']}'),
-                  trailing: Text(
-                    (item['pack_size'] == 'Open Bottle')
-                        ? '${item['weight']}g'
-                        : '${item['count']}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.only(left: 8, right: 8, bottom: 80),
+              itemCount: _groupedCounts.keys.length,
+              itemBuilder: (context, index) {
+                final dateKey = _groupedCounts.keys.elementAt(index);
+                final items = _groupedCounts[dateKey]!;
+
+                // Date Formatting
+                String displayDate = dateKey;
+                bool isToday = false;
+                try {
+                  final dt = DateTime.parse(dateKey);
+                  displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
+
+                  final now = DateTime.now();
+                  final today = DateTime(now.year, now.month, now.day);
+                  final checkDate = DateTime(dt.year, dt.month, dt.day);
+                  isToday = checkDate.isAtSameMomentAs(today);
+                } catch (e) {}
+
+                final headerColor = isToday
+                    ? Colors.green.shade100
+                    : Colors.grey.shade200;
+                final headerIcon = isToday ? Icons.today : Icons.history;
+
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  shape: RoundedRectangleBorder(
+                    side: BorderSide(
+                      color: isToday ? Colors.green : Colors.transparent,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  onTap: () => _editCount(item),
+                  child: ExpansionTile(
+                    initiallyExpanded: index == 0,
+                    collapsedBackgroundColor: headerColor,
+                    backgroundColor: headerColor.withOpacity(0.3),
+                    leading: Icon(
+                      headerIcon,
+                      color: isToday ? Colors.green[800] : Colors.blue,
+                    ),
+                    title: Text(
+                      isToday ? 'Today ($displayDate)' : displayDate,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isToday ? Colors.green[900] : Colors.black87,
+                      ),
+                    ),
+                    // --- NEW: Add Button on Header ---
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(
+                            Icons.add_circle_outline,
+                            color: Colors.blue,
+                          ),
+                          tooltip: 'Add to this date',
+                          onPressed: () => _addCountToDate(dateKey),
+                        ),
+                        const Icon(Icons.expand_more),
+                      ],
+                    ),
+                    children: items.map((item) {
+                      return ListTile(
+                        title: Text(
+                          item['productName'] ?? 'Unknown',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                        subtitle: Text('${item['pack_size']}'),
+                        trailing: Text(
+                          (item['pack_size'] == 'Open Bottle')
+                              ? '${item['weight']}g'
+                              : '${item['count']}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        onTap: () => _editCount(item),
+                      );
+                    }).toList(),
+                  ),
                 );
-              }).toList(),
+              },
             ),
-          );
-        },
-      ),
     );
   }
 }

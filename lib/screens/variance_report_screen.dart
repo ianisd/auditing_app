@@ -65,10 +65,14 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
     // 🔥 CHANGED: pull selectable dates from StoreSalesData (matches Google Sheet behavior)
     final salesData = await storage.getStoreSalesData();
-    final dates = salesData.map((e) {
-      final raw = e['Date']?.toString() ?? '';
-      return raw.contains('T') ? raw.split('T')[0] : raw;
-    }).where((d) => d.isNotEmpty).toSet().toList();
+    final dates = salesData
+        .map((e) {
+          final raw = e['Date']?.toString() ?? '';
+          return raw.contains('T') ? raw.split('T')[0] : raw;
+        })
+        .where((d) => d.isNotEmpty)
+        .toSet()
+        .toList();
 
     dates.sort((a, b) => b.compareTo(a));
 
@@ -102,42 +106,46 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       final results = await Future.wait([
         storage.getStockCounts(),
         storage.getPurchases(),
-        storage.getItemsIssuedMap(),  // 🔥 Use ItemsIssuedMap (virtual)
-        storage.getStockIssues(),     // 🔥 Raw stock issues data
+        storage.getItemsIssuedMap(), // 🔥 Use ItemsIssuedMap (virtual)
+        storage.getStockIssues(), // 🔥 Raw stock issues data
         storage.getStoreSalesData(),
         storage.getItemSalesMap(),
         storage.getAllInventory(),
       ]);
-      logger.info('📊 Data fetched (${results[2].length} sales records), starting isolate calculation...');
+      logger.info(
+        '📊 Data fetched (${results[2].length} sales records), starting isolate calculation...',
+      );
 
       bool timedOut = false;
 
-      final result = await compute(
-        calculateReportIsolate,
-        {
-          'stocks': results[0],
-          'purchases': results[1],
-          'itemsIssuedMap': results[2],  // 🔥 ItemsIssuedMap (mapping layer)
-          'stockIssues': results[3],     // 🔥 Raw stock issues data
-          'storeSalesData': results[4],
-          'itemSalesMap': results[5],
-          'inventory': results[6],
-          'dateFromStr': _startDate!,
-          'dateToStr': _endDate!,
-        },
-      ).timeout(
-        const Duration(seconds: 45),
-        onTimeout: () {
-          timedOut = true;
-          // 🔥 CHANGE 1: Updated error message
-          logger.error('⏱️ Report calculation timed out after 45 seconds (isolate continues running in background)');
-          return {'items': <dynamic>[], 'diagnostics': <String, dynamic>{}};
-        },
-      );
+      final result =
+          await compute(calculateReportIsolate, {
+            'stocks': results[0],
+            'purchases': results[1],
+            'itemsIssuedMap': results[2], // 🔥 ItemsIssuedMap (mapping layer)
+            'stockIssues': results[3], // 🔥 Raw stock issues data
+            'storeSalesData': results[4],
+            'itemSalesMap': results[5],
+            'inventory': results[6],
+            'dateFromStr': _startDate!,
+            'dateToStr': _endDate!,
+          }).timeout(
+            const Duration(seconds: 45),
+            onTimeout: () {
+              timedOut = true;
+              // 🔥 CHANGE 1: Updated error message
+              logger.error(
+                '⏱️ Report calculation timed out after 45 seconds (isolate continues running in background)',
+              );
+              return {'items': <dynamic>[], 'diagnostics': <String, dynamic>{}};
+            },
+          );
 
       final jsonItems = result['items'] as List<dynamic>? ?? [];
       final diagnostics = result['diagnostics'] as Map<String, dynamic>? ?? {};
-      final reportItems = jsonItems.map((json) => VarianceItem.fromJson(json)).toList();
+      final reportItems = jsonItems
+          .map((json) => VarianceItem.fromJson(json))
+          .toList();
 
       if (timedOut) {
         if (mounted) {
@@ -145,7 +153,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
           // 🔥 CHANGE 2 & 3: Updated text and color
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Calculation timed out. The report is still processing in the background. Try again in a moment.'),
+              content: Text(
+                'Calculation timed out. The report is still processing in the background. Try again in a moment.',
+              ),
               backgroundColor: Colors.orange,
               duration: Duration(seconds: 5),
             ),
@@ -154,22 +164,29 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
         return;
       }
 
-      logger.info('✅ Isolate calculation complete: ${reportItems.length} items '
-          '(${diagnostics['salesInRange'] ?? 0} sales in range, '
-          '${diagnostics['ambiguousPluCollisions'] ?? 0} PLU collisions, '
-          '${diagnostics['parsingErrors'] ?? 0} parse errors)');
+      logger.info(
+        '✅ Isolate calculation complete: ${reportItems.length} items '
+        '(${diagnostics['salesInRange'] ?? 0} sales in range, '
+        '${diagnostics['ambiguousPluCollisions'] ?? 0} PLU collisions, '
+        '${diagnostics['parsingErrors'] ?? 0} parse errors)',
+      );
 
       if (mounted) {
         setState(() {
           _fullReport = reportItems;
 
-          _availableMainCategories = reportItems.map((e) => e.mainCategory).toSet();
+          _availableMainCategories = reportItems
+              .map((e) => e.mainCategory)
+              .toSet();
 
           if (_selectedMainCategories.isEmpty) {
             _selectedMainCategories = Set.from(_availableMainCategories);
           } else {
-            _selectedMainCategories = _selectedMainCategories.intersection(_availableMainCategories);
-            if (_selectedMainCategories.isEmpty && _availableMainCategories.isNotEmpty) {
+            _selectedMainCategories = _selectedMainCategories.intersection(
+              _availableMainCategories,
+            );
+            if (_selectedMainCategories.isEmpty &&
+                _availableMainCategories.isNotEmpty) {
               _selectedMainCategories = Set.from(_availableMainCategories);
             }
           }
@@ -185,12 +202,11 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error calculating report: ${e.toString().substring(0, min(100, e.toString().length))}'),
-            duration: const Duration(seconds: 5),
-            action: SnackBarAction(
-              label: 'Retry',
-              onPressed: _runReport,
+            content: Text(
+              'Error calculating report: ${e.toString().substring(0, min(100, e.toString().length))}',
             ),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(label: 'Retry', onPressed: _runReport),
           ),
         );
       }
@@ -205,9 +221,12 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
     final filteredList = _fullReport.where((item) {
       if (!_showBalanced && item.variance.abs() <= 0.1) return false;
-      if (query.isNotEmpty && !item.productName.toLowerCase().contains(query)) return false;
+      if (query.isNotEmpty && !item.productName.toLowerCase().contains(query))
+        return false;
       if (_selectedLocations.isNotEmpty) {
-        bool hasHistoryInLoc = item.allEntries.any((e) => _selectedLocations.contains(e['location']));
+        bool hasHistoryInLoc = item.allEntries.any(
+          (e) => _selectedLocations.contains(e['location']),
+        );
         if (!hasHistoryInLoc) return false;
       }
       if (!_selectedMainCategories.contains(item.mainCategory)) return false;
@@ -221,7 +240,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
     Map<String, Map<String, List<VarianceItem>>> grouping = {};
     for (var item in filteredList) {
-      final main = item.mainCategory.isEmpty ? 'Uncategorized' : item.mainCategory;
+      final main = item.mainCategory.isEmpty
+          ? 'Uncategorized'
+          : item.mainCategory;
       final cat = item.category.isEmpty ? 'General' : item.category;
 
       if (!grouping.containsKey(main)) grouping[main] = {};
@@ -231,7 +252,7 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     }
 
     final sortedGroup = Map.fromEntries(
-        grouping.entries.toList()..sort((a, b) => a.key.compareTo(b.key))
+      grouping.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
     );
 
     for (var mainKey in sortedGroup.keys) {
@@ -287,8 +308,21 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                 ),
               ),
               actions: [
-                TextButton(onPressed: () { _selectedLocations.clear(); Navigator.pop(context); _applyLocalFilters(); }, child: const Text('Clear All')),
-                FilledButton(onPressed: () { Navigator.pop(context); _applyLocalFilters(); }, child: const Text('Apply')),
+                TextButton(
+                  onPressed: () {
+                    _selectedLocations.clear();
+                    Navigator.pop(context);
+                    _applyLocalFilters();
+                  },
+                  child: const Text('Clear All'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _applyLocalFilters();
+                  },
+                  child: const Text('Apply'),
+                ),
               ],
             );
           },
@@ -330,23 +364,27 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
               ),
               actions: [
                 TextButton(
-                    onPressed: () {
-                      setDialogState(() => _selectedMainCategories.clear());
-                    },
-                    child: const Text('None')
+                  onPressed: () {
+                    setDialogState(() => _selectedMainCategories.clear());
+                  },
+                  child: const Text('None'),
                 ),
                 TextButton(
-                    onPressed: () {
-                      setDialogState(() => _selectedMainCategories = Set.from(_availableMainCategories));
-                    },
-                    child: const Text('All')
+                  onPressed: () {
+                    setDialogState(
+                      () => _selectedMainCategories = Set.from(
+                        _availableMainCategories,
+                      ),
+                    );
+                  },
+                  child: const Text('All'),
                 ),
                 FilledButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _applyLocalFilters();
-                    },
-                    child: const Text('Apply')
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _applyLocalFilters();
+                  },
+                  child: const Text('Apply'),
                 ),
               ],
             );
@@ -357,13 +395,24 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   }
 
   void _editCount(Map<String, dynamic> count) async {
-    await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(existingCount: count)));
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (c) => CountScreen(existingCount: count)),
+    );
     _runReport();
   }
 
   void _addNewCount(VarianceItem item) async {
     if (item.inventoryItem == null) return;
-    await Navigator.push(context, MaterialPageRoute(builder: (c) => CountScreen(initialProduct: item.inventoryItem, initialDate: DateTime.parse(_endDate!))));
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (c) => CountScreen(
+          initialProduct: item.inventoryItem,
+          initialDate: DateTime.parse(_endDate!),
+        ),
+      ),
+    );
     _runReport();
   }
 
@@ -385,9 +434,37 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
               padding: const EdgeInsets.all(12.0),
               child: Row(
                 children: [
-                  Expanded(child: _buildDateDropdown('Previous', _startDate, previousDates, (val) { setState(() => _startDate = val); _runReport(); })),
-                  const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Icon(Icons.arrow_forward, color: Colors.grey)),
-                  Expanded(child: _buildDateDropdown('Current', _endDate, _availableDates, (val) { setState(() { _endDate = val; if(_startDate!=null && _startDate!.compareTo(val!)>=0) _startDate=null; }); _runReport(); })),
+                  Expanded(
+                    child: _buildDateDropdown(
+                      'Previous',
+                      _startDate,
+                      previousDates,
+                      (val) {
+                        setState(() => _startDate = val);
+                        _runReport();
+                      },
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Icon(Icons.arrow_forward, color: Colors.grey),
+                  ),
+                  Expanded(
+                    child: _buildDateDropdown(
+                      'Current',
+                      _endDate,
+                      _availableDates,
+                      (val) {
+                        setState(() {
+                          _endDate = val;
+                          if (_startDate != null &&
+                              _startDate!.compareTo(val!) >= 0)
+                            _startDate = null;
+                        });
+                        _runReport();
+                      },
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -395,7 +472,10 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
 
           // 2. SEARCH & FILTERS
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16.0,
+              vertical: 8.0,
+            ),
             color: Theme.of(context).scaffoldBackgroundColor,
             child: Column(
               children: [
@@ -406,7 +486,10 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                     prefixIcon: const Icon(Icons.search),
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
                     filled: true,
                     fillColor: Colors.white,
                   ),
@@ -416,24 +499,37 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                   children: [
                     ActionChip(
                       avatar: const Icon(Icons.place, size: 16),
-                      label: Text(_selectedLocations.isEmpty ? 'All Locs' : 'Locs (${_selectedLocations.length})'),
+                      label: Text(
+                        _selectedLocations.isEmpty
+                            ? 'All Locs'
+                            : 'Locs (${_selectedLocations.length})',
+                      ),
                       onPressed: _openLocationFilter,
                       visualDensity: VisualDensity.compact,
                     ),
                     const SizedBox(width: 8),
                     ActionChip(
                       avatar: const Icon(Icons.category, size: 16),
-                      label: Text(_selectedMainCategories.length == _availableMainCategories.length
-                          ? 'All Cats'
-                          : 'Cats (${_selectedMainCategories.length})'),
+                      label: Text(
+                        _selectedMainCategories.length ==
+                                _availableMainCategories.length
+                            ? 'All Cats'
+                            : 'Cats (${_selectedMainCategories.length})',
+                      ),
                       onPressed: _openCategoryFilter,
                       visualDensity: VisualDensity.compact,
                     ),
                     const SizedBox(width: 8),
                     IconButton.filledTonal(
                       onPressed: _toggleViewMode,
-                      icon: Icon(_areCategoriesExpanded ? Icons.unfold_less : Icons.unfold_more),
-                      tooltip: _areCategoriesExpanded ? 'Collapse All' : 'Expand All',
+                      icon: Icon(
+                        _areCategoriesExpanded
+                            ? Icons.unfold_less
+                            : Icons.unfold_more,
+                      ),
+                      tooltip: _areCategoriesExpanded
+                          ? 'Collapse All'
+                          : 'Expand All',
                       visualDensity: VisualDensity.compact,
                     ),
                     const Spacer(),
@@ -442,7 +538,10 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       scale: 0.8,
                       child: Switch(
                         value: _showBalanced,
-                        onChanged: (val) { setState(() => _showBalanced = val); _applyLocalFilters(); },
+                        onChanged: (val) {
+                          setState(() => _showBalanced = val);
+                          _applyLocalFilters();
+                        },
                       ),
                     ),
                   ],
@@ -459,9 +558,17 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _buildTotalItem('Retail Var', _totalVarianceRetail, Colors.purple),
+                _buildTotalItem(
+                  'Retail Var',
+                  _totalVarianceRetail,
+                  Colors.purple,
+                ),
                 Container(width: 1, height: 30, color: Colors.grey.shade300),
-                _buildTotalItem('Cost Var', _totalVarianceCost, Colors.blueGrey),
+                _buildTotalItem(
+                  'Cost Var',
+                  _totalVarianceCost,
+                  Colors.blueGrey,
+                ),
               ],
             ),
           ),
@@ -470,70 +577,121 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
           Expanded(
             child: _isLoading
                 ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Calculating variance report...'),
-                  Text('This may take a moment',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                ],
-              ),
-            )
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('Calculating variance report...'),
+                        Text(
+                          'This may take a moment',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  )
                 : _groupedReport.isEmpty
                 ? const Center(child: Text('No variance data found.'))
                 : ListView.builder(
-              key: _listKey,
-              padding: const EdgeInsets.only(bottom: 40),
-              itemCount: _groupedReport.keys.length,
-              itemBuilder: (context, i) {
-                final mainCat = _groupedReport.keys.elementAt(i);
-                final subCats = _groupedReport[mainCat]!;
-                double mainCatRetail = 0;
-                for(var list in subCats.values) { for(var item in list) {
-                  mainCatRetail += item.varianceRetail;
-                } }
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      color: Colors.grey[200],
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(child: Text(mainCat.toUpperCase(), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Colors.black87))),
-                          Text(NumberFormat.simpleCurrency(name: 'R').format(mainCatRetail), style: TextStyle(fontWeight: FontWeight.bold, color: mainCatRetail < 0 ? Colors.red : Colors.green[800])),
-                        ],
-                      ),
-                    ),
-                    ...subCats.entries.map((entry) {
-                      final catName = entry.key;
-                      final items = entry.value;
-                      double subRetail = 0;
-                      for(var item in items) {
-                        subRetail += item.varianceRetail;
+                    key: _listKey,
+                    padding: const EdgeInsets.only(bottom: 40),
+                    itemCount: _groupedReport.keys.length,
+                    itemBuilder: (context, i) {
+                      final mainCat = _groupedReport.keys.elementAt(i);
+                      final subCats = _groupedReport[mainCat]!;
+                      double mainCatRetail = 0;
+                      for (var list in subCats.values) {
+                        for (var item in list) {
+                          mainCatRetail += item.varianceRetail;
+                        }
                       }
 
-                      return ExpansionTile(
-                        initiallyExpanded: _areCategoriesExpanded,
-                        title: Row(
-                          children: [
-                            Expanded(child: Text(catName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blueAccent))),
-                            Text(NumberFormat.simpleCurrency(name: 'R').format(subRetail), style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: subRetail < 0 ? Colors.red : Colors.green)),
-                          ],
-                        ),
-                        subtitle: Text('${items.length} Items', style: const TextStyle(fontSize: 11)),
-                        children: items.map((item) => _buildVarianceCard(item)).toList(),
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                            color: Colors.grey[200],
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    mainCat.toUpperCase(),
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w900,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  NumberFormat.simpleCurrency(
+                                    name: 'R',
+                                  ).format(mainCatRetail),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: mainCatRetail < 0
+                                        ? Colors.red
+                                        : Colors.green[800],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          ...subCats.entries.map((entry) {
+                            final catName = entry.key;
+                            final items = entry.value;
+                            double subRetail = 0;
+                            for (var item in items) {
+                              subRetail += item.varianceRetail;
+                            }
+
+                            return ExpansionTile(
+                              initiallyExpanded: _areCategoriesExpanded,
+                              title: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      catName,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                        color: Colors.blueAccent,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    NumberFormat.simpleCurrency(
+                                      name: 'R',
+                                    ).format(subRetail),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: subRetail < 0
+                                          ? Colors.red
+                                          : Colors.green,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              subtitle: Text(
+                                '${items.length} Items',
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              children: items
+                                  .map((item) => _buildVarianceCard(item))
+                                  .toList(),
+                            );
+                          }),
+                        ],
                       );
-                    }),
-                  ],
-                );
-              },
-            ),
+                    },
+                  ),
           ),
         ],
       ),
@@ -543,10 +701,21 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
   Widget _buildTotalItem(String label, double value, Color color) {
     return Column(
       children: [
-        Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500)),
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
         Text(
           NumberFormat.simpleCurrency(name: 'R').format(value),
-          style: TextStyle(color: value < 0 ? Colors.red : Colors.green[800], fontSize: 16, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: value < 0 ? Colors.red : Colors.green[800],
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ],
     );
@@ -556,7 +725,9 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     final isLoss = item.variance < -0.1;
     final isGain = item.variance > 0.1;
     final color = isLoss ? Colors.red : (isGain ? Colors.green : Colors.grey);
-    final productName = item.productName.isEmpty ? 'Unknown Product' : item.productName.toUpperCase();
+    final productName = item.productName.isEmpty
+        ? 'Unknown Product'
+        : item.productName.toUpperCase();
 
     final visibleEntries = item.allEntries.where((e) {
       if (_selectedLocations.isEmpty) return true;
@@ -570,7 +741,8 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
       if (!groupedCounts.containsKey(d)) groupedCounts[d] = [];
       groupedCounts[d]!.add(entry);
     }
-    final sortedDates = groupedCounts.keys.toList()..sort((a, b) => b.compareTo(a));
+    final sortedDates = groupedCounts.keys.toList()
+      ..sort((a, b) => b.compareTo(a));
 
     bool hasCountToday = visibleEntries.any((e) {
       final d = e['date'].toString().split('T')[0];
@@ -580,26 +752,46 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       elevation: 0.5,
-      shape: RoundedRectangleBorder(side: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: ExpansionTile(
         leading: CircleAvatar(
           backgroundColor: color.withOpacity(0.1),
           child: Text(
-              item.variance.abs().toStringAsFixed(1),
-              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 11)
+            item.variance.abs().toStringAsFixed(1),
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.bold,
+              fontSize: 11,
+            ),
           ),
         ),
-        title: Text(productName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        title: Text(
+          productName,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+        ),
         subtitle: Row(
           children: [
-            Text('Act: ${item.currentCount.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            Text(
+              'Act: ${item.currentCount.toStringAsFixed(2)}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(width: 8),
-            Text('Theo: ${item.theoreticalStock.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11)),
+            Text(
+              'Theo: ${item.theoreticalStock.toStringAsFixed(2)}',
+              style: const TextStyle(fontSize: 11),
+            ),
           ],
         ),
         trailing: Text(
           NumberFormat.simpleCurrency(name: 'R').format(item.varianceRetail),
-          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
         ),
         children: [
           Padding(
@@ -608,58 +800,137 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
               children: [
                 _buildDetailRow('Previous Count', item.previousCount),
                 _buildDetailRow('Purchases (+)', item.purchases),
-                _buildDetailRow('Issues (+)', item.issues),  // 🔥 NEW
+                _buildDetailRow('Issues (+)', item.issues), // 🔥 NEW
                 _buildDetailRow('Sales (-)', item.sales),
                 const Divider(),
-                _buildDetailRow('Theoretical', item.theoreticalStock, isBold: true),
-                _buildDetailRow('Actual (Total)', item.currentCount, isBold: true),
+                _buildDetailRow(
+                  'Theoretical',
+                  item.theoreticalStock,
+                  isBold: true,
+                ),
+                _buildDetailRow(
+                  'Actual (Total)',
+                  item.currentCount,
+                  isBold: true,
+                ),
                 const Divider(),
-                _buildDetailRow('Variance Qty', item.variance, color: color, isBold: true),
-                _buildDetailRow('Variance Cost', item.varianceCost, color: color),
-                _buildDetailRow('Variance Retail', item.varianceRetail, color: color, isBold: true),
+                _buildDetailRow(
+                  'Variance Qty',
+                  item.variance,
+                  color: color,
+                  isBold: true,
+                ),
+                _buildDetailRow(
+                  'Variance Cost',
+                  item.varianceCost,
+                  color: color,
+                ),
+                _buildDetailRow(
+                  'Variance Retail',
+                  item.varianceRetail,
+                  color: color,
+                  isBold: true,
+                ),
 
                 const SizedBox(height: 12),
-                const Align(alignment: Alignment.centerLeft, child: Text('History:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey))),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'History:',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ),
 
                 if (sortedDates.isEmpty)
                   const Padding(
                     padding: EdgeInsets.only(top: 4),
-                    child: Text('No counts found in filter.', style: TextStyle(fontStyle: FontStyle.italic, fontSize: 12, color: Colors.grey)),
+                    child: Text(
+                      'No counts found in filter.',
+                      style: TextStyle(
+                        fontStyle: FontStyle.italic,
+                        fontSize: 12,
+                        color: Colors.grey,
+                      ),
+                    ),
                   ),
 
                 ...sortedDates.map((dateKey) {
                   final entries = groupedCounts[dateKey]!;
                   String prettyDate = dateKey;
-                  try { prettyDate = DateFormat('EEE, dd MMM').format(DateTime.parse(dateKey)); } catch(e){}
+                  try {
+                    prettyDate = DateFormat(
+                      'EEE, dd MMM',
+                    ).format(DateTime.parse(dateKey));
+                  } catch (e) {}
 
                   final isCurrent = dateKey == _endDate;
                   final isStart = dateKey == _startDate;
-                  final headerColor = isCurrent ? Colors.green : (isStart ? Colors.blue : Colors.grey);
+                  final headerColor = isCurrent
+                      ? Colors.green
+                      : (isStart ? Colors.blue : Colors.grey);
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const SizedBox(height: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 6),
-                        decoration: BoxDecoration(color: headerColor.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 2,
+                          horizontal: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: headerColor.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
                         child: Text(
-                          isCurrent ? '$prettyDate (Current)' : (isStart ? '$prettyDate (Start)' : prettyDate),
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: headerColor),
+                          isCurrent
+                              ? '$prettyDate (Current)'
+                              : (isStart ? '$prettyDate (Start)' : prettyDate),
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: headerColor,
+                          ),
                         ),
                       ),
                       ...entries.map((entry) {
-                        final qty = double.tryParse(entry['total_bottles']?.toString() ?? '0') ?? 0;
+                        final qty =
+                            double.tryParse(
+                              entry['total_bottles']?.toString() ?? '0',
+                            ) ??
+                            0;
                         return InkWell(
                           onTap: () => _editCount(entry),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 4,
+                              horizontal: 4,
+                            ),
                             child: Row(
                               children: [
-                                Expanded(child: Text(entry['location'] ?? 'Unknown', style: const TextStyle(fontSize: 12))),
-                                Text(qty.toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                Expanded(
+                                  child: Text(
+                                    entry['location'] ?? 'Unknown',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                Text(
+                                  qty.toStringAsFixed(2),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
                                 const SizedBox(width: 8),
-                                const Icon(Icons.edit, size: 14, color: Colors.blueGrey),
+                                const Icon(
+                                  Icons.edit,
+                                  size: 14,
+                                  color: Colors.blueGrey,
+                                ),
                               ],
                             ),
                           ),
@@ -677,10 +948,12 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
                       onPressed: () => _addNewCount(item),
                       icon: const Icon(Icons.add, size: 16),
                       label: const Text('Add Missing Count'),
-                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
                     ),
                   ),
-                ]
+                ],
               ],
             ),
           ),
@@ -689,25 +962,56 @@ class _VarianceReportScreenState extends State<VarianceReportScreen> {
     );
   }
 
-  Widget _buildDetailRow(String label, double value, {bool isBold = false, Color? color}) {
+  Widget _buildDetailRow(
+    String label,
+    double value, {
+    bool isBold = false,
+    Color? color,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
-          Text(value.toStringAsFixed(2), style: TextStyle(fontSize: 12, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: color)),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+              color: color,
+            ),
+          ),
+          Text(
+            value.toStringAsFixed(2),
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+              color: color,
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-Widget _buildDateDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
+Widget _buildDateDropdown(
+  String label,
+  String? value,
+  List<String> items,
+  Function(String?) onChanged,
+) {
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          color: Colors.grey,
+        ),
+      ),
       DropdownButton<String>(
         isExpanded: true,
         isDense: true,
@@ -715,8 +1019,17 @@ Widget _buildDateDropdown(String label, String? value, List<String> items, Funct
         hint: const Text('Select'),
         items: items.map((d) {
           String display = d;
-          try { display = DateFormat('dd MMM yy').format(DateTime.parse(d)); } catch(e){}
-          return DropdownMenuItem(value: d, child: Text(display, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)));
+          try {
+            display = DateFormat('dd MMM yy').format(DateTime.parse(d));
+          } catch (e) {}
+          return DropdownMenuItem(
+            value: d,
+            child: Text(
+              display,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          );
         }).toList(),
         onChanged: onChanged,
       ),

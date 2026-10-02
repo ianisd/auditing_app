@@ -12,14 +12,14 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart'; 
+import 'firebase_options.dart';
 
 import 'services/offline_storage.dart';
 import 'services/store_manager.dart';
 import 'services/logger_service.dart';
 import 'services/network_ping_service.dart';
 import 'services/firestore_service.dart';
-import 'models/sync_model.dart';  // 🔥 ADD THIS
+import 'models/sync_model.dart'; // 🔥 ADD THIS
 import 'screens/home_screen.dart';
 import 'screens/setup_store_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -37,7 +37,9 @@ void main() async {
   }
 
   // 1. Device Orientation
-  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android)) {
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   }
 
@@ -91,7 +93,9 @@ void main() async {
 
   // 7. Initialize Network Ping Service & Attach Lifecycle Observer
   final networkPingService = NetworkPingService();
-  WidgetsBinding.instance.addObserver(AppLifecycleObserver(pingService: networkPingService));
+  WidgetsBinding.instance.addObserver(
+    AppLifecycleObserver(pingService: networkPingService),
+  );
 
   // ✅ CRITICAL: Check connectivity before initialization
   final hasInternet = await _checkConnectivity();
@@ -118,7 +122,7 @@ void main() async {
         ChangeNotifierProvider.value(value: offlineStorage),
         ChangeNotifierProvider.value(value: storeManager),
         ChangeNotifierProvider.value(value: networkPingService),
-        ChangeNotifierProvider.value(value: syncStatus),  // 🔥 ADDED
+        ChangeNotifierProvider.value(value: syncStatus), // 🔥 ADDED
         Provider<FirestoreService>.value(value: firestoreService),
         Provider<Connectivity>.value(value: Connectivity()),
         StreamProvider<List<ConnectivityResult>>(
@@ -182,7 +186,9 @@ class MyApp extends StatelessWidget {
         stream: context.read<FirestoreService>().authStateChanges,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
           }
           if (snapshot.data == null) {
             return const LoginScreen();
@@ -209,9 +215,13 @@ class _RootSwitcherState extends State<RootSwitcher> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _handleInitialStoreSetup());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _handleInitialStoreSetup(),
+    );
 
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(_handleConnectivityChange);
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      _handleConnectivityChange,
+    );
   }
 
   @override
@@ -229,15 +239,19 @@ class _RootSwitcherState extends State<RootSwitcher> {
     if (storeManager.activeStore != null) {
       final activeId = storeManager.activeStore!['id'];
 
-      if (!offlineStorage.isReady || offlineStorage.currentStoreId != activeId) {
-        debugPrint('DEBUG: Initial store setup - calling offlineStorage.switchStore($activeId)');
+      if (!offlineStorage.isReady ||
+          offlineStorage.currentStoreId != activeId) {
+        debugPrint(
+          'DEBUG: Initial store setup - calling offlineStorage.switchStore($activeId)',
+        );
         offlineStorage.switchStore(activeId);
       }
     }
   }
 
   void _handleConnectivityChange(List<ConnectivityResult> results) {
-    final hasInternet = results.isNotEmpty && results.any((r) => r != ConnectivityResult.none);
+    final hasInternet =
+        results.isNotEmpty && results.any((r) => r != ConnectivityResult.none);
 
     if (hasInternet && _isOfflineBannerShowing) {
       _refreshData();
@@ -283,7 +297,8 @@ class _RootSwitcherState extends State<RootSwitcher> {
     final storeManager = context.watch<StoreManager>();
     final offlineStorage = context.watch<OfflineStorage>();
     final connectivityResults = context.watch<List<ConnectivityResult>>();
-    final hasInternet = connectivityResults.isNotEmpty &&
+    final hasInternet =
+        connectivityResults.isNotEmpty &&
         connectivityResults.any((r) => r != ConnectivityResult.none);
 
     if (storeManager.activeStore == null) {

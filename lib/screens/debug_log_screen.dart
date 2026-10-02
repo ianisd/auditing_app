@@ -25,7 +25,9 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
             tooltip: 'Copy to Clipboard',
             onPressed: () {
               Clipboard.setData(ClipboardData(text: logs.join('\n')));
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logs copied')));
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Logs copied')));
             },
           ),
           IconButton(

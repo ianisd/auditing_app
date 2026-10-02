@@ -25,7 +25,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   final FocusNode _searchFocusNode = FocusNode();
 
   String _statusFilter = 'All'; // 'All', 'Pending', 'Synced'
-  String _dateFilter = 'All';   // 'All', 'Today', 'This Week', 'This Month', 'Custom'
+  String _dateFilter =
+      'All'; // 'All', 'Today', 'This Week', 'This Month', 'Custom'
   DateTimeRange? _customDateRange;
 
   String _sortBy = 'deliveryDate'; // 'deliveryDate', 'supplier', 'total'
@@ -130,7 +131,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
       final today = DateTime(now.year, now.month, now.day);
 
       filtered = filtered.where((invoice) {
-        final dateStr = invoice['Delivery Date']?.toString() ?? invoice['Date of Purchase']?.toString() ?? '';
+        final dateStr =
+            invoice['Delivery Date']?.toString() ??
+            invoice['Date of Purchase']?.toString() ??
+            '';
         final date = DateTime.tryParse(dateStr) ?? DateTime.now();
         final invoiceDate = DateTime(date.year, date.month, date.day);
 
@@ -140,14 +144,32 @@ class _GrvListScreenState extends State<GrvListScreen> {
           case 'This Week':
             final weekStart = today.subtract(Duration(days: today.weekday - 1));
             final weekEnd = weekStart.add(const Duration(days: 7));
-            return invoiceDate.isAfter(weekStart.subtract(const Duration(days: 1))) && invoiceDate.isBefore(weekEnd);
+            return invoiceDate.isAfter(
+                  weekStart.subtract(const Duration(days: 1)),
+                ) &&
+                invoiceDate.isBefore(weekEnd);
           case 'This Month':
-            return invoiceDate.year == now.year && invoiceDate.month == now.month;
+            return invoiceDate.year == now.year &&
+                invoiceDate.month == now.month;
           case 'Custom':
             if (_customDateRange == null) return true;
-            final start = DateTime(_customDateRange!.start.year, _customDateRange!.start.month, _customDateRange!.start.day);
-            final end = DateTime(_customDateRange!.end.year, _customDateRange!.end.month, _customDateRange!.end.day, 23, 59, 59);
-            return invoiceDate.isAfter(start.subtract(const Duration(seconds: 1))) && invoiceDate.isBefore(end.add(const Duration(seconds: 1)));
+            final start = DateTime(
+              _customDateRange!.start.year,
+              _customDateRange!.start.month,
+              _customDateRange!.start.day,
+            );
+            final end = DateTime(
+              _customDateRange!.end.year,
+              _customDateRange!.end.month,
+              _customDateRange!.end.day,
+              23,
+              59,
+              59,
+            );
+            return invoiceDate.isAfter(
+                  start.subtract(const Duration(seconds: 1)),
+                ) &&
+                invoiceDate.isBefore(end.add(const Duration(seconds: 1)));
           default:
             return true;
         }
@@ -157,10 +179,18 @@ class _GrvListScreenState extends State<GrvListScreen> {
     // Search Query
     if (_searchQuery.isNotEmpty) {
       filtered = filtered.where((invoice) {
-        final number = invoice['Invoice Number']?.toString().toLowerCase() ?? '';
-        final supplier = (invoice['Supplier Name'] ?? invoice['Supplier'])?.toString().toLowerCase() ?? '';
-        final deliveryDate = invoice['Delivery Date']?.toString().toLowerCase() ?? '';
-        return number.contains(_searchQuery) || supplier.contains(_searchQuery) || deliveryDate.contains(_searchQuery);
+        final number =
+            invoice['Invoice Number']?.toString().toLowerCase() ?? '';
+        final supplier =
+            (invoice['Supplier Name'] ?? invoice['Supplier'])
+                ?.toString()
+                .toLowerCase() ??
+            '';
+        final deliveryDate =
+            invoice['Delivery Date']?.toString().toLowerCase() ?? '';
+        return number.contains(_searchQuery) ||
+            supplier.contains(_searchQuery) ||
+            deliveryDate.contains(_searchQuery);
       }).toList();
     }
 
@@ -172,7 +202,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
           comp = _getInvoiceDate(a).compareTo(_getInvoiceDate(b));
           break;
         case 'supplier':
-          comp = _getSupplierName(a).toLowerCase().compareTo(_getSupplierName(b).toLowerCase());
+          comp = _getSupplierName(
+            a,
+          ).toLowerCase().compareTo(_getSupplierName(b).toLowerCase());
           break;
         case 'total':
           comp = _getInvoiceTotal(a).compareTo(_getInvoiceTotal(b));
@@ -185,12 +217,17 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   DateTime _getInvoiceDate(Map<String, dynamic> invoice) {
-    final str = invoice['Delivery Date']?.toString() ?? invoice['Date of Purchase']?.toString() ?? '';
+    final str =
+        invoice['Delivery Date']?.toString() ??
+        invoice['Date of Purchase']?.toString() ??
+        '';
     return DateTime.tryParse(str) ?? DateTime.now();
   }
 
   String _getSupplierName(Map<String, dynamic> invoice) {
-    return invoice['Supplier Name']?.toString() ?? invoice['Supplier']?.toString() ?? 'Unknown Supplier';
+    return invoice['Supplier Name']?.toString() ??
+        invoice['Supplier']?.toString() ??
+        'Unknown Supplier';
   }
 
   double _getInvoiceTotal(Map<String, dynamic> invoice) {
@@ -206,7 +243,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
     }
 
     // Auto-detect Credit Note: Force total to be negative if any purchase line item is negative
-    final hasNegativePurchases = purchases.any((p) => _parseDouble(p['Qty Purchased']) < 0);
+    final hasNegativePurchases = purchases.any(
+      (p) => _parseDouble(p['Qty Purchased']) < 0,
+    );
     if (hasNegativePurchases && val > 0) {
       val = -val;
     }
@@ -223,7 +262,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
     }
 
     final isNegative = numVal < 0;
-    final formatted = NumberFormat.currency(symbol: 'R', decimalDigits: 2).format(numVal.abs());
+    final formatted = NumberFormat.currency(
+      symbol: 'R',
+      decimalDigits: 2,
+    ).format(numVal.abs());
     return isNegative ? '-$formatted' : formatted;
   }
 
@@ -261,7 +303,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   Future<void> _syncInvoices() async {
-    final pendingCount = _invoices.where((i) => i['syncStatus'] == 'pending').length;
+    final pendingCount = _invoices
+        .where((i) => i['syncStatus'] == 'pending')
+        .length;
 
     if (pendingCount == 0) {
       _showSnackBar('All invoices are up to date!', isError: false);
@@ -272,9 +316,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Sync Pending Invoices'),
-        content: Text('Upload $pendingCount pending invoice(s) to Google Sheets?'),
+        content: Text(
+          'Upload $pendingCount pending invoice(s) to Google Sheets?',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
@@ -308,9 +357,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Download Server Invoices'),
-        content: const Text('This will fetch all invoices from Google Sheets and refresh your local cache.'),
+        content: const Text(
+          'This will fetch all invoices from Google Sheets and refresh your local cache.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Download'),
@@ -358,15 +412,20 @@ class _GrvListScreenState extends State<GrvListScreen> {
     if (result == true) _loadInvoices();
   }
 
-  Future<void> _pickCustomDateRange(BuildContext context, StateSetter setSheetState) async {
+  Future<void> _pickCustomDateRange(
+    BuildContext context,
+    StateSetter setSheetState,
+  ) async {
     final picked = await showDateRangePicker(
       context: context,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
-      initialDateRange: _customDateRange ?? DateTimeRange(
-        start: DateTime.now().subtract(const Duration(days: 7)),
-        end: DateTime.now(),
-      ),
+      initialDateRange:
+          _customDateRange ??
+          DateTimeRange(
+            start: DateTime.now().subtract(const Duration(days: 7)),
+            end: DateTime.now(),
+          ),
       builder: (context, child) {
         return Theme(
           data: ThemeData.light().copyWith(
@@ -412,7 +471,13 @@ class _GrvListScreenState extends State<GrvListScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Filter & Sort GRVs', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Text(
+                        'Filter & Sort GRVs',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                       IconButton(
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.pop(context),
@@ -421,7 +486,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
                   ),
                   const Divider(),
                   const SizedBox(height: 8),
-                  const Text('Date Range', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text(
+                    'Date Range',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -454,7 +522,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  const Text('Sort By', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text(
+                    'Sort By',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -464,7 +535,12 @@ class _GrvListScreenState extends State<GrvListScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text('Delivery Date '),
-                            Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward, size: 14),
+                            Icon(
+                              _sortAscending
+                                  ? Icons.arrow_upward
+                                  : Icons.arrow_downward,
+                              size: 14,
+                            ),
                           ],
                         ),
                         selected: _sortBy == 'deliveryDate',
@@ -503,8 +579,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
                     width: double.infinity,
                     child: ElevatedButton(
                       onPressed: () => Navigator.pop(context),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(vertical: 14)),
-                      child: const Text('Apply Filters', style: TextStyle(color: Colors.white, fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text(
+                        'Apply Filters',
+                        style: TextStyle(color: Colors.white, fontSize: 16),
+                      ),
                     ),
                   ),
                 ],
@@ -519,13 +601,21 @@ class _GrvListScreenState extends State<GrvListScreen> {
   @override
   Widget build(BuildContext context) {
     final filteredInvoices = _getFilteredAndSortedInvoices();
-    final pendingCount = _invoices.where((i) => i['syncStatus'] == 'pending').length;
-    final totalValueSum = filteredInvoices.fold(0.0, (sum, inv) => sum + _getInvoiceTotal(inv));
+    final pendingCount = _invoices
+        .where((i) => i['syncStatus'] == 'pending')
+        .length;
+    final totalValueSum = filteredInvoices.fold(
+      0.0,
+      (sum, inv) => sum + _getInvoiceTotal(inv),
+    );
 
     return Scaffold(
       backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
-        title: const Text('GRV Invoices', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'GRV Invoices',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         centerTitle: false,
         actions: [
           IconButton(
@@ -548,8 +638,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
                     top: 0,
                     child: Container(
                       padding: const EdgeInsets.all(2),
-                      decoration: const BoxDecoration(color: Colors.orange, shape: BoxShape.circle),
-                      constraints: const BoxConstraints(minWidth: 12, minHeight: 12),
+                      decoration: const BoxDecoration(
+                        color: Colors.orange,
+                        shape: BoxShape.circle,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 12,
+                        minHeight: 12,
+                      ),
                     ),
                   ),
               ],
@@ -622,7 +718,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
                           focusNode: _searchFocusNode,
                           decoration: InputDecoration(
                             hintText: 'Search invoice #, supplier, or date...',
-                            hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                            hintStyle: TextStyle(
+                              color: Colors.grey.shade500,
+                              fontSize: 13,
+                            ),
                             border: InputBorder.none,
                             isDense: true,
                           ),
@@ -651,7 +750,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
                       label: Text('Pending ($pendingCount)'),
                       selected: _statusFilter == 'Pending',
                       selectedColor: Colors.orange.shade100,
-                      onSelected: (_) => setState(() => _statusFilter = 'Pending'),
+                      onSelected: (_) =>
+                          setState(() => _statusFilter = 'Pending'),
                       visualDensity: VisualDensity.compact,
                     ),
                     const SizedBox(width: 6),
@@ -659,7 +759,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
                       label: const Text('Synced'),
                       selected: _statusFilter == 'Synced',
                       selectedColor: Colors.green.shade100,
-                      onSelected: (_) => setState(() => _statusFilter = 'Synced'),
+                      onSelected: (_) =>
+                          setState(() => _statusFilter = 'Synced'),
                       visualDensity: VisualDensity.compact,
                     ),
                     const Spacer(),
@@ -683,20 +784,26 @@ class _GrvListScreenState extends State<GrvListScreen> {
                 : filteredInvoices.isEmpty
                 ? _buildEmptyState()
                 : ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              itemCount: filteredInvoices.length,
-              itemBuilder: (context, index) {
-                final invoice = filteredInvoices[index];
-                return _buildInvoiceCard(invoice);
-              },
-            ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    itemCount: filteredInvoices.length,
+                    itemBuilder: (context, index) {
+                      final invoice = filteredInvoices[index];
+                      return _buildInvoiceCard(invoice);
+                    },
+                  ),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _navigateToNewGrv,
         icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('New GRV', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        label: const Text(
+          'New GRV',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.blue.shade700,
       ),
     );
@@ -725,7 +832,11 @@ class _GrvListScreenState extends State<GrvListScreen> {
               Expanded(
                 child: Text(
                   title,
-                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: color),
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -734,7 +845,11 @@ class _GrvListScreenState extends State<GrvListScreen> {
           const SizedBox(height: 4),
           Text(
             value,
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey.shade900),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey.shade900,
+            ),
             overflow: TextOverflow.ellipsis,
           ),
         ],
@@ -749,7 +864,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
     final isLoadingItems = _loadingInvoiceIds.contains(invoiceId);
     final purchases = _expandedPurchasesCache[invoiceId] ?? [];
     final supplierName = _getSupplierName(invoice);
-    final supplierInitial = supplierName.isNotEmpty ? supplierName[0].toUpperCase() : '?';
+    final supplierInitial = supplierName.isNotEmpty
+        ? supplierName[0].toUpperCase()
+        : '?';
     final totalAmount = _getInvoiceTotal(invoice);
     final isCreditNote = totalAmount < 0;
 
@@ -774,7 +891,13 @@ class _GrvListScreenState extends State<GrvListScreen> {
                   CircleAvatar(
                     radius: 18,
                     backgroundColor: Colors.blue.shade100,
-                    child: Text(supplierInitial, style: TextStyle(color: Colors.blue.shade900, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      supplierInitial,
+                      style: TextStyle(
+                        color: Colors.blue.shade900,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -783,30 +906,49 @@ class _GrvListScreenState extends State<GrvListScreen> {
                       children: [
                         Text(
                           supplierName,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
                           'Inv #: ${invoice['Invoice Number'] ?? 'N/A'}',
-                          style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
-                      color: isSynced ? Colors.green.shade50 : Colors.orange.shade50,
+                      color: isSynced
+                          ? Colors.green.shade50
+                          : Colors.orange.shade50,
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: isSynced ? Colors.green.shade300 : Colors.orange.shade300),
+                      border: Border.all(
+                        color: isSynced
+                            ? Colors.green.shade300
+                            : Colors.orange.shade300,
+                      ),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          isSynced ? Icons.check_circle : Icons.cloud_upload_outlined,
+                          isSynced
+                              ? Icons.check_circle
+                              : Icons.cloud_upload_outlined,
                           size: 12,
-                          color: isSynced ? Colors.green.shade800 : Colors.orange.shade800,
+                          color: isSynced
+                              ? Colors.green.shade800
+                              : Colors.orange.shade800,
                         ),
                         const SizedBox(width: 4),
                         Text(
@@ -814,7 +956,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.bold,
-                            color: isSynced ? Colors.green.shade800 : Colors.orange.shade800,
+                            color: isSynced
+                                ? Colors.green.shade800
+                                : Colors.orange.shade800,
                           ),
                         ),
                       ],
@@ -832,11 +976,20 @@ class _GrvListScreenState extends State<GrvListScreen> {
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.calendar_today_outlined, size: 14, color: Colors.grey.shade600),
+                      Icon(
+                        Icons.calendar_today_outlined,
+                        size: 14,
+                        color: Colors.grey.shade600,
+                      ),
                       const SizedBox(width: 4),
                       Text(
-                        DateFormat('dd MMM yyyy').format(_getInvoiceDate(invoice)),
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                        DateFormat(
+                          'dd MMM yyyy',
+                        ).format(_getInvoiceDate(invoice)),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
                       ),
                     ],
                   ),
@@ -872,12 +1025,25 @@ class _GrvListScreenState extends State<GrvListScreen> {
                 if (isLoadingItems)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+                    child: Center(
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
                   )
                 else if (purchases.isEmpty)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text('No line items recorded', style: TextStyle(fontSize: 12, color: Colors.grey.shade500, fontStyle: FontStyle.italic)),
+                    child: Text(
+                      'No line items recorded',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade500,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
                   )
                 else
                   Container(
@@ -890,10 +1056,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
                       children: purchases.map((item) {
                         final qty = _parseDouble(item['Qty Purchased']);
                         final price = _parseDouble(item['Cost Per Bottle']);
-                        final packSize = _extractPackSize(item['Case/Pack Size']);
+                        final packSize = _extractPackSize(
+                          item['Case/Pack Size'],
+                        );
 
                         final rawLineTotal = item['Cost of Purchases'];
-                        double lineTotal = (rawLineTotal != null && _parseDouble(rawCostToNum(rawLineTotal)) != 0.0)
+                        double lineTotal =
+                            (rawLineTotal != null &&
+                                _parseDouble(rawCostToNum(rawLineTotal)) != 0.0)
                             ? _parseDouble(rawCostToNum(rawLineTotal)).abs()
                             : (qty.abs() * packSize * price);
 
@@ -910,8 +1080,12 @@ class _GrvListScreenState extends State<GrvListScreen> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  item['Purchased Product Name']?.toString() ?? 'Item',
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                                  item['Purchased Product Name']?.toString() ??
+                                      'Item',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -920,8 +1094,12 @@ class _GrvListScreenState extends State<GrvListScreen> {
                                 style: TextStyle(
                                   fontSize: 11,
                                   // 🔥 ACCOUNTING CONVENTION: Green for Credit Lines (-), Red for Purchase Lines (+)
-                                  color: isLineCredit ? Colors.green : Colors.red,
-                                  fontWeight: isLineCredit ? FontWeight.bold : FontWeight.normal,
+                                  color: isLineCredit
+                                      ? Colors.green
+                                      : Colors.red,
+                                  fontWeight: isLineCredit
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
                                 ),
                               ),
                             ],
@@ -941,7 +1119,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   dynamic rawCostToNum(dynamic val) {
     if (val == null) return 0.0;
     if (val is num) return val;
-    return double.tryParse(val.toString().replaceAll(RegExp(r'[^\d.-]'), '')) ?? 0.0;
+    return double.tryParse(val.toString().replaceAll(RegExp(r'[^\d.-]'), '')) ??
+        0.0;
   }
 
   Widget _buildEmptyState() {
@@ -950,18 +1129,28 @@ class _GrvListScreenState extends State<GrvListScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            _searchQuery.isNotEmpty ? Icons.search_off : Icons.receipt_long_outlined,
+            _searchQuery.isNotEmpty
+                ? Icons.search_off
+                : Icons.receipt_long_outlined,
             size: 56,
             color: Colors.grey.shade400,
           ),
           const SizedBox(height: 12),
           Text(
-            _searchQuery.isNotEmpty ? 'No matching invoices found' : 'No GRV Invoices Yet',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey),
+            _searchQuery.isNotEmpty
+                ? 'No matching invoices found'
+                : 'No GRV Invoices Yet',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey,
+            ),
           ),
           const SizedBox(height: 4),
           Text(
-            _searchQuery.isNotEmpty ? 'Try adjusting your search query or filters' : 'Tap "+ New GRV" below to record your first invoice',
+            _searchQuery.isNotEmpty
+                ? 'Try adjusting your search query or filters'
+                : 'Tap "+ New GRV" below to record your first invoice',
             style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
           ),
         ],

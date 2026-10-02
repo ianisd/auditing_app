@@ -24,6 +24,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
     return 'sales_${now}_${sourceRowNumber.toString().padLeft(4, '0')}';
   }
+
   DateTime? _auditDate;
   ParsedGaapSalesFile? _parsed;
   String? _fileName;
@@ -37,9 +38,9 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
   bool get _isDesktop =>
       !kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.windows ||
-              defaultTargetPlatform == TargetPlatform.macOS ||
-              defaultTargetPlatform == TargetPlatform.linux);
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
 
   // ===========================================================================
   // AUDIT DATE
@@ -58,11 +59,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
     if (selected != null && mounted) {
       setState(() {
-        _auditDate = DateTime(
-          selected.year,
-          selected.month,
-          selected.day,
-        );
+        _auditDate = DateTime(selected.year, selected.month, selected.day);
 
         _error = null;
       });
@@ -92,9 +89,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     if (reportTo == null) return generated;
     if (generated == null) return reportTo;
 
-    return generated.isAfter(reportTo)
-        ? generated
-        : reportTo;
+    return generated.isAfter(reportTo) ? generated : reportTo;
   }
 
   /// Difference in calendar days between the selected audit date
@@ -112,11 +107,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
       _auditDate!.day,
     );
 
-    final ref = DateTime(
-      reference.year,
-      reference.month,
-      reference.day,
-    );
+    final ref = DateTime(reference.year, reference.month, reference.day);
 
     return audit.difference(ref).inDays;
   }
@@ -157,10 +148,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
         return;
       }
 
-      await _processBytes(
-        bytes,
-        selected.name,
-      );
+      await _processBytes(bytes, selected.name);
 
       return;
     }
@@ -184,24 +172,16 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     final file = File(path);
     final bytes = await file.readAsBytes();
 
-    await _processBytes(
-      bytes,
-      path.split(Platform.pathSeparator).last,
-    );
+    await _processBytes(bytes, path.split(Platform.pathSeparator).last);
   }
 
   // ===========================================================================
   // PARSING
   // ===========================================================================
 
-  Future<void> _processBytes(
-      List<int> bytes,
-      String fileName,
-      ) async {
+  Future<void> _processBytes(List<int> bytes, String fileName) async {
     if (_auditDate == null) {
-      _showError(
-        'Select the audit date before uploading the sales file.',
-      );
+      _showError('Select the audit date before uploading the sales file.');
       return;
     }
 
@@ -235,9 +215,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     } on FormatException catch (e) {
       _showError(e.message);
     } catch (e) {
-      _showError(
-        'Could not parse sales file: $e',
-      );
+      _showError('Could not parse sales file: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -253,9 +231,9 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
   // ===========================================================================
 
   List<Map<String, dynamic>> _buildSalesPayload(
-      ParsedGaapSalesFile parsed,
-      DateTime auditDate,
-      ) {
+    ParsedGaapSalesFile parsed,
+    DateTime auditDate,
+  ) {
     // One batch stamp is shared by every row from this upload.
     // Each row still receives its own permanent salesID.
     final batchStamp = DateTime.now().microsecondsSinceEpoch;
@@ -279,9 +257,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     final auditDate = _auditDate;
 
     if (parsed == null || auditDate == null) {
-      _showError(
-        'Select an audit date and GAAP sales file first.',
-      );
+      _showError('Select an audit date and GAAP sales file first.');
       return;
     }
 
@@ -302,11 +278,11 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
             title: const Text('Confirm audit date'),
             content: Text(
               'The selected audit date is ${_date(auditDate)}.\n\n'
-                  'The latest date detected in the GAAP document is '
-                  '${_date(reference)}'
-                  '${gap == null ? '' : ' (${gap.abs()} day(s) apart)'}.\n\n'
-                  'Do you want to upload these sales to the '
-                  '${_date(auditDate)} audit?',
+              'The latest date detected in the GAAP document is '
+              '${_date(reference)}'
+              '${gap == null ? '' : ' (${gap.abs()} day(s) apart)'}.\n\n'
+              'Do you want to upload these sales to the '
+              '${_date(auditDate)} audit?',
             ),
             actions: [
               TextButton(
@@ -342,9 +318,9 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
           title: const Text('Upload sales?'),
           content: Text(
             'File: ${_fileName ?? 'GAAP Sales CSV'}\n'
-                'Audit date: ${_date(auditDate)}\n'
-                'Rows: ${parsed.rowCount}\n\n'
-                'All raw GAAP rows will be uploaded to StoreSalesData.',
+            'Audit date: ${_date(auditDate)}\n'
+            'Rows: ${parsed.rowCount}\n\n'
+            'All raw GAAP rows will be uploaded to StoreSalesData.',
           ),
           actions: [
             TextButton(
@@ -369,10 +345,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     }
 
     // IDs are generated once for this upload attempt.
-    final payload = _buildSalesPayload(
-      parsed,
-      auditDate,
-    );
+    final payload = _buildSalesPayload(parsed, auditDate);
 
     setState(() {
       _isUploading = true;
@@ -442,16 +415,14 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
       }
 
       final processed =
-          int.tryParse(
-            '${result['processedCount'] ?? payload.length}',
-          ) ??
-              payload.length;
+          int.tryParse('${result['processedCount'] ?? payload.length}') ??
+          payload.length;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             'Sales uploaded successfully: '
-                '$processed rows confirmed.',
+            '$processed rows confirmed.',
           ),
           backgroundColor: Colors.green,
         ),
@@ -472,9 +443,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
       if (!mounted) return;
 
-      _showError(
-        'Could not upload sales: $e',
-      );
+      _showError('Could not upload sales: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -497,10 +466,7 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-      ),
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 
@@ -524,36 +490,27 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Upload Sales'),
-      ),
+      appBar: AppBar(title: const Text('Upload Sales')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(
-              maxWidth: 700,
-            ),
+            constraints: const BoxConstraints(maxWidth: 700),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Text(
                   'GAAP Sales Import',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 ),
 
                 const SizedBox(height: 8),
 
                 Text(
                   'Select the audit date first. '
-                      'The dates inside the GAAP report are shown '
-                      'for validation only.',
-                  style: TextStyle(
-                    color: Colors.grey[700],
-                  ),
+                  'The dates inside the GAAP report are shown '
+                  'for validation only.',
+                  style: TextStyle(color: Colors.grey[700]),
                 ),
 
                 const SizedBox(height: 24),
@@ -562,33 +519,21 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
 
                 const SizedBox(height: 20),
 
-                if (_isDesktop)
-                  _buildDropZone(),
+                if (_isDesktop) _buildDropZone(),
 
-                if (_isDesktop)
-                  const SizedBox(height: 12),
+                if (_isDesktop) const SizedBox(height: 12),
 
                 FilledButton.icon(
-                  onPressed:
-                  _isLoading ? null : _pickCsv,
-                  icon: const Icon(
-                    Icons.upload_file,
-                  ),
+                  onPressed: _isLoading ? null : _pickCsv,
+                  icon: const Icon(Icons.upload_file),
                   label: Text(
-                    _isLoading
-                        ? 'Reading file...'
-                        : 'Select GAAP Sales CSV',
+                    _isLoading ? 'Reading file...' : 'Select GAAP Sales CSV',
                   ),
                 ),
 
                 if (_error != null) ...[
                   const SizedBox(height: 16),
-                  Text(
-                    _error!,
-                    style: const TextStyle(
-                      color: Colors.red,
-                    ),
-                  ),
+                  Text(_error!, style: const TextStyle(color: Colors.red)),
                 ],
 
                 if (_parsed != null) ...[
@@ -614,23 +559,18 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
       child: ListTile(
         leading: Icon(
           Icons.calendar_month,
-          color:
-          selected ? Colors.green : Colors.orange,
+          color: selected ? Colors.green : Colors.orange,
         ),
-        title: const Text(
-          'Audit Date',
-        ),
+        title: const Text('Audit Date'),
         subtitle: Text(
           selected
               ? _date(_auditDate)
               : 'Required — this determines which audit '
-              'the sales belong to',
+                    'the sales belong to',
         ),
         trailing: OutlinedButton(
           onPressed: _selectAuditDate,
-          child: Text(
-            selected ? 'Change' : 'Select',
-          ),
+          child: Text(selected ? 'Change' : 'Select'),
         ),
       ),
     );
@@ -655,38 +595,27 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
       onDragDone: (details) async {
         if (details.files.isEmpty) return;
 
-        await _processPath(
-          details.files.first.path,
-        );
+        await _processPath(details.files.first.path);
       },
       child: AnimatedContainer(
-        duration:
-        const Duration(milliseconds: 150),
+        duration: const Duration(milliseconds: 150),
         height: 150,
         decoration: BoxDecoration(
-          borderRadius:
-          BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
             width: 2,
-            color: _isDragging
-                ? Colors.blue
-                : Colors.grey.shade400,
+            color: _isDragging ? Colors.blue : Colors.grey.shade400,
           ),
-          color: _isDragging
-              ? Colors.blue.withOpacity(0.05)
-              : null,
+          color: _isDragging ? Colors.blue.withOpacity(0.05) : null,
         ),
         child: Center(
           child: Column(
-            mainAxisSize:
-            MainAxisSize.min,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 Icons.file_upload_outlined,
                 size: 38,
-                color: _isDragging
-                    ? Colors.blue
-                    : Colors.grey[600],
+                color: _isDragging ? Colors.blue : Colors.grey[600],
               ),
               const SizedBox(height: 8),
               Text(
@@ -705,50 +634,27 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
   // IMPORT PREVIEW
   // ===========================================================================
 
-  Widget _buildPreview(
-      ParsedGaapSalesFile parsed,
-      ) {
+  Widget _buildPreview(ParsedGaapSalesFile parsed) {
     return Card(
       child: Padding(
-        padding:
-        const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(20),
         child: Column(
-          crossAxisAlignment:
-          CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
               'Import Preview',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight:
-                FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
 
             const SizedBox(height: 16),
 
-            _row(
-              'File',
-              _fileName ?? '',
-            ),
+            _row('File', _fileName ?? ''),
 
-            _row(
-              'Audit date',
-              _date(_auditDate),
-            ),
+            _row('Audit date', _date(_auditDate)),
 
-            _row(
-              'Venue',
-              parsed.venue ??
-                  'Not found',
-            ),
+            _row('Venue', parsed.venue ?? 'Not found'),
 
-            _row(
-              'GAAP generated date',
-              _date(
-                parsed.generatedDate,
-              ),
-            ),
+            _row('GAAP generated date', _date(parsed.generatedDate)),
 
             _row(
               'GAAP report range',
@@ -760,83 +666,50 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
             // ---------------------------------------------------------------
             // AUDIT DATE WARNING
             // ---------------------------------------------------------------
-
-            if (_auditDateNeedsWarning(
-              parsed,
-            )) ...[
-              const SizedBox(
-                height: 16,
-              ),
-              _buildAuditDateWarning(
-                parsed,
-              ),
+            if (_auditDateNeedsWarning(parsed)) ...[
+              const SizedBox(height: 16),
+              _buildAuditDateWarning(parsed),
             ],
 
-            const Divider(
-              height: 28,
-            ),
+            const Divider(height: 28),
 
-            _row(
-              'Raw rows preserved',
-              '${parsed.rowCount}',
-            ),
+            _row('Raw rows preserved', '${parsed.rowCount}'),
 
-            _row(
-              'Non-blank rows',
-              '${parsed.nonBlankRowCount}',
-            ),
+            _row('Non-blank rows', '${parsed.nonBlankRowCount}'),
 
-            _row(
-              'Detected sales lines',
-              '${parsed.saleLineCount}',
-            ),
+            _row('Detected sales lines', '${parsed.saleLineCount}'),
 
-            const SizedBox(
-              height: 16,
-            ),
+            const SizedBox(height: 16),
 
             Container(
-              padding:
-              const EdgeInsets.all(12),
-              decoration:
-              BoxDecoration(
-                color: Colors.green
-                    .withOpacity(0.08),
-                borderRadius:
-                BorderRadius.circular(8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
               ),
               child: const Text(
                 'Parsed successfully. '
-                    'Nothing has been uploaded yet.',
-                style: TextStyle(
-                  fontWeight:
-                  FontWeight.w600,
-                ),
+                'Nothing has been uploaded yet.',
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
             ),
 
             const SizedBox(height: 20),
 
             FilledButton.icon(
-              onPressed: _isUploading
-                  ? null
-                  : _uploadSales,
+              onPressed: _isUploading ? null : _uploadSales,
               icon: _isUploading
                   ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                ),
-              )
-                  : const Icon(
-                Icons.cloud_upload,
-              ),
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.cloud_upload),
               label: Text(
                 _isUploading
                     ? _totalUploadRows > 0
-                    ? 'Uploading $_uploadedRows / $_totalUploadRows...'
-                    : 'Uploading...'
+                          ? 'Uploading $_uploadedRows / $_totalUploadRows...'
+                          : 'Uploading...'
                     : 'Upload Sales',
               ),
             ),
@@ -850,90 +723,62 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
   // AUDIT DATE WARNING
   // ===========================================================================
 
-  Widget _buildAuditDateWarning(
-      ParsedGaapSalesFile parsed,
-      ) {
-    final reference =
-    _salesReferenceDate(parsed);
+  Widget _buildAuditDateWarning(ParsedGaapSalesFile parsed) {
+    final reference = _salesReferenceDate(parsed);
 
-    final gap =
-    _auditDateGap(parsed)!;
+    final gap = _auditDateGap(parsed)!;
 
     final message = gap < 0
         ? 'The selected audit date is '
-        '${gap.abs()} day(s) before the '
-        'latest date in this GAAP document.'
+              '${gap.abs()} day(s) before the '
+              'latest date in this GAAP document.'
         : 'The selected audit date is '
-        '$gap day(s) after the '
-        'latest date in this GAAP document.';
+              '$gap day(s) after the '
+              'latest date in this GAAP document.';
 
     return Container(
-      padding:
-      const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color:
-        Colors.orange.withOpacity(0.10),
-        border: Border.all(
-          color:
-          Colors.orange.shade400,
-        ),
-        borderRadius:
-        BorderRadius.circular(10),
+        color: Colors.orange.withOpacity(0.10),
+        border: Border.all(color: Colors.orange.shade400),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
-        crossAxisAlignment:
-        CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.warning_amber_rounded,
-            color:
-            Colors.orange.shade800,
-          ),
+          Icon(Icons.warning_amber_rounded, color: Colors.orange.shade800),
 
-          const SizedBox(
-            width: 12,
-          ),
+          const SizedBox(width: 12),
 
           Expanded(
             child: Column(
-              crossAxisAlignment:
-              CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
                   'Check audit date',
-                  style: TextStyle(
-                    fontWeight:
-                    FontWeight.bold,
-                    fontSize: 16,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
 
-                const SizedBox(
-                  height: 6,
-                ),
+                const SizedBox(height: 6),
 
                 Text(message),
 
-                const SizedBox(
-                  height: 6,
-                ),
+                const SizedBox(height: 6),
 
                 Text(
                   'Selected audit date: '
-                      '${_date(_auditDate)}\n'
-                      'Latest GAAP date: '
-                      '${_date(reference)}',
+                  '${_date(_auditDate)}\n'
+                  'Latest GAAP date: '
+                  '${_date(reference)}',
                 ),
 
-                const SizedBox(
-                  height: 8,
-                ),
+                const SizedBox(height: 8),
 
                 const Text(
                   'You can still continue, '
-                      'but please confirm that '
-                      'the selected audit date '
-                      'is correct.',
+                  'but please confirm that '
+                  'the selected audit date '
+                  'is correct.',
                 ),
               ],
             ),
@@ -947,33 +792,20 @@ class _SalesUploadScreenState extends State<SalesUploadScreen> {
   // INFO ROW
   // ===========================================================================
 
-  Widget _row(
-      String label,
-      String value,
-      ) {
+  Widget _row(String label, String value) {
     return Padding(
-      padding:
-      const EdgeInsets.symmetric(
-        vertical: 4,
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        crossAxisAlignment:
-        CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
             width: 170,
             child: Text(
               '$label:',
-              style:
-              const TextStyle(
-                fontWeight:
-                FontWeight.bold,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          Expanded(
-            child: Text(value),
-          ),
+          Expanded(child: Text(value)),
         ],
       ),
     );

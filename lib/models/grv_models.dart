@@ -41,7 +41,10 @@ class GrvInvoice {
       invoiceDetailsID: json['invoiceDetailsID']?.toString() ?? '',
       invoiceNumber: json['Invoice Number']?.toString() ?? '',
       supplierID: json['supplierID']?.toString() ?? '',
-      supplierName: json['Supplier Name']?.toString() ?? json['Supplier']?.toString() ?? '',
+      supplierName:
+          json['Supplier Name']?.toString() ??
+          json['Supplier']?.toString() ??
+          '',
       dateOfPurchase: _parseDate(json['Date of Purchase']) ?? DateTime.now(),
       deliveryDate: _parseDate(json['Delivery Date']) ?? DateTime.now(),
       totalExclVat: (json['Total Cost Ex Vat'] as num?)?.toDouble() ?? 0.0,
@@ -69,7 +72,7 @@ class GrvInvoice {
 // ===========================================================================
 
 class ParsedGrvLineItem {
-  final String plu;           // PLU from CSV - only used for matching
+  final String plu; // PLU from CSV - only used for matching
   final String description;
   final int quantityCases;
   final int unitsPerCase;
@@ -78,7 +81,7 @@ class ParsedGrvLineItem {
   // These get filled after matching
   String? productName;
   String? barcode;
-  String? supplierBottleID;   // ← This gets set AFTER matching, from MasterCosts
+  String? supplierBottleID; // ← This gets set AFTER matching, from MasterCosts
 
   ParsedGrvLineItem({
     required this.plu,
@@ -99,12 +102,12 @@ class ParsedGrvLineItem {
     required String supplierID,
     required String supplierName,
     required DateTime deliveryDate,
-    required String grvReference,  // 🔥 ADD THIS
+    required String grvReference, // 🔥 ADD THIS
   }) {
     return {
       'purchases_ID': DateTime.now().millisecondsSinceEpoch.toString(),
       'invoiceDetailsID': invoiceDetailsID,
-      'GRV Reference': grvReference,  // 🔥 ADD THIS - CRITICAL!
+      'GRV Reference': grvReference, // 🔥 ADD THIS - CRITICAL!
       'supplierID': supplierID,
       'Supplier': supplierName,
       'Barcode': barcode ?? '',
@@ -181,9 +184,9 @@ class GrvLineItemDisplay {
   double get totalValue => costPerCase;
   bool get isMatched =>
       productName != null &&
-          productName!.isNotEmpty &&
-          barcode != null &&
-          barcode!.isNotEmpty;
+      productName!.isNotEmpty &&
+      barcode != null &&
+      barcode!.isNotEmpty;
 
   // Convert to ParsedGrvLineItem for saving
   ParsedGrvLineItem toParsedLineItem() {

@@ -1,22 +1,49 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'logger_service.dart';
 
 class FirestoreService {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final FirebaseFirestore _db;
+  final FirebaseAuth _auth;
   final LoggerService? logger;
 
-  FirestoreService({this.logger});
+  FirestoreService({this.logger, FirebaseFirestore? db, FirebaseAuth? auth})
+    : _db = db ?? FirebaseFirestore.instance,
+      _auth = auth ?? FirebaseAuth.instance;
 
   // ===========================================================================
   // AUTHENTICATION
   // ===========================================================================
 
-  Stream<User?> get authStateChanges => FirebaseAuth.instance.authStateChanges();
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  Stream<User?> get idTokenChanges => _auth.idTokenChanges();
+  String? get currentUserId => _auth.currentUser?.uid;
+
+  String _requireSignedIn() {
+    final uid = currentUserId;
+    if (uid == null) {
+      throw FirebaseAuthException(
+        code: 'unauthenticated',
+        message: 'Sign in before accessing Firestore.',
+      );
+    }
+    return uid;
+  }
+
+  void _requireSameUser(String uid) {
+    if (currentUserId != uid) {
+      throw FirebaseAuthException(
+        code: 'unauthenticated',
+        message: 'The sign-in session changed. Retry after signing in.',
+      );
+    }
+  }
 
   Future<UserCredential?> signInWithEmail(String email, String password) async {
     try {
-      return await FirebaseAuth.instance.signInWithEmailAndPassword(
+      return await _auth.signInWithEmailAndPassword(
         email: email.trim(),
         password: password,
       );
@@ -27,12 +54,13 @@ class FirestoreService {
   }
 
   Future<void> signOut() async {
-    await FirebaseAuth.instance.signOut();
+    await _auth.signOut();
   }
 
-  String? get currentUserEmail => FirebaseAuth.instance.currentUser?.email;
+  String? get currentUserEmail => _auth.currentUser?.email;
 
   Future<void> registerStoreMetadata(String storeId, String storeName) async {
+    _requireSignedIn();
     try {
       await _db.collection('stores').doc(storeId).set({
         'storeName': storeName,
@@ -41,6 +69,7 @@ class FirestoreService {
       }, SetOptions(merge: true));
     } catch (e) {
       logger?.error('FirestoreService: registerStoreMetadata failed', e);
+      rethrow;
     }
   }
 
@@ -52,22 +81,29 @@ class FirestoreService {
   /// Watches stock counts for a specific store in real-time
   /// 🔥 FILTERS OUT DELETED RECORDS
   Stream<List<Map<String, dynamic>>> watchStockCounts(String storeId) {
+    _requireSignedIn();
     return _db
         .collection('stores')
         .doc(storeId)
         .collection('stock_counts')
-        .where('deleted', isEqualTo: false)  // 🔥 ONLY GET NON-DELETED
+        .where('deleted', isEqualTo: false) // 🔥 ONLY GET NON-DELETED
         .orderBy('updated_at', descending: true)
         .snapshots()
-        .map((snapshot) => snapshot.docs.map((doc) {
-      final data = doc.data();
-      data['id'] = doc.id; // Ensure ID is included
-      return data;
-    }).toList());
+        .map(
+          (snapshot) => snapshot.docs.map((doc) {
+            final data = doc.data();
+            data['id'] = doc.id; // Ensure ID is included
+            return data;
+          }).toList(),
+        );
   }
 
   /// Saves or updates a stock count document
-  Future<void> saveStockCount(String storeId, Map<String, dynamic> count) async {
+  Future<void> saveStockCount(
+    String storeId,
+    Map<String, dynamic> count,
+  ) async {
+    _requireSignedIn();
     final id = count['id'] ?? count['stock_id'];
     if (id == null) {
       logger?.error('FirestoreService: Stock count ID is missing', null);
@@ -79,9 +115,7 @@ class FirestoreService {
 
       // Defensive boundary guard for malformed legacy StockCounts fields.
       // Only the Firestore copy is changed; local/Hive and Sheets data are untouched.
-      final invalidKeys = data.keys
-          .where((key) => key.trim().isEmpty)
-          .toList();
+      final invalidKeys = data.keys.where((key) => key.trim().isEmpty).toList();
       for (final key in invalidKeys) {
         data.remove(key);
       }
@@ -115,10 +149,11 @@ class FirestoreService {
 
   /// Batch save stock counts (up to Firestore's 500-write batch limit).
   Future<void> saveStockCountsBatch(
-      String storeId,
-      List<Map<String, dynamic>> counts,
-      ) async {
+    String storeId,
+    List<Map<String, dynamic>> counts,
+  ) async {
     if (counts.isEmpty) return;
+    final userId = _requireSignedIn();
 
     logger?.info(
       'FirestoreService: Saving stock batch store=$storeId rows=${counts.length}',
@@ -187,11 +222,20 @@ class FirestoreService {
         '$e\n$st',
       );
 
-      // Preserve the existing fallback behavior unchanged.
+      // Authentication/permission failures cannot be repaired by sending the
+      // same denied batch as individual requests.
+      _requireSameUser(userId);
+      if (e is FirebaseException &&
+          (e.code == 'unauthenticated' || e.code == 'permission-denied')) {
+        rethrow;
+      }
+
+      // Retain the existing per-record fallback for other errors.
       logger?.info(
         'FirestoreService: Falling back to individual stock writes store=$storeId rows=${counts.length}',
       );
       for (final count in counts) {
+        _requireSameUser(userId);
         await saveStockCount(storeId, count);
       }
     }
@@ -199,6 +243,7 @@ class FirestoreService {
 
   /// Deletes a stock count document
   Future<void> deleteStockCount(String storeId, String id) async {
+    _requireSignedIn();
     try {
       await _db
           .collection('stores')
@@ -219,8 +264,13 @@ class FirestoreService {
 
   /// Fetches master products once
   Future<List<Map<String, dynamic>>> getMasterProducts() async {
+    _requireSignedIn();
     try {
-      final snapshot = await _db.collection('master_data').doc('products').collection('items').get();
+      final snapshot = await _db
+          .collection('master_data')
+          .doc('products')
+          .collection('items')
+          .get();
       return snapshot.docs.map((doc) => doc.data()).toList();
     } catch (e) {
       logger?.error('FirestoreService: Fetch master products failed', e);

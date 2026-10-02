@@ -13,7 +13,8 @@ class ProductDetailScreen extends StatefulWidget {
   State<ProductDetailScreen> createState() => _ProductDetailScreenState();
 }
 
-class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTickerProviderStateMixin {
+class _ProductDetailScreenState extends State<ProductDetailScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   List<Map<String, dynamic>> _relatedCounts = [];
@@ -25,7 +26,11 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-    _productName = (widget.product['Inventory Product Name'] ?? widget.product['Product Name'] ?? 'Unknown').toString();
+    _productName =
+        (widget.product['Inventory Product Name'] ??
+                widget.product['Product Name'] ??
+                'Unknown')
+            .toString();
     _loadProductCentricData();
   }
 
@@ -78,7 +83,11 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
   bool _isFood(String? uom) {
     if (uom == null) return false;
     final lower = uom.toLowerCase();
-    return lower == 'kg' || lower == 'g' || lower == 'lb' || lower == 'oz' || lower == 'each';
+    return lower == 'kg' ||
+        lower == 'g' ||
+        lower == 'lb' ||
+        lower == 'oz' ||
+        lower == 'each';
   }
 
   // --- HELPER: Smart Calculation ---
@@ -94,28 +103,70 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
 
     double multiplier = 0.0;
     switch (packSize) {
-      case "Case 1": multiplier = 1.0; break;
-      case "Case 2": multiplier = 2.0; break;
-      case "Case 4": multiplier = 4.0; break;
-      case "Case 6": multiplier = 6.0; break;
-      case "Case 12": multiplier = 12.0; break;
-      case "Case 24": multiplier = 24.0; break;
-      case "Case 36": multiplier = 36.0; break;
-      case "Case 48": multiplier = 48.0; break;
-      case "Pack 10": multiplier = 10.0; break;
-      case "Pack 20": multiplier = 20.0; break;
-      case "Keg 1": multiplier = 1000.0; break;
-      case "5 Ltr Cartons": multiplier = 5000.0; break;
-      case "10 Ltr Cartons": multiplier = 10000.0; break;
-      case "Loose": multiplier = 1.0; break;
-      case "Loose (kg)": multiplier = 1.0; break;
-      case "Loose (g)": multiplier = 0.001; break;
-      case "Pack": multiplier = 1.0; break;
-      case "Box": multiplier = 1.0; break;
-      case "Each": multiplier = 1.0; break;
-      case "Portion": multiplier = 1.0; break;
-      case "Open Bottle": return 0.0;
-      default: multiplier = 1.0;
+      case "Case 1":
+        multiplier = 1.0;
+        break;
+      case "Case 2":
+        multiplier = 2.0;
+        break;
+      case "Case 4":
+        multiplier = 4.0;
+        break;
+      case "Case 6":
+        multiplier = 6.0;
+        break;
+      case "Case 12":
+        multiplier = 12.0;
+        break;
+      case "Case 24":
+        multiplier = 24.0;
+        break;
+      case "Case 36":
+        multiplier = 36.0;
+        break;
+      case "Case 48":
+        multiplier = 48.0;
+        break;
+      case "Pack 10":
+        multiplier = 10.0;
+        break;
+      case "Pack 20":
+        multiplier = 20.0;
+        break;
+      case "Keg 1":
+        multiplier = 1000.0;
+        break;
+      case "5 Ltr Cartons":
+        multiplier = 5000.0;
+        break;
+      case "10 Ltr Cartons":
+        multiplier = 10000.0;
+        break;
+      case "Loose":
+        multiplier = 1.0;
+        break;
+      case "Loose (kg)":
+        multiplier = 1.0;
+        break;
+      case "Loose (g)":
+        multiplier = 0.001;
+        break;
+      case "Pack":
+        multiplier = 1.0;
+        break;
+      case "Box":
+        multiplier = 1.0;
+        break;
+      case "Each":
+        multiplier = 1.0;
+        break;
+      case "Portion":
+        multiplier = 1.0;
+        break;
+      case "Open Bottle":
+        return 0.0;
+      default:
+        multiplier = 1.0;
     }
 
     return count * multiplier;
@@ -142,7 +193,11 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
         title: const Text('Product Dashboard'),
         bottom: TabBar(
           controller: _tabController,
-          tabs: const [Tab(text: 'Overview'), Tab(text: 'Live Counts'), Tab(text: 'Purchases')],
+          tabs: const [
+            Tab(text: 'Overview'),
+            Tab(text: 'Live Counts'),
+            Tab(text: 'Purchases'),
+          ],
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -163,7 +218,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
                 const SizedBox(height: 16),
                 _buildStatGrid(isFoodItem),
                 const SizedBox(height: 24),
-                const Text('Associated Barcodes', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const Text(
+                  'Associated Barcodes',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
                 const SizedBox(height: 8),
                 _buildBarcodeList(),
                 const SizedBox(height: 80),
@@ -177,50 +235,67 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
               : _relatedCounts.isEmpty
               ? _buildEmptyState('No active counts for this item.')
               : ListView.builder(
-            padding: const EdgeInsets.only(bottom: 80),
-            itemCount: _relatedCounts.length,
-            itemBuilder: (context, index) {
-              final count = _relatedCounts[index];
+                  padding: const EdgeInsets.only(bottom: 80),
+                  itemCount: _relatedCounts.length,
+                  itemBuilder: (context, index) {
+                    final count = _relatedCounts[index];
 
-              final totalUnits = _calculateSmartTotal(count);
-              final packSize = count['pack_size'] ?? '';
-              final location = count['location'] ?? 'Unknown';
-              final dateDisplay = _formatDate(count['date']);
-              final unitLabel = isFoodItem ? 'Units / Kg' : 'Bottles';
+                    final totalUnits = _calculateSmartTotal(count);
+                    final packSize = count['pack_size'] ?? '';
+                    final location = count['location'] ?? 'Unknown';
+                    final dateDisplay = _formatDate(count['date']);
+                    final unitLabel = isFoodItem ? 'Units / Kg' : 'Bottles';
 
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Colors.blue,
-                    child: Icon(Icons.check, color: Colors.white, size: 16),
-                  ),
-                  title: Text(location.toString()),
-                  subtitle: Text('$dateDisplay • $packSize'),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        totalUnits.toStringAsFixed(2),
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    return Card(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
                       ),
-                      Text(unitLabel, style: const TextStyle(fontSize: 10, color: Colors.grey)),
-                    ],
-                  ),
-                  onTap: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => CountScreen(existingCount: count),
+                      child: ListTile(
+                        leading: const CircleAvatar(
+                          backgroundColor: Colors.blue,
+                          child: Icon(
+                            Icons.check,
+                            color: Colors.white,
+                            size: 16,
+                          ),
+                        ),
+                        title: Text(location.toString()),
+                        subtitle: Text('$dateDisplay • $packSize'),
+                        trailing: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              totalUnits.toStringAsFixed(2),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            Text(
+                              unitLabel,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  CountScreen(existingCount: count),
+                            ),
+                          );
+                          _loadProductCentricData();
+                        },
                       ),
                     );
-                    _loadProductCentricData();
                   },
                 ),
-              );
-            },
-          ),
 
           // TAB 3: PURCHASES
           const Center(child: Text('Purchases module coming soon.')),
@@ -239,7 +314,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
           children: [
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: Colors.blue.shade50, shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                shape: BoxShape.circle,
+              ),
               child: const Icon(Icons.local_bar, color: Colors.blue, size: 32),
             ),
             const SizedBox(width: 16),
@@ -247,9 +325,18 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text(
+                    name,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   const SizedBox(height: 4),
-                  Chip(label: Text(category), visualDensity: VisualDensity.compact),
+                  Chip(
+                    label: Text(category),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ],
               ),
             ),
@@ -277,11 +364,31 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
       mainAxisSpacing: 10,
       childAspectRatio: 1.6,
       children: [
-        _buildStatCard(stockLabel, totalUnits.toStringAsFixed(2), Icons.inventory_2, Colors.blue),
-        _buildStatCard('Total Value', NumberFormat.simpleCurrency().format(totalValue), Icons.monetization_on, Colors.green),
+        _buildStatCard(
+          stockLabel,
+          totalUnits.toStringAsFixed(2),
+          Icons.inventory_2,
+          Colors.blue,
+        ),
+        _buildStatCard(
+          'Total Value',
+          NumberFormat.simpleCurrency().format(totalValue),
+          Icons.monetization_on,
+          Colors.green,
+        ),
         // UPDATED LABEL
-        _buildStatCard('Avg Unit Cost', NumberFormat.simpleCurrency().format(cost), Icons.price_check, Colors.purple),
-        _buildStatCard('Locations', _getUniqueLocations(), Icons.place, Colors.orange),
+        _buildStatCard(
+          'Avg Unit Cost',
+          NumberFormat.simpleCurrency().format(cost),
+          Icons.price_check,
+          Colors.purple,
+        ),
+        _buildStatCard(
+          'Locations',
+          _getUniqueLocations(),
+          Icons.place,
+          Colors.orange,
+        ),
       ],
     );
   }
@@ -291,7 +398,12 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
     return locs.length.toString();
   }
 
-  Widget _buildStatCard(String title, String value, IconData icon, Color color) {
+  Widget _buildStatCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -305,8 +417,18 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
         children: [
           Icon(icon, color: color, size: 24),
           const SizedBox(height: 8),
-          Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
-          Text(title, style: TextStyle(fontSize: 12, color: color.withOpacity(0.8))),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          Text(
+            title,
+            style: TextStyle(fontSize: 12, color: color.withOpacity(0.8)),
+          ),
         ],
       ),
     );
@@ -331,8 +453,17 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> with SingleTi
           child: ListTile(
             dense: true,
             leading: const Icon(Icons.qr_code_2, color: Colors.grey),
-            title: Text(barcode, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'Monospace')),
-            trailing: Text('$vol $uom', style: const TextStyle(fontWeight: FontWeight.w600)),
+            title: Text(
+              barcode,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontFamily: 'Monospace',
+              ),
+            ),
+            trailing: Text(
+              '$vol $uom',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         );
       }).toList(),

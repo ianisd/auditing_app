@@ -64,7 +64,9 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
       final content = await file.readAsString();
 
       if (content.length > 5 * 1024 * 1024) {
-        throw Exception('File too large (>5MB). Please split into smaller GRVs.');
+        throw Exception(
+          'File too large (>5MB). Please split into smaller GRVs.',
+        );
       }
 
       setState(() {
@@ -131,8 +133,10 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
             'Stock Delivery Date': widget.deliveryDate.toIso8601String(),
             'Case/Pack Size': 'Case ${item.unitsPerCase}',
             'Qty Purchased': item.quantityCases.toDouble(),
-            'Purchases Bottles': (item.quantityCases * item.unitsPerCase).toDouble(),
-            'Cost of Purchases': item.pricePerUnit * item.quantityCases * item.unitsPerCase,
+            'Purchases Bottles': (item.quantityCases * item.unitsPerCase)
+                .toDouble(),
+            'Cost of Purchases':
+                item.pricePerUnit * item.quantityCases * item.unitsPerCase,
             'syncStatus': 'pending',
           };
           await storage.savePurchase(purchase);
@@ -165,7 +169,7 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
     final storage = context.read<OfflineStorage>();
     final suppliers = await storage.getMasterSuppliers();
     final match = suppliers.firstWhere(
-          (s) => s['Supplier']?.toString() == supplierName,
+      (s) => s['Supplier']?.toString() == supplierName,
       orElse: () => <String, dynamic>{},
     );
 
@@ -191,10 +195,19 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Supplier: ${widget.supplierName}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                  Text('Delivery: ${widget.deliveryDate.toIso8601String().split('T')[0]}', style: const TextStyle(color: Colors.grey)),
+                  Text(
+                    'Supplier: ${widget.supplierName}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    'Delivery: ${widget.deliveryDate.toIso8601String().split('T')[0]}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                   const SizedBox(height: 8),
-                  Text('This will add items from your CSV file to this GRV.', style: const TextStyle(fontSize: 14)),
+                  Text(
+                    'This will add items from your CSV file to this GRV.',
+                    style: const TextStyle(fontSize: 14),
+                  ),
                 ],
               ),
             ),
@@ -221,7 +234,11 @@ class _GrvCsvUploadScreenState extends State<GrvCsvUploadScreen> {
             ElevatedButton.icon(
               onPressed: _isLoading ? null : _uploadCsv,
               icon: _isLoading
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                    )
                   : const Icon(Icons.upload_file),
               label: const Text('SELECT CSV FILE'),
               style: ElevatedButton.styleFrom(

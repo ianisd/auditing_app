@@ -32,7 +32,10 @@ class _DebugDataScreenState extends State<DebugDataScreen> {
 
     setState(() {
       // Map 'Inv. Date of Purchase' from Purchases
-      purchaseDates = p.take(50).map((e) => "Inv: ${e['Inv. Date of Purchase']}").toList();
+      purchaseDates = p
+          .take(50)
+          .map((e) => "Inv: ${e['Inv. Date of Purchase']}")
+          .toList();
 
       // Map 'Date' from Store Sales Data
       salesDates = s.take(50).map((e) => "Sale: ${e['Date']}").toList();
@@ -104,10 +107,7 @@ class _DebugDataScreenState extends State<DebugDataScreen> {
               tooltip: 'Migrate Invoice IDs',
               onPressed: _migrateInvoiceIds,
             ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadData,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadData),
         ],
       ),
       body: Column(
@@ -152,18 +152,22 @@ class _DebugDataScreenState extends State<DebugDataScreen> {
           padding: const EdgeInsets.all(8),
           color: Colors.grey[200],
           width: double.infinity,
-          child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+          child: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center,
+          ),
         ),
         Expanded(
           child: items.isEmpty
               ? const Center(child: Text("No Data Found"))
               : ListView.builder(
-            itemCount: items.length,
-            itemBuilder: (c, i) => Padding(
-              padding: const EdgeInsets.all(4.0),
-              child: Text(items[i], style: const TextStyle(fontSize: 11)),
-            ),
-          ),
+                  itemCount: items.length,
+                  itemBuilder: (c, i) => Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Text(items[i], style: const TextStyle(fontSize: 11)),
+                  ),
+                ),
         ),
       ],
     );

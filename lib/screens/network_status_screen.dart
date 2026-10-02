@@ -55,10 +55,14 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
   // ✅ NEW: Helper method for color-coding the connection quality
   Color _getQualityColor(String quality) {
     switch (quality) {
-      case 'Strong': return Colors.green;
-      case 'Average': return Colors.orange;
-      case 'Weak': return Colors.red;
-      default: return Colors.grey;
+      case 'Strong':
+        return Colors.green;
+      case 'Average':
+        return Colors.orange;
+      case 'Weak':
+        return Colors.red;
+      default:
+        return Colors.grey;
     }
   }
 
@@ -66,7 +70,9 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
   Widget build(BuildContext context) {
     final syncService = context.watch<StoreManager>().syncService;
     final pingService = context.watch<NetworkPingService>();
-    final isOnline = _connectionStatus.any((r) => r != ConnectivityResult.none) && pingService.isOnline;
+    final isOnline =
+        _connectionStatus.any((r) => r != ConnectivityResult.none) &&
+        pingService.isOnline;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Network Status')),
@@ -97,17 +103,19 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                       color: isOnline ? Colors.green : Colors.red,
                     ),
                   ),
-                  subtitle: Text(_connectionStatus.map((r) => r.name).join(', ')),
+                  subtitle: Text(
+                    _connectionStatus.map((r) => r.name).join(', '),
+                  ),
                   trailing: _isChecking
                       ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                       : IconButton(
-                    icon: const Icon(Icons.refresh),
-                    onPressed: _checkConnectivity,
-                  ),
+                          icon: const Icon(Icons.refresh),
+                          onPressed: _checkConnectivity,
+                        ),
                 ),
               ),
 
@@ -128,7 +136,9 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
 
                       SwitchListTile(
                         title: const Text('Enable Network Ping'),
-                        subtitle: const Text('Monitor connection quality (recommended)'),
+                        subtitle: const Text(
+                          'Monitor connection quality (recommended)',
+                        ),
                         value: pingService.isEnabled,
                         onChanged: (value) => pingService.setEnabled(value),
                         contentPadding: EdgeInsets.zero,
@@ -147,13 +157,19 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                           dense: true,
                           leading: Icon(
                             Icons.speed,
-                            color: _getQualityColor(pingService.connectionQuality),
+                            color: _getQualityColor(
+                              pingService.connectionQuality,
+                            ),
                           ),
-                          title: Text('${pingService.speedKbps.toStringAsFixed(0)} Kbps'),
+                          title: Text(
+                            '${pingService.speedKbps.toStringAsFixed(0)} Kbps',
+                          ),
                           subtitle: Text(
                             pingService.connectionQuality,
                             style: TextStyle(
-                              color: _getQualityColor(pingService.connectionQuality),
+                              color: _getQualityColor(
+                                pingService.connectionQuality,
+                              ),
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -162,7 +178,10 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                         if (pingService.lastError.isNotEmpty)
                           ListTile(
                             dense: true,
-                            leading: const Icon(Icons.error_outline, color: Colors.red),
+                            leading: const Icon(
+                              Icons.error_outline,
+                              color: Colors.red,
+                            ),
                             title: Text(
                               pingService.lastError,
                               style: const TextStyle(color: Colors.red),
@@ -174,7 +193,10 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                           padding: EdgeInsets.symmetric(vertical: 8.0),
                           child: Text(
                             'Ping monitoring is disabled. Enable it to see connection quality metrics.',
-                            style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic),
+                            style: TextStyle(
+                              color: Colors.grey,
+                              fontStyle: FontStyle.italic,
+                            ),
                           ),
                         ),
                       ],
@@ -210,7 +232,9 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                         dense: true,
                         title: const Text('Last Error'),
                         subtitle: Text(syncService.lastError ?? 'None'),
-                        textColor: syncService.lastError != null ? Colors.red : null,
+                        textColor: syncService.lastError != null
+                            ? Colors.red
+                            : null,
                       ),
                     ],
                   ),
@@ -223,9 +247,9 @@ class _NetworkStatusScreenState extends State<NetworkStatusScreen> {
                 onPressed: () async {
                   final result = await syncService.syncAll();
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(result.message)),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(result.message)));
                   }
                 },
                 icon: const Icon(Icons.sync),

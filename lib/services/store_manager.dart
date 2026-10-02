@@ -15,18 +15,22 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbyDVZn-vlm4dKzUVqGHOWxzUoJhD8gVnh974fXlzSGub5tq96E0mXXLxj_2IzDHNkU/exec';
+      'https://script.google.com/macros/s/AKfycbzivx7e8lSDAHiYeGAtlcueRjb0CbtTINyEnX5yVmCrUN-r_t3pwhGXvAeee8pLGHI/exec';
   late Box _box;
   bool _initialized = false;
+  bool _disposed = false;
+  bool _authReady = false;
+  StreamSubscription? _authSubscription;
   final LoggerService? _logger;
   final OfflineStorage offlineStorage;
   final FirestoreService? firestoreService;
-  final SyncStatus syncStatus;  // Required
+  final SyncStatus syncStatus; // Required
 
   Map<String, dynamic>? _activeStore;
   List<Map<String, dynamic>> _stores = [];
 
   SyncService? _syncService;
+  GoogleSheetsService? _storeGoogleSheets;
 
   // Single debounce timer for the entire app
   Timer? _pendingCountDebounce;
@@ -48,9 +52,7 @@ class StoreManager with ChangeNotifier {
     final storeIdentifier = _getStoreIdentifier();
 
     if (storeIdentifier.isEmpty) {
-      throw Exception(
-        'Active store has no valid spreadsheet identifier',
-      );
+      throw Exception('Active store has no valid spreadsheet identifier');
     }
 
     return GoogleSheetsService(
@@ -66,12 +68,19 @@ class StoreManager with ChangeNotifier {
       throw Exception('No active store selected - cannot create sync service');
     }
 
-    if (_syncService == null || _syncService!.isDisposed) {
+    if (_syncService?.isDisposed == true) {
+      _syncService!.removeListener(notifyListeners);
+      _syncService = null;
+      _storeGoogleSheets = null;
+    }
+    if (_syncService == null) {
       final storeSheetId = _getStoreIdentifier();
 
-      _logger?.info('🔧 Creating SyncService for store: ${_activeStore!['name']}');
+      _logger?.info(
+        '🔧 Creating SyncService for store: ${_activeStore!['name']}',
+      );
 
-      final googleSheets = GoogleSheetsService(
+      final googleSheets = _storeGoogleSheets ??= GoogleSheetsService(
         masterScriptUrl: _masterScriptUrl,
         storeIdentifier: storeSheetId,
         logger: _logger,
@@ -94,12 +103,41 @@ class StoreManager with ChangeNotifier {
   // 🔥 FIXED CONSTRUCTOR - syncStatus is required
   StoreManager({
     required this.offlineStorage,
-    required this.syncStatus,  // Required
+    required this.syncStatus, // Required
     this.firestoreService,
     LoggerService? logger,
   }) : _logger = logger {
     // Listen to OfflineStorage changes
     offlineStorage.addListener(_onStorageChanged);
+    _authSubscription = firestoreService?.authStateChanges.listen(
+      (user) {
+        if (_disposed) return;
+        _authReady = user != null;
+        if (_authReady && !_disposed) _registerActiveStoreMetadata();
+      },
+      onError: (Object error, StackTrace stack) {
+        _authReady = false;
+        _logger?.error('Store authentication stream failed', '$error\n$stack');
+      },
+    );
+  }
+
+  void _registerActiveStoreMetadata() {
+    final store = _activeStore;
+    if (firestoreService?.currentUserId == null) return;
+    if (_disposed || !_authReady || store == null || firestoreService == null)
+      return;
+    final key = _buildFirestoreKey(store['name'], store['id']);
+    unawaited(
+      firestoreService!
+          .registerStoreMetadata(key, store['name'] ?? 'Unknown Store')
+          .catchError((Object error, StackTrace stack) {
+            _logger?.error(
+              'Store metadata registration failed',
+              '$error\n$stack',
+            );
+          }),
+    );
   }
 
   bool get isReady {
@@ -111,14 +149,19 @@ class StoreManager with ChangeNotifier {
 
   // Single storage change handler - app-wide!
   void _onStorageChanged() {
+    if (_disposed) return;
     _pendingCountDebounce?.cancel();
-    _pendingCountDebounce = Timer(const Duration(milliseconds: 300), _updatePendingCount);
+    _pendingCountDebounce = Timer(
+      const Duration(milliseconds: 300),
+      _updatePendingCount,
+    );
   }
 
   Future<void> _updatePendingCount() async {
+    if (_disposed) return;
     try {
       final counts = await offlineStorage.getDetailedPendingCounts();
-      syncStatus.setPendingCounts(counts);
+      if (!_disposed) syncStatus.setPendingCounts(counts);
     } catch (e) {
       _logger?.error('Failed to update pending count', e.toString());
     }
@@ -129,7 +172,10 @@ class StoreManager with ChangeNotifier {
     _logger?.info('📦 Initializing StoreManager...');
 
     final encryptionKey = await EncryptionService.getEncryptionKey();
-    _box = await Hive.openBox(_globalBoxName, encryptionCipher: HiveAesCipher(encryptionKey));
+    _box = await Hive.openBox(
+      _globalBoxName,
+      encryptionCipher: HiveAesCipher(encryptionKey),
+    );
     _loadStores();
     await _migrateLegacyStores();
     _loadActiveStore();
@@ -151,13 +197,16 @@ class StoreManager with ChangeNotifier {
       _syncService!.removeListener(notifyListeners);
       _syncService!.dispose();
       _syncService = null;
+    } else {
+      _storeGoogleSheets?.dispose();
     }
+    _storeGoogleSheets = null;
   }
 
   void _loadStores() {
     final rawList = _box.get(_storesKey, defaultValue: []);
     _stores = List<Map<String, dynamic>>.from(
-        rawList.map((e) => Map<String, dynamic>.from(e))
+      rawList.map((e) => Map<String, dynamic>.from(e)),
     );
   }
 
@@ -166,8 +215,9 @@ class StoreManager with ChangeNotifier {
     if (activeId != null && _stores.isNotEmpty) {
       try {
         _activeStore = _stores.firstWhere(
-              (s) => s['id'] == activeId,
-          orElse: () => _stores.isNotEmpty ? _stores.first : <String, dynamic>{},
+          (s) => s['id'] == activeId,
+          orElse: () =>
+              _stores.isNotEmpty ? _stores.first : <String, dynamic>{},
         );
         if (_activeStore?.isEmpty ?? true) _activeStore = null;
       } catch (e) {
@@ -193,7 +243,9 @@ class StoreManager with ChangeNotifier {
     }
 
     // Log what we're using
-    _logger?.info('  🔑 Using store identifier: $identifier (sheetId: ${_activeStore!['sheetId']}, scriptId: ${_activeStore!['scriptId']})');
+    _logger?.info(
+      '  🔑 Using store identifier: $identifier (sheetId: ${_activeStore!['sheetId']}, scriptId: ${_activeStore!['scriptId']})',
+    );
 
     return identifier;
   }
@@ -204,7 +256,9 @@ class StoreManager with ChangeNotifier {
 
       if (version >= _currentStoreVersion) return;
 
-      _logger?.info('🔄 Migrating stores from version $version to $_currentStoreVersion');
+      _logger?.info(
+        '🔄 Migrating stores from version $version to $_currentStoreVersion',
+      );
 
       for (var store in _stores) {
         if (version < 2) {
@@ -284,7 +338,7 @@ class StoreManager with ChangeNotifier {
 
     // Already saved locally under this sheet id? Just switch to it.
     final existing = _stores.firstWhere(
-          (s) => s['sheetId'] == extractedId || s['id'] == extractedId,
+      (s) => s['sheetId'] == extractedId || s['id'] == extractedId,
       orElse: () => <String, dynamic>{},
     );
     if (existing.isNotEmpty) {
@@ -305,13 +359,17 @@ class StoreManager with ChangeNotifier {
     _logger?.info('🔍 validateStoreLink result: $result');
 
     if (result['found'] != true) {
-      throw Exception("This store isn't registered yet. Ask your admin to add it first.");
+      throw Exception(
+        "This store isn't registered yet. Ask your admin to add it first.",
+      );
     }
     if (result['active'] == false) {
       throw Exception('This store has been deactivated.');
     }
     if (result['hasAccess'] == false) {
-      throw Exception("You don't have access to this store. Ask your admin to add you.");
+      throw Exception(
+        "You don't have access to this store. Ask your admin to add you.",
+      );
     }
 
     final storeName = (result['storeName'] as String?)?.trim();
@@ -339,7 +397,9 @@ class StoreManager with ChangeNotifier {
   }
 
   Future<void> setActiveStore(String storeId) async {
-    _logger?.info('🔄 StoreManager.setActiveStore() called with storeId: $storeId');
+    _logger?.info(
+      '🔄 StoreManager.setActiveStore() called with storeId: $storeId',
+    );
 
     try {
       // Use shared disposal helper
@@ -350,7 +410,9 @@ class StoreManager with ChangeNotifier {
       await _box.put(_activeStoreKey, storeId);
 
       _logger?.info('  ✅ Active store set to: ${store['name']}');
-      _logger?.info('  📋 Store data: sheetId=${store['sheetId']}, scriptId=${store['scriptId']}, url=${store['url']}');
+      _logger?.info(
+        '  📋 Store data: sheetId=${store['sheetId']}, scriptId=${store['scriptId']}, url=${store['url']}',
+      );
 
       String storeIdentifier = store['sheetId']?.toString() ?? '';
 
@@ -384,11 +446,15 @@ class StoreManager with ChangeNotifier {
         logger: _logger,
       );
 
-      offlineStorage.setGoogleSheetsService(googleSheetsService, storeIdentifier);
+      _storeGoogleSheets = googleSheetsService;
+      offlineStorage.setGoogleSheetsService(
+        googleSheetsService,
+        storeIdentifier,
+      );
 
       final firestoreKey = _buildFirestoreKey(store['name'], storeId);
       await offlineStorage.switchStore(storeId, firestoreKey: firestoreKey);
-      firestoreService?.registerStoreMetadata(firestoreKey, store['name'] ?? 'Unknown Store');
+      _registerActiveStoreMetadata();
 
       _logger?.info('✅ Store activation complete');
       notifyListeners();
@@ -464,16 +530,39 @@ class StoreManager with ChangeNotifier {
       'isLegacy': store['isLegacy'] ?? false,
       'hasSheetId': (store['sheetId']?.toString() ?? '').isNotEmpty,
       'hasScriptId': (store['scriptId']?.toString() ?? '').isNotEmpty,
-      'identifier': store['sheetId']?.toString() ?? store['scriptId']?.toString() ?? 'none',
+      'identifier':
+          store['sheetId']?.toString() ??
+          store['scriptId']?.toString() ??
+          'none',
     };
+  }
+
+  Future<void> _cancelAuthSubscription() async {
+    try {
+      await _authSubscription?.cancel();
+    } catch (error, stack) {
+      _logger?.error(
+        'Store authentication cancellation failed',
+        '$error\n$stack',
+      );
+    }
   }
 
   @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    unawaited(_cancelAuthSubscription());
     _pendingCountDebounce?.cancel();
     offlineStorage.removeListener(_onStorageChanged);
     _disposeSyncService();
-    _box.close();
+    if (_initialized) {
+      unawaited(
+        _box.close().catchError((Object error, StackTrace stack) {
+          _logger?.error('Store configuration close failed', '$error\n$stack');
+        }),
+      );
+    }
     super.dispose();
   }
 }

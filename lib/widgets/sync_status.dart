@@ -35,7 +35,9 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
   Future<void> _loadPendingCounts() async {
     if (!mounted) return;
     try {
-      final counts = await context.read<OfflineStorage>().getDetailedPendingCounts();
+      final counts = await context
+          .read<OfflineStorage>()
+          .getDetailedPendingCounts();
       if (mounted) {
         setState(() {
           _pendingCounts = counts;
@@ -79,9 +81,15 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
         // Build pending details string
         String pendingDetails = '';
         if (pendingInvoices > 0) pendingDetails += '$pendingInvoices Inv';
-        if (pendingPurchases > 0) pendingDetails += '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPurchases Pur';
-        if (pendingPluMappings > 0) pendingDetails += '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPluMappings PLU';
-        if (pendingStockCounts > 0) pendingDetails += '${pendingDetails.isNotEmpty ? ", " : ""}$pendingStockCounts Counts';
+        if (pendingPurchases > 0)
+          pendingDetails +=
+              '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPurchases Pur';
+        if (pendingPluMappings > 0)
+          pendingDetails +=
+              '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPluMappings PLU';
+        if (pendingStockCounts > 0)
+          pendingDetails +=
+              '${pendingDetails.isNotEmpty ? ", " : ""}$pendingStockCounts Counts';
 
         Color bgColor;
         IconData icon;
@@ -115,7 +123,9 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
           icon = Icons.check_circle_outline;
           iconColor = Colors.green.shade700;
           statusText = 'All up to date';
-          subText = lastSync.isNotEmpty ? 'Last synced: $lastSync' : 'Ready to sync';
+          subText = lastSync.isNotEmpty
+              ? 'Last synced: $lastSync'
+              : 'Ready to sync';
         }
 
         return Container(
@@ -123,10 +133,7 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
           decoration: BoxDecoration(
             color: bgColor,
             border: Border(
-              bottom: BorderSide(
-                color: iconColor.withOpacity(0.2),
-                width: 1,
-              ),
+              bottom: BorderSide(color: iconColor.withOpacity(0.2), width: 1),
             ),
           ),
           child: Row(
@@ -140,13 +147,13 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
                 ),
                 child: isSyncing
                     ? SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    color: iconColor,
-                  ),
-                )
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: iconColor,
+                        ),
+                      )
                     : Icon(icon, color: iconColor, size: 20),
               ),
               const SizedBox(width: 12),
@@ -177,7 +184,10 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(12),

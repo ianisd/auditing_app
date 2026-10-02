@@ -2,10 +2,7 @@ class GaapSalesRow {
   final int sourceRowNumber;
   final List<String> cells;
 
-  const GaapSalesRow({
-    required this.sourceRowNumber,
-    required this.cells,
-  });
+  const GaapSalesRow({required this.sourceRowNumber, required this.cells});
 
   String cell(int index) => index < cells.length ? cells[index] : '';
 
@@ -52,8 +49,8 @@ class GaapSalesRow {
     final dateOnly = DateTime(auditDate.year, auditDate.month, auditDate.day);
     return <dynamic>[
       dateOnly.toIso8601String(), // A Date
-      salesId,                    // B salesID
-      ...cells.take(12),          // C:N raw GAAP report columns
+      salesId, // B salesID
+      ...cells.take(12), // C:N raw GAAP report columns
     ];
   }
 }

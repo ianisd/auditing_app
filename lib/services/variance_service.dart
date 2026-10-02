@@ -5,9 +5,9 @@ import 'dart:isolate';
 
 // 🔥 Runs variance report with true cancellation support
 Future<Map<String, dynamic>> runVarianceReportWithCancellation(
-    Map<String, dynamic> params, {
-      required Duration timeout,
-    }) async {
+  Map<String, dynamic> params, {
+  required Duration timeout,
+}) async {
   final resultPort = ReceivePort();
   final errorPort = ReceivePort();
   final completer = Completer<Map<String, dynamic>>();
@@ -41,7 +41,9 @@ Future<Map<String, dynamic>> runVarianceReportWithCancellation(
     return await completer.future.timeout(
       timeout,
       onTimeout: () {
-        throw TimeoutException('Report calculation timed out after ${timeout.inSeconds}s');
+        throw TimeoutException(
+          'Report calculation timed out after ${timeout.inSeconds}s',
+        );
       },
     );
   } finally {
@@ -245,7 +247,9 @@ class VarianceService {
     final fromDate = _stripTime(fromDtRaw);
     final toDate = _stripTime(toDtRaw);
 
-    print('🔍 DATE RANGE: from=${fromDate.toIso8601String()}, to=${toDate.toIso8601String()}');
+    print(
+      '🔍 DATE RANGE: from=${fromDate.toIso8601String()}, to=${toDate.toIso8601String()}',
+    );
     print('');
 
     final diagnostics = {
@@ -364,8 +368,10 @@ class VarianceService {
         }
         pluToIssuedMappings[plu]!.add(row);
 
-        final product = row['Product']?.toString().trim() ??
-            row['Menu Item']?.toString().trim() ?? '';
+        final product =
+            row['Product']?.toString().trim() ??
+            row['Menu Item']?.toString().trim() ??
+            '';
         if (product.isNotEmpty) {
           pluToProductMap[plu] = _normalize(product);
         }
@@ -394,7 +400,8 @@ class VarianceService {
         prevCounts[name] = (prevCounts[name] ?? 0) + qty;
       }
 
-      if (dateStr.compareTo(dateFromStr) >= 0 && dateStr.compareTo(dateToStr) <= 0) {
+      if (dateStr.compareTo(dateFromStr) >= 0 &&
+          dateStr.compareTo(dateToStr) <= 0) {
         if (!prodHistory.containsKey(name)) prodHistory[name] = [];
         prodHistory[name]!.add(row);
       }
@@ -531,14 +538,14 @@ class VarianceService {
     print('  - ${prodIssues.length} unique products with issues');
     print('');
 
-// ============================================================================
-// 7. SALES - Match the sheet formula exactly
-// ============================================================================
+    // ============================================================================
+    // 7. SALES - Match the sheet formula exactly
+    // ============================================================================
     print('📦 Processing Store Sales (SALES ONLY)...');
 
-// 🔥 Build PLU → List of recipes, only include if Total Qty Used > 0
-// PLU keys are normalized here (e.g. "105.0" -> "105") so lookups
-// don't need any retry/fallback logic on the sales side.
+    // 🔥 Build PLU → List of recipes, only include if Total Qty Used > 0
+    // PLU keys are normalized here (e.g. "105.0" -> "105") so lookups
+    // don't need any retry/fallback logic on the sales side.
     Map<String, List<Map<String, dynamic>>> pluToAllRecipes = {};
     for (var row in itemSalesMap) {
       final pluRaw = row['PLU']?.toString().trim();
@@ -586,7 +593,8 @@ class VarianceService {
             Map<String, Map<String, dynamic>> uniqueProductRecipes = {};
             for (var recipe in allRecipes) {
               final productName = _normalize(recipe['Product']);
-              if (productName.isNotEmpty && !uniqueProductRecipes.containsKey(productName)) {
+              if (productName.isNotEmpty &&
+                  !uniqueProductRecipes.containsKey(productName)) {
                 uniqueProductRecipes[productName] = recipe;
               }
             }
@@ -604,7 +612,8 @@ class VarianceService {
                 inventoryRef: inventoryRef,
               );
 
-              prodSales[productName] = (prodSales[productName] ?? 0) + finalDeduction;
+              prodSales[productName] =
+                  (prodSales[productName] ?? 0) + finalDeduction;
             }
           } else {
             salesUnmatched++;
@@ -630,7 +639,7 @@ class VarianceService {
       ...currCounts.keys,
       ...prodPurchases.keys,
       ...prodIssues.keys,
-      ...prodSales.keys
+      ...prodSales.keys,
     };
     print('  - ${allNames.length} unique product names found');
     print('');
@@ -639,11 +648,11 @@ class VarianceService {
 
     for (var name in allNames) {
       if (name.isEmpty) continue;
-      if ((prevCounts[name]??0) == 0 &&
-          (currCounts[name]??0) == 0 &&
-          (prodPurchases[name]??0) == 0 &&
-          (prodIssues[name]??0) == 0 &&
-          (prodSales[name]??0) == 0) {
+      if ((prevCounts[name] ?? 0) == 0 &&
+          (currCounts[name] ?? 0) == 0 &&
+          (prodPurchases[name] ?? 0) == 0 &&
+          (prodIssues[name] ?? 0) == 0 &&
+          (prodSales[name] ?? 0) == 0) {
         continue;
       }
 
@@ -656,20 +665,22 @@ class VarianceService {
         cp = rp / _estimatedMarkup;
       }
 
-      report.add(VarianceItem(
-        productName: name,
-        mainCategory: prodMainCat[name] ?? 'Uncategorized',
-        category: prodCat[name] ?? 'General',
-        previousCount: prevCounts[name] ?? 0,
-        purchases: prodPurchases[name] ?? 0,
-        issues: prodIssues[name] ?? 0,
-        sales: prodSales[name] ?? 0,
-        currentCount: currCounts[name] ?? 0,
-        costPrice: cp,
-        retailPrice: finalRetailPrice,
-        allEntries: prodHistory[name] ?? [],
-        inventoryItem: inventoryRef[name],
-      ));
+      report.add(
+        VarianceItem(
+          productName: name,
+          mainCategory: prodMainCat[name] ?? 'Uncategorized',
+          category: prodCat[name] ?? 'General',
+          previousCount: prevCounts[name] ?? 0,
+          purchases: prodPurchases[name] ?? 0,
+          issues: prodIssues[name] ?? 0,
+          sales: prodSales[name] ?? 0,
+          currentCount: currCounts[name] ?? 0,
+          costPrice: cp,
+          retailPrice: finalRetailPrice,
+          allEntries: prodHistory[name] ?? [],
+          inventoryItem: inventoryRef[name],
+        ),
+      );
     }
 
     diagnostics['productsWithVariance'] = report.length;
@@ -694,20 +705,28 @@ class VarianceService {
         final parts = datePart.split('-');
         if (parts.length == 3) {
           return DateTime.utc(
-              int.parse(parts[0]),
-              int.parse(parts[1]),
-              int.parse(parts[2])
+            int.parse(parts[0]),
+            int.parse(parts[1]),
+            int.parse(parts[2]),
           );
         }
       } else if (dateStr.contains('/')) {
         final parts = dateStr.split('/');
         if (parts.length == 3) {
-          return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+          return DateTime(
+            int.parse(parts[2]),
+            int.parse(parts[1]),
+            int.parse(parts[0]),
+          );
         }
       } else if (dateStr.contains('-')) {
         final parts = dateStr.split('-');
         if (parts.length == 3) {
-          return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+          return DateTime(
+            int.parse(parts[2]),
+            int.parse(parts[1]),
+            int.parse(parts[0]),
+          );
         }
       }
       return DateTime.tryParse(dateStr);

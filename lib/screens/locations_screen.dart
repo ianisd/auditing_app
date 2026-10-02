@@ -82,21 +82,30 @@ class _LocationsScreenState extends State<LocationsScreen> {
     final proceed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.orange,
+          size: 48,
+        ),
         title: const Text('Poor Connection Detected'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Latency: ${pingService.latencyMs} ms'),
-            Text('Quality: ${pingService.connectionQuality}',
-                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            Text(
+              'Quality: ${pingService.connectionQuality}',
+              style: const TextStyle(
+                color: Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 12),
             const Text(
               'Sync operations may fail or take several minutes. Consider:\n'
-                  '• Switching to mobile data\n'
-                  '• Moving closer to your Wi-Fi router\n'
-                  '• Waiting for a better connection',
+              '• Switching to mobile data\n'
+              '• Moving closer to your Wi-Fi router\n'
+              '• Waiting for a better connection',
             ),
           ],
         ),
@@ -131,18 +140,29 @@ class _LocationsScreenState extends State<LocationsScreen> {
       await _loadLocations();
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Locations refreshed from server'), backgroundColor: Colors.green));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Locations refreshed from server'),
+          backgroundColor: Colors.green,
+        ),
+      );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
     }
   }
 
-  Future<void> _showAddEditDialog([Map<String, dynamic>? existingLocation]) async {
-    final nameController = TextEditingController(text: existingLocation?['Location']);
+  Future<void> _showAddEditDialog([
+    Map<String, dynamic>? existingLocation,
+  ]) async {
+    final nameController = TextEditingController(
+      text: existingLocation?['Location'],
+    );
     final isEditing = existingLocation != null;
 
     await showDialog(
@@ -151,18 +171,26 @@ class _LocationsScreenState extends State<LocationsScreen> {
         title: Text(isEditing ? 'Edit Location' : 'Add Location'),
         content: TextField(
           controller: nameController,
-          decoration: const InputDecoration(labelText: 'Location Name', border: OutlineInputBorder()),
+          decoration: const InputDecoration(
+            labelText: 'Location Name',
+            border: OutlineInputBorder(),
+          ),
           autofocus: true,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           ElevatedButton(
             onPressed: () async {
               if (nameController.text.trim().isEmpty) return;
 
               final storage = context.read<OfflineStorage>();
               final locData = {
-                'locationID': isEditing ? existingLocation['locationID'] : DateTime.now().millisecondsSinceEpoch.toString(),
+                'locationID': isEditing
+                    ? existingLocation['locationID']
+                    : DateTime.now().millisecondsSinceEpoch.toString(),
                 'Location': nameController.text.trim(),
                 'Image': isEditing ? existingLocation['Image'] : '',
               };
@@ -173,7 +201,9 @@ class _LocationsScreenState extends State<LocationsScreen> {
               _loadLocations();
 
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isEditing ? 'Updated' : 'Added')));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(isEditing ? 'Updated' : 'Added')),
+                );
               }
             },
             child: const Text('Save'),
@@ -190,8 +220,14 @@ class _LocationsScreenState extends State<LocationsScreen> {
         title: const Text('Delete Location?'),
         content: const Text('This will delete the location from your device.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
@@ -204,10 +240,19 @@ class _LocationsScreenState extends State<LocationsScreen> {
   }
 
   Widget _buildLocationImage(String? imageUrl) {
-    if (imageUrl == null || imageUrl.isEmpty) return const CircleAvatar(child: Icon(Icons.location_on));
+    if (imageUrl == null || imageUrl.isEmpty)
+      return const CircleAvatar(child: Icon(Icons.location_on));
     bool isValidUrl = imageUrl.startsWith('http');
-    if (!isValidUrl) return const CircleAvatar(backgroundColor: Colors.grey, child: Icon(Icons.broken_image, color: Colors.white));
-    return CircleAvatar(backgroundImage: NetworkImage(imageUrl), onBackgroundImageError: (_, _) {}, radius: 20);
+    if (!isValidUrl)
+      return const CircleAvatar(
+        backgroundColor: Colors.grey,
+        child: Icon(Icons.broken_image, color: Colors.white),
+      );
+    return CircleAvatar(
+      backgroundImage: NetworkImage(imageUrl),
+      onBackgroundImageError: (_, _) {},
+      radius: 20,
+    );
   }
 
   @override
@@ -216,7 +261,10 @@ class _LocationsScreenState extends State<LocationsScreen> {
       appBar: AppBar(
         title: const Text('Locations'),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _isRefreshing ? null : _refreshLocations),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _isRefreshing ? null : _refreshLocations,
+          ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60),
@@ -229,7 +277,10 @@ class _LocationsScreenState extends State<LocationsScreen> {
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
                 fillColor: Colors.white,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
               ),
             ),
@@ -245,40 +296,65 @@ class _LocationsScreenState extends State<LocationsScreen> {
           : _filteredLocations.isEmpty
           ? const Center(child: Text('No locations found'))
           : ListView.builder(
-        itemCount: _filteredLocations.length,
-        itemBuilder: (context, index) {
-          final loc = _filteredLocations[index];
-          final name = loc['Location']?.toString() ?? 'Unknown';
-          final id = loc['locationID']?.toString() ?? '';
-          final image = loc['Image']?.toString();
+              itemCount: _filteredLocations.length,
+              itemBuilder: (context, index) {
+                final loc = _filteredLocations[index];
+                final name = loc['Location']?.toString() ?? 'Unknown';
+                final id = loc['locationID']?.toString() ?? '';
+                final image = loc['Image']?.toString();
 
-          return Card(
-            margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-            child: ListTile(
-              leading: _buildLocationImage(image),
-              title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => LocationHistoryScreen(locationName: name),
+                return Card(
+                  margin: const EdgeInsets.symmetric(
+                    vertical: 4,
+                    horizontal: 8,
+                  ),
+                  child: ListTile(
+                    leading: _buildLocationImage(image),
+                    title: Text(
+                      name,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              LocationHistoryScreen(locationName: name),
+                        ),
+                      );
+                    },
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (value) {
+                        if (value == 'edit') _showAddEditDialog(loc);
+                        if (value == 'delete') _deleteLocation(id);
+                      },
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                          value: 'edit',
+                          child: Row(
+                            children: [
+                              Icon(Icons.edit, color: Colors.blue),
+                              SizedBox(width: 8),
+                              Text('Edit'),
+                            ],
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete, color: Colors.red),
+                              SizedBox(width: 8),
+                              Text('Delete'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 );
               },
-              trailing: PopupMenuButton<String>(
-                onSelected: (value) {
-                  if (value == 'edit') _showAddEditDialog(loc);
-                  if (value == 'delete') _deleteLocation(id);
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit, color: Colors.blue), SizedBox(width: 8), Text('Edit')])),
-                  const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete, color: Colors.red), SizedBox(width: 8), Text('Delete')])),
-                ],
-              ),
             ),
-          );
-        },
-      ),
     );
   }
 }

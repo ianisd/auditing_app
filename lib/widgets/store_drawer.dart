@@ -17,7 +17,9 @@ class StoreDrawer extends StatelessWidget {
           final activeId = storeManager.activeStore?['id'];
 
           // Check if there are any legacy stores
-          final hasLegacyStores = stores.any((store) => store['isLegacy'] == true);
+          final hasLegacyStores = stores.any(
+            (store) => store['isLegacy'] == true,
+          );
 
           return Column(
             children: [
@@ -25,7 +27,10 @@ class StoreDrawer extends StatelessWidget {
                 decoration: const BoxDecoration(color: Colors.blue),
                 accountName: Text(
                   storeManager.activeStore?['name'] ?? 'No Store Selected',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
                 accountEmail: Text(
                   storeManager.activeStore?['url'] ?? '',
@@ -44,24 +49,40 @@ class StoreDrawer extends StatelessWidget {
                   children: [
                     const Padding(
                       padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Text('Switch Store', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                      child: Text(
+                        'Switch Store',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                     ...stores.map((store) {
                       final isSelected = store['id'] == activeId;
                       final isLegacy = store['isLegacy'] == true;
-                      final hasSheetId = (store['sheetId']?.toString() ?? '').isNotEmpty;
+                      final hasSheetId =
+                          (store['sheetId']?.toString() ?? '').isNotEmpty;
 
                       return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             // ✅ Legacy badge above store name (only for legacy stores without sheet ID)
                             if (isLegacy && !hasSheetId)
                               Padding(
-                                padding: const EdgeInsets.only(left: 56, bottom: 2), // Align with title text
+                                padding: const EdgeInsets.only(
+                                  left: 56,
+                                  bottom: 2,
+                                ), // Align with title text
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: Colors.orange,
                                     borderRadius: BorderRadius.circular(10),
@@ -85,9 +106,14 @@ class StoreDrawer extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: ListTile(
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
                                 leading: Icon(
-                                  isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                                  isSelected
+                                      ? Icons.radio_button_checked
+                                      : Icons.radio_button_unchecked,
                                   color: isSelected ? Colors.blue : Colors.grey,
                                 ),
                                 title: Column(
@@ -97,7 +123,9 @@ class StoreDrawer extends StatelessWidget {
                                     Text(
                                       store['name'],
                                       style: TextStyle(
-                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                        fontWeight: isSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
                                         color: isSelected ? Colors.blue : null,
                                         fontSize: 15,
                                       ),
@@ -109,7 +137,10 @@ class StoreDrawer extends StatelessWidget {
                                       store['url'] ?? 'No URL',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey,
+                                      ),
                                     ),
                                     // ID information
                                     if (hasSheetId)
@@ -117,14 +148,20 @@ class StoreDrawer extends StatelessWidget {
                                         'Sheet ID: ${store['sheetId']}',
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 10, color: Colors.green),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.green,
+                                        ),
                                       ),
                                     if (isLegacy && store['scriptId'] != null)
                                       Text(
                                         'Script ID: ${store['scriptId']}',
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 10, color: Colors.orange),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.orange,
+                                        ),
                                       ),
                                   ],
                                 ),
@@ -134,8 +171,13 @@ class StoreDrawer extends StatelessWidget {
                                     // Migrate button for legacy stores
                                     if (isLegacy && !hasSheetId)
                                       IconButton(
-                                        icon: const Icon(Icons.sync_problem, color: Colors.orange, size: 20),
-                                        onPressed: () => _migrateStore(context, store),
+                                        icon: const Icon(
+                                          Icons.sync_problem,
+                                          color: Colors.orange,
+                                          size: 20,
+                                        ),
+                                        onPressed: () =>
+                                            _migrateStore(context, store),
                                         tooltip: 'Migrate Store',
                                         padding: EdgeInsets.zero,
                                         constraints: const BoxConstraints(),
@@ -143,28 +185,42 @@ class StoreDrawer extends StatelessWidget {
                                     const SizedBox(width: 8),
                                     // Delete button
                                     IconButton(
-                                      icon: const Icon(Icons.delete_outline, size: 20),
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        size: 20,
+                                      ),
                                       onPressed: () async {
                                         final confirm = await showDialog<bool>(
                                           context: context,
                                           builder: (ctx) => AlertDialog(
                                             title: const Text('Remove Store?'),
-                                            content: Text('Remove "${store['name']}" from this device? Data will be lost if not synced.'),
+                                            content: Text(
+                                              'Remove "${store['name']}" from this device? Data will be lost if not synced.',
+                                            ),
                                             actions: [
                                               TextButton(
-                                                onPressed: () => Navigator.pop(ctx, false),
+                                                onPressed: () =>
+                                                    Navigator.pop(ctx, false),
                                                 child: const Text('Cancel'),
                                               ),
                                               TextButton(
-                                                onPressed: () => Navigator.pop(ctx, true),
-                                                child: const Text('Remove', style: TextStyle(color: Colors.red)),
+                                                onPressed: () =>
+                                                    Navigator.pop(ctx, true),
+                                                child: const Text(
+                                                  'Remove',
+                                                  style: TextStyle(
+                                                    color: Colors.red,
+                                                  ),
+                                                ),
                                               ),
                                             ],
                                           ),
                                         );
 
                                         if (confirm == true) {
-                                          await storeManager.removeStore(store['id']);
+                                          await storeManager.removeStore(
+                                            store['id'],
+                                          );
                                         }
                                       },
                                       padding: EdgeInsets.zero,
@@ -182,31 +238,56 @@ class StoreDrawer extends StatelessWidget {
                             // ✅ Warning banner (only if needed, and below the store)
                             if (isLegacy && !hasSheetId)
                               Container(
-                                margin: const EdgeInsets.only(left: 56, right: 12, top: 2, bottom: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                margin: const EdgeInsets.only(
+                                  left: 56,
+                                  right: 12,
+                                  top: 2,
+                                  bottom: 4,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
                                 decoration: BoxDecoration(
                                   color: Colors.orange.shade50,
                                   borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: Colors.orange.shade200),
+                                  border: Border.all(
+                                    color: Colors.orange.shade200,
+                                  ),
                                 ),
                                 child: Row(
                                   children: [
-                                    Icon(Icons.warning_amber, color: Colors.orange.shade700, size: 14),
+                                    Icon(
+                                      Icons.warning_amber,
+                                      color: Colors.orange.shade700,
+                                      size: 14,
+                                    ),
                                     const SizedBox(width: 8),
                                     Expanded(
                                       child: Text(
                                         'Needs migration to work properly',
-                                        style: TextStyle(color: Colors.orange.shade700, fontSize: 11),
+                                        style: TextStyle(
+                                          color: Colors.orange.shade700,
+                                          fontSize: 11,
+                                        ),
                                       ),
                                     ),
                                     TextButton(
-                                      onPressed: () => _migrateStore(context, store),
+                                      onPressed: () =>
+                                          _migrateStore(context, store),
                                       style: TextButton.styleFrom(
                                         minimumSize: Size.zero,
-                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 2,
+                                        ),
+                                        tapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
                                       ),
-                                      child: const Text('Fix Now', style: TextStyle(fontSize: 11)),
+                                      child: const Text(
+                                        'Fix Now',
+                                        style: TextStyle(fontSize: 11),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -232,7 +313,11 @@ class StoreDrawer extends StatelessWidget {
                             children: [
                               Row(
                                 children: [
-                                  Icon(Icons.info_outline, color: Colors.orange.shade700, size: 18),
+                                  Icon(
+                                    Icons.info_outline,
+                                    color: Colors.orange.shade700,
+                                    size: 18,
+                                  ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
@@ -253,7 +338,8 @@ class StoreDrawer extends StatelessWidget {
                               ),
                               const SizedBox(height: 10),
                               ElevatedButton.icon(
-                                onPressed: () => _showMigrationDialog(context, stores),
+                                onPressed: () =>
+                                    _showMigrationDialog(context, stores),
                                 icon: const Icon(Icons.sync, size: 16),
                                 label: const Text('View Legacy Stores'),
                                 style: ElevatedButton.styleFrom(
@@ -276,15 +362,26 @@ class StoreDrawer extends StatelessWidget {
               // Add New Store Button
               ListTile(
                 leading: const Icon(Icons.add_circle, color: Colors.green),
-                title: const Text('Add New Store', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                title: const Text(
+                  'Add New Store',
+                  style: TextStyle(
+                    color: Colors.green,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => const SetupStoreScreen()),
+                    MaterialPageRoute(
+                      builder: (context) => const SetupStoreScreen(),
+                    ),
                   );
                 },
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
               ),
 
               const Divider(height: 1),
@@ -293,13 +390,18 @@ class StoreDrawer extends StatelessWidget {
               // Sign Out
               ListTile(
                 leading: const Icon(Icons.logout, color: Colors.red),
-                title: const Text('Sign Out', style: TextStyle(color: Colors.red)),
+                title: const Text(
+                  'Sign Out',
+                  style: TextStyle(color: Colors.red),
+                ),
                 onTap: () async {
                   final confirm = await showDialog<bool>(
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: const Text('Sign Out?'),
-                      content: const Text('You\'ll need to sign in again to use the app.'),
+                      content: const Text(
+                        'You\'ll need to sign in again to use the app.',
+                      ),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, false),
@@ -307,7 +409,10 @@ class StoreDrawer extends StatelessWidget {
                         ),
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('Sign Out', style: TextStyle(color: Colors.red)),
+                          child: const Text(
+                            'Sign Out',
+                            style: TextStyle(color: Colors.red),
+                          ),
                         ),
                       ],
                     ),
@@ -316,11 +421,17 @@ class StoreDrawer extends StatelessWidget {
                   if (confirm == true && context.mounted) {
                     await context.read<FirestoreService>().signOut();
                     if (context.mounted) {
-                      Navigator.of(context, rootNavigator: true).popUntil((route) => route.isFirst);
+                      Navigator.of(
+                        context,
+                        rootNavigator: true,
+                      ).popUntil((route) => route.isFirst);
                     }
                   }
                 },
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
               ),
 
               const SizedBox(height: 16),
@@ -334,9 +445,7 @@ class StoreDrawer extends StatelessWidget {
   void _migrateStore(BuildContext context, Map<String, dynamic> store) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => MigrateStoreScreen(store: store),
-      ),
+      MaterialPageRoute(builder: (context) => MigrateStoreScreen(store: store)),
     ).then((result) {
       if (result == true && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -350,7 +459,10 @@ class StoreDrawer extends StatelessWidget {
     });
   }
 
-  void _showMigrationDialog(BuildContext context, List<Map<String, dynamic>> stores) {
+  void _showMigrationDialog(
+    BuildContext context,
+    List<Map<String, dynamic>> stores,
+  ) {
     final legacyStores = stores.where((s) => s['isLegacy'] == true).toList();
 
     showDialog(
@@ -363,45 +475,58 @@ class StoreDrawer extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Found ${legacyStores.length} legacy store(s) that need migration:'),
+              Text(
+                'Found ${legacyStores.length} legacy store(s) that need migration:',
+              ),
               const SizedBox(height: 16),
-              ...legacyStores.map((store) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning, color: Colors.orange, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            store['name'],
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                          if (store['scriptId'] != null)
+              ...legacyStores.map(
+                (store) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning, color: Colors.orange, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              'ID: ${store['scriptId']}',
-                              style: const TextStyle(fontSize: 11, color: Colors.grey),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                              store['name'],
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
                             ),
-                        ],
+                            if (store['scriptId'] != null)
+                              Text(
+                                'ID: ${store['scriptId']}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        _migrateStore(context, store);
-                      },
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _migrateStore(context, store);
+                        },
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                        ),
+                        child: const Text('Migrate'),
                       ),
-                      child: const Text('Migrate'),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              )),
+              ),
             ],
           ),
         ),

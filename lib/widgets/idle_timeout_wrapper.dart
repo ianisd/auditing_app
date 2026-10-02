@@ -62,7 +62,8 @@ class _IdleTimeoutWrapperState extends State<IdleTimeoutWrapper> {
     final staySignedIn = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => _IdleWarningDialog(warningDuration: widget.warningDuration),
+      builder: (ctx) =>
+          _IdleWarningDialog(warningDuration: widget.warningDuration),
     );
 
     _isWarningShowing = false;
@@ -78,7 +79,10 @@ class _IdleTimeoutWrapperState extends State<IdleTimeoutWrapper> {
     if (!mounted) return;
     await context.read<FirestoreService>().signOut();
     if (mounted) {
-      Navigator.of(context, rootNavigator: true).popUntil((route) => route.isFirst);
+      Navigator.of(
+        context,
+        rootNavigator: true,
+      ).popUntil((route) => route.isFirst);
     }
   }
 
@@ -129,7 +133,9 @@ class _IdleWarningDialogState extends State<_IdleWarningDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Still there?'),
-      content: Text("You'll be signed out in $_secondsLeft seconds due to inactivity."),
+      content: Text(
+        "You'll be signed out in $_secondsLeft seconds due to inactivity.",
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),

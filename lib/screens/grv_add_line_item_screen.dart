@@ -43,7 +43,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   // Track selected pack size and auto-lookup cost
   String? _selectedPackSize;
   double? _autoCalculatedPrice;
-  String? _foundSupplierBottleID; // 🔥 Added to store supplierBottleID from MasterCosts
+  String?
+  _foundSupplierBottleID; // 🔥 Added to store supplierBottleID from MasterCosts
 
   bool _isMounted() => mounted && !_isDisposed;
 
@@ -122,19 +123,21 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       unitsPerCase: units,
       pricePerUnit: price,
       productName:
-      _selectedProduct?['Inventory Product Name']?.toString() ??
+          _selectedProduct?['Inventory Product Name']?.toString() ??
           widget.initialItem?.productName,
       barcode:
-      _selectedProduct?['Barcode']?.toString() ??
+          _selectedProduct?['Barcode']?.toString() ??
           widget.initialItem?.barcode,
-      supplierBottleID: _foundSupplierBottleID ?? widget.initialItem?.supplierBottleID, // 🔥 Pass the found bottle ID
+      supplierBottleID:
+          _foundSupplierBottleID ??
+          widget.initialItem?.supplierBottleID, // 🔥 Pass the found bottle ID
       // 🔥 FIX: this is what was missing — without it the edit screen wrote
       // empty Category/UoM/volume for manually added lines (the tonic rows).
       mainCategory:
-      _selectedProduct?['Main Category']?.toString() ??
+          _selectedProduct?['Main Category']?.toString() ??
           widget.initialItem?.mainCategory,
       category:
-      _selectedProduct?['Category']?.toString() ??
+          _selectedProduct?['Category']?.toString() ??
           widget.initialItem?.category,
       singleUnitVolume: _selectedProduct != null
           ? _parseNumber(_selectedProduct!['Single Unit Volume'])
@@ -230,10 +233,10 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
   // Enhanced cost lookup with feedback
   Future<void> _lookupCostWithFeedback(
-      String productName,
-      String supplierName,
-      String supplierId,
-      ) async {
+    String productName,
+    String supplierName,
+    String supplierId,
+  ) async {
     try {
       final result = await _lookupCost(productName, supplierName, supplierId);
       if (!_isMounted()) return;
@@ -244,7 +247,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
           _foundSupplierBottleID = result['supplierBottleID'];
           _priceController.text = _autoCalculatedPrice!.toStringAsFixed(2);
         });
-        print('✅ Cost lookup success: R$_autoCalculatedPrice, BottleID: $_foundSupplierBottleID');
+        print(
+          '✅ Cost lookup success: R$_autoCalculatedPrice, BottleID: $_foundSupplierBottleID',
+        );
       } else {
         if (_isMounted()) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -359,10 +364,10 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   }
 
   Future<Map<String, dynamic>?> _lookupCost(
-      String productName,
-      String supplierName,
-      String supplierId,
-      ) async {
+    String productName,
+    String supplierName,
+    String supplierId,
+  ) async {
     print('🔍 ===== COST LOOKUP START =====');
     print('  📦 Product: "$productName"');
     print('  🏢 Supplier: "$supplierName"');
@@ -373,8 +378,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
 
       final allSuppliers = await storage.getMasterSuppliers();
       final supplierMatch = allSuppliers.firstWhere(
-            (s) =>
-        s['Supplier']?.toString().toLowerCase().trim() ==
+        (s) =>
+            s['Supplier']?.toString().toLowerCase().trim() ==
             supplierName.toLowerCase().trim(),
         orElse: () => <String, dynamic>{},
       );
@@ -404,8 +409,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
           final searchName = productName.toLowerCase().trim();
 
           return (costName == searchName ||
-              costName.contains(searchName) ||
-              searchName.contains(costName)) &&
+                  costName.contains(searchName) ||
+                  searchName.contains(costName)) &&
               costSupplierId == actualSupplierId;
         }).toList();
 
@@ -452,9 +457,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   double? _extractCost(Map<String, dynamic> costEntry) {
     final costValue =
         costEntry['Cost Price'] ??
-            costEntry['Unit Cost'] ??
-            costEntry['Cost'] ??
-            costEntry['avgCost'];
+        costEntry['Unit Cost'] ??
+        costEntry['Cost'] ??
+        costEntry['avgCost'];
 
     if (costValue == null) return null;
 
@@ -481,7 +486,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
       final storage = context.read<OfflineStorage>();
       final suppliers = await storage.getMasterSuppliers();
       final match = suppliers.firstWhere(
-            (s) => s['Supplier']?.toString() == supplierName,
+        (s) => s['Supplier']?.toString() == supplierName,
         orElse: () => <String, dynamic>{},
       );
       return match['supplierID']?.toString() ?? '';
@@ -525,9 +530,7 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   // 🔥 CX helper: pack sizes for the currently selected product's category
   // (bridges to the existing _getPackSizesForCategory so the new build() compiles)
   List<String> _getFilteredPackSizes() {
-    return _getPackSizesForCategory(
-      _selectedProduct?['Category']?.toString(),
-    );
+    return _getPackSizesForCategory(_selectedProduct?['Category']?.toString());
   }
 
   void _showPackSizeSelection(String? category) {
@@ -568,7 +571,8 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
   Widget build(BuildContext context) {
     // 🔥 CX: Pack sizes for the selected product's category (outlined dropdown like CountScreen)
     final currentPackSizes = List<String>.from(_getFilteredPackSizes());
-    if (_selectedPackSize != null && !currentPackSizes.contains(_selectedPackSize)) {
+    if (_selectedPackSize != null &&
+        !currentPackSizes.contains(_selectedPackSize)) {
       currentPackSizes.insert(0, _selectedPackSize!);
     }
 
@@ -587,32 +591,44 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                 children: [
                   Expanded(
                     child: Autocomplete<Map<String, dynamic>>(
-                      initialValue: TextEditingValue(text: widget.initialItem?.description ?? ''),
+                      initialValue: TextEditingValue(
+                        text: widget.initialItem?.description ?? '',
+                      ),
                       optionsBuilder: (TextEditingValue textEditingValue) {
                         if (textEditingValue.text.isEmpty) return [];
-                        return _productSuggestions.where((item) =>
-                            (item['Inventory Product Name']?.toString().toLowerCase() ?? '')
-                                .contains(textEditingValue.text.toLowerCase())
-                        ).toList();
+                        return _productSuggestions
+                            .where(
+                              (item) =>
+                                  (item['Inventory Product Name']
+                                              ?.toString()
+                                              .toLowerCase() ??
+                                          '')
+                                      .contains(
+                                        textEditingValue.text.toLowerCase(),
+                                      ),
+                            )
+                            .toList();
                       },
-                      displayStringForOption: (option) => option['Inventory Product Name']?.toString() ?? '',
+                      displayStringForOption: (option) =>
+                          option['Inventory Product Name']?.toString() ?? '',
                       onSelected: _onProductSelected,
-                      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                        return TextFormField(
-                          controller: controller,
-                          focusNode: focusNode,
-                          onChanged: (value) {
-                            _descriptionController.text = value;
+                      fieldViewBuilder:
+                          (context, controller, focusNode, onFieldSubmitted) {
+                            return TextFormField(
+                              controller: controller,
+                              focusNode: focusNode,
+                              onChanged: (value) {
+                                _descriptionController.text = value;
+                              },
+                              onFieldSubmitted: (_) => onFieldSubmitted(),
+                              decoration: const InputDecoration(
+                                labelText: 'Product Description *',
+                                hintText: 'Search products...',
+                                border: OutlineInputBorder(),
+                                prefixIcon: Icon(Icons.inventory),
+                              ),
+                            );
                           },
-                          onFieldSubmitted: (_) => onFieldSubmitted(),
-                          decoration: const InputDecoration(
-                            labelText: 'Product Description *',
-                            hintText: 'Search products...',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.inventory),
-                          ),
-                        );
-                      },
                       optionsViewBuilder: (context, onSelected, options) {
                         return Align(
                           alignment: Alignment.topLeft,
@@ -626,8 +642,13 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                                   final item = options.elementAt(i);
                                   return ListTile(
                                     dense: true,
-                                    title: Text(item['Inventory Product Name'] ?? 'Unnamed'),
-                                    subtitle: Text('${item['Barcode'] ?? ''} • ${item['Category'] ?? ''}'),
+                                    title: Text(
+                                      item['Inventory Product Name'] ??
+                                          'Unnamed',
+                                    ),
+                                    subtitle: Text(
+                                      '${item['Barcode'] ?? ''} • ${item['Category'] ?? ''}',
+                                    ),
                                     onTap: () => onSelected(item),
                                   );
                                 },
@@ -666,7 +687,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                   if (val == null) return;
                   setState(() {
                     _selectedPackSize = val;
-                    _unitsPerCaseController.text = _getUnitsPerCase(val).toString();
+                    _unitsPerCaseController.text = _getUnitsPerCase(
+                      val,
+                    ).toString();
                   });
                 },
               ),
@@ -680,7 +703,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                 decoration: InputDecoration(
                   labelText: 'Units/Case',
                   border: const OutlineInputBorder(),
-                  helperText: _selectedPackSize != null ? 'Auto from: $_selectedPackSize' : null,
+                  helperText: _selectedPackSize != null
+                      ? 'Auto from: $_selectedPackSize'
+                      : null,
                 ),
                 keyboardType: TextInputType.number,
               ),
@@ -713,7 +738,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                             ? 'Auto: R${_autoCalculatedPrice!.toStringAsFixed(2)}'
                             : null,
                       ),
-                      keyboardType: TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -727,7 +754,9 @@ class _GrvAddLineItemScreenState extends State<GrvAddLineItemScreen> {
                       style: IconButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                     ),
                   ),

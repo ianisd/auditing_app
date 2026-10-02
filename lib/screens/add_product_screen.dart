@@ -4,7 +4,6 @@ import '../services/offline_storage.dart';
 import '../widgets/barcode_scanner.dart';
 import '../services/food_stock_fields.dart';
 
-
 class AddProductScreen extends StatefulWidget {
   final String? initialBarcode;
   final String? initialName;
@@ -24,16 +23,34 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
   String _uom = 'ml';
   bool _saving = false;
-  bool get _isFood => FoodStockFields.mainCategory(_selectedCategory ?? '') != null;
+  bool get _isFood =>
+      FoodStockFields.mainCategory(_selectedCategory ?? '') != null;
   String? _selectedCategory;
 
   // --- UPDATED: Includes Food Groups ---
   final List<String> _categories = [
     // Group 1: Drinks
     "Beer", "Cider", "Cooler", "Coolers",
-    "Champagne", "White Wine", "Sparkling Wine", "Rose", "Red wine", "Sparkling White Wine", "Champagne XL",
+    "Champagne",
+    "White Wine",
+    "Sparkling Wine",
+    "Rose",
+    "Red wine",
+    "Sparkling White Wine",
+    "Champagne XL",
     "Soft Drinks", "Still Water", "Sparkling Water",
-    "Whiskey", "Vodka", "Tequila", "Liqueurs", "Gin", "Aperatif", "Cognac", "Bourbon", "Rum", "Brandy", "Cordials", "Schnapps",
+    "Whiskey",
+    "Vodka",
+    "Tequila",
+    "Liqueurs",
+    "Gin",
+    "Aperatif",
+    "Cognac",
+    "Bourbon",
+    "Rum",
+    "Brandy",
+    "Cordials",
+    "Schnapps",
 
     ...FoodStockFields.groups.values.expand((categories) => categories),
     'Consumables',
@@ -42,7 +59,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.initialBarcode != null) _barcodeController.text = widget.initialBarcode!;
+    if (widget.initialBarcode != null)
+      _barcodeController.text = widget.initialBarcode!;
     if (widget.initialName != null) _nameController.text = widget.initialName!;
 
     // Sort categories alphabetically for easier finding
@@ -68,13 +86,34 @@ class _AddProductScreenState extends State<AddProductScreen> {
     if (["Coolers", "Cider", "Beer", "Cooler"].contains(category)) {
       return "Beer/Ciders/Coolers";
     }
-    if (["Champagne", "White Wine", "Sparkling Wine", "Rose", "Red wine", "Sparkling White Wine", "Champagne XL"].contains(category)) {
+    if ([
+      "Champagne",
+      "White Wine",
+      "Sparkling Wine",
+      "Rose",
+      "Red wine",
+      "Sparkling White Wine",
+      "Champagne XL",
+    ].contains(category)) {
       return "Wine/Champagne/Sparkling Wine";
     }
     if (["Soft Drinks", "Still Water", "Sparkling Water"].contains(category)) {
       return "Soft Drinks/Water";
     }
-    if (["Whiskey", "Vodka", "Tequila", "Liqueurs", "Gin", "Aperatif", "Cognac", "Bourbon", "Rum", "Brandy", "Cordials", "Schnapps"].contains(category)) {
+    if ([
+      "Whiskey",
+      "Vodka",
+      "Tequila",
+      "Liqueurs",
+      "Gin",
+      "Aperatif",
+      "Cognac",
+      "Bourbon",
+      "Rum",
+      "Brandy",
+      "Cordials",
+      "Schnapps",
+    ].contains(category)) {
       return "Spirit";
     }
 
@@ -110,7 +149,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
       'Product Name': _nameController.text.trim(), // Keep sync
       'Main Category': mainCategory, // AUTOMATED
       'Category': _selectedCategory ?? 'Other',
-      'Single Unit Volume': FoodStockFields.number(_volumeController.text) * (_isFood && _uom == 'kg' ? 1000 : 1),
+      'Single Unit Volume':
+          FoodStockFields.number(_volumeController.text) *
+          (_isFood && _uom == 'kg' ? 1000 : 1),
       'UoM': _isFood ? 'g' : _uom,
       'Cost Price': FoodStockFields.number(_costController.text),
       'Pack Size': 'Single',
@@ -122,9 +163,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
       await context.read<OfflineStorage>().saveNewLocalProduct(newItem);
       if (mounted) Navigator.pop(context, newItem);
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save product: $error')),
-      );
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save product: $error')),
+        );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -181,7 +223,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
                   border: OutlineInputBorder(),
                 ),
                 initialValue: _selectedCategory,
-                items: _categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                items: _categories
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
                 onChanged: (val) => setState(() {
                   final wasFood = _isFood;
                   _selectedCategory = val;
@@ -196,7 +240,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
               const SizedBox(height: 16),
 
               if (_selectedCategory != null) ...[
-                Text('Main category: ${_deriveMainCategory(_selectedCategory!)}'),
+                Text(
+                  'Main category: ${_deriveMainCategory(_selectedCategory!)}',
+                ),
                 const SizedBox(height: 12),
               ],
               // VOLUME/WEIGHT & UOM
@@ -209,13 +255,19 @@ class _AddProductScreenState extends State<AddProductScreen> {
                         if (!_isFood) return null;
                         final size = FoodStockFields.number(v);
                         final grams = size * (_uom == 'kg' ? 1000 : 1);
-                        return grams.isFinite && grams > 0 ? null : 'Enter a portion weight greater than zero';
+                        return grams.isFinite && grams > 0
+                            ? null
+                            : 'Enter a portion weight greater than zero';
                       },
                       decoration: InputDecoration(
-                        labelText: _isFood ? 'Portion weight *' : 'Unit Size (Vol/Weight)',
+                        labelText: _isFood
+                            ? 'Portion weight *'
+                            : 'Unit Size (Vol/Weight)',
                         border: const OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -229,14 +281,35 @@ class _AddProductScreenState extends State<AddProductScreen> {
                       key: ValueKey(_isFood),
                       initialValue: _uom,
                       // Updated UoM List
-                      items: (_isFood ? ['g', 'kg'] : ['ml', 'Ltr', 'cl', 'kg', 'g', 'lb', 'oz', 'each'])
-                          .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                          .toList(),
+                      items:
+                          (_isFood
+                                  ? ['g', 'kg']
+                                  : [
+                                      'ml',
+                                      'Ltr',
+                                      'cl',
+                                      'kg',
+                                      'g',
+                                      'lb',
+                                      'oz',
+                                      'each',
+                                    ])
+                              .map(
+                                (e) =>
+                                    DropdownMenuItem(value: e, child: Text(e)),
+                              )
+                              .toList(),
                       onChanged: (v) => setState(() {
                         if (v == null) return;
-                        if (_isFood && v != _uom && _volumeController.text.trim().isNotEmpty) {
-                          final size = FoodStockFields.number(_volumeController.text);
-                          _volumeController.text = (_uom == 'kg' ? size * 1000 : size / 1000).toString();
+                        if (_isFood &&
+                            v != _uom &&
+                            _volumeController.text.trim().isNotEmpty) {
+                          final size = FoodStockFields.number(
+                            _volumeController.text,
+                          );
+                          _volumeController.text =
+                              (_uom == 'kg' ? size * 1000 : size / 1000)
+                                  .toString();
                         }
                         _uom = v;
                       }),
@@ -247,7 +320,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
               const SizedBox(height: 16),
 
               if (_isFood) ...[
-                const Text('Enter the weight of one portion, not the delivery pack. For example: 200 g. Counts are saved in grams; portions = weight ÷ portion weight.'),
+                const Text(
+                  'Enter the weight of one portion, not the delivery pack. For example: 200 g. Counts are saved in grams; portions = weight ÷ portion weight.',
+                ),
                 const SizedBox(height: 16),
               ],
               // COST
@@ -256,14 +331,18 @@ class _AddProductScreenState extends State<AddProductScreen> {
                 validator: (v) {
                   if (v == null || v.trim().isEmpty) return null;
                   final cost = double.tryParse(v.trim().replaceAll(',', '.'));
-                  return cost != null && cost.isFinite && cost >= 0 ? null : 'Enter a valid non-negative cost';
+                  return cost != null && cost.isFinite && cost >= 0
+                      ? null
+                      : 'Enter a valid non-negative cost';
                 },
                 decoration: InputDecoration(
                   labelText: _isFood ? 'Cost per portion (R)' : 'Cost Price',
                   border: const OutlineInputBorder(),
                   prefixText: 'R ',
                 ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
               ),
 
               const SizedBox(height: 32),

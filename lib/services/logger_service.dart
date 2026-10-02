@@ -9,14 +9,15 @@ class LoggerService {
   Future<void> init() async {
     try {
       final encryptionKey = await EncryptionService.getEncryptionKey();
-      _box = await Hive.openBox(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
+      _box = await Hive.openBox(
+        _boxName,
+        encryptionCipher: HiveAesCipher(encryptionKey),
+      );
     } catch (e) {
       // Fallback for test environments where Hive isn't fully initialized
       _box = null;
     }
   }
-
-
 
   // Log an info message (e.g., "Saved Count: Whiskey")
   Future<void> info(String message) async {

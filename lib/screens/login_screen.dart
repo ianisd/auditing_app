@@ -20,7 +20,9 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _error;
 
   void _checkCapsLock(KeyEvent event) {
-    final capsOn = HardwareKeyboard.instance.lockModesEnabled.contains(KeyboardLockMode.capsLock);
+    final capsOn = HardwareKeyboard.instance.lockModesEnabled.contains(
+      KeyboardLockMode.capsLock,
+    );
     if (capsOn != _capsLockOn) {
       setState(() => _capsLockOn = capsOn);
     }
@@ -69,9 +71,13 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 TextFormField(
                   controller: _emailController,
-                  decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'Email',
+                    border: OutlineInputBorder(),
+                  ),
                   keyboardType: TextInputType.emailAddress,
-                  validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                  validator: (v) =>
+                      (v == null || v.isEmpty) ? 'Required' : null,
                 ),
                 const SizedBox(height: 16),
                 KeyboardListener(
@@ -84,20 +90,27 @@ class _LoginScreenState extends State<LoginScreen> {
                       border: const OutlineInputBorder(),
                       suffixIcon: _capsLockOn
                           ? Tooltip(
-                        message: 'Caps Lock is on',
-                        child: Icon(Icons.keyboard_capslock, color: Colors.orange.shade700),
-                      )
+                              message: 'Caps Lock is on',
+                              child: Icon(
+                                Icons.keyboard_capslock,
+                                color: Colors.orange.shade700,
+                              ),
+                            )
                           : null,
                     ),
                     obscureText: true,
-                    validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                    validator: (v) =>
+                        (v == null || v.isEmpty) ? 'Required' : null,
                   ),
                 ),
                 if (_capsLockOn) ...[
                   const SizedBox(height: 8),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.orange.shade50,
                       borderRadius: BorderRadius.circular(6),
@@ -105,11 +118,19 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.warning_amber, color: Colors.orange.shade700, size: 16),
+                        Icon(
+                          Icons.warning_amber,
+                          color: Colors.orange.shade700,
+                          size: 16,
+                        ),
                         const SizedBox(width: 8),
                         Text(
                           'Caps Lock is on',
-                          style: TextStyle(color: Colors.orange.shade700, fontSize: 12, fontWeight: FontWeight.w600),
+                          style: TextStyle(
+                            color: Colors.orange.shade700,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ],
                     ),

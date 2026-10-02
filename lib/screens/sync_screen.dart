@@ -37,21 +37,30 @@ class _SyncScreenState extends State<SyncScreen> {
     final proceed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.orange,
+          size: 48,
+        ),
         title: const Text('Poor Connection Detected'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Latency: ${pingService.latencyMs} ms'),
-            Text('Quality: ${pingService.connectionQuality}',
-                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            Text(
+              'Quality: ${pingService.connectionQuality}',
+              style: const TextStyle(
+                color: Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 12),
             const Text(
               'Sync operations may fail or take several minutes. Consider:\n'
-                  '• Switching to mobile data\n'
-                  '• Moving closer to your Wi-Fi router\n'
-                  '• Waiting for a better connection',
+              '• Switching to mobile data\n'
+              '• Moving closer to your Wi-Fi router\n'
+              '• Waiting for a better connection',
             ),
           ],
         ),
@@ -102,7 +111,9 @@ class _SyncScreenState extends State<SyncScreen> {
 
         setState(() {
           _isSyncing = false;
-          _syncMessage = result.success ? result.detailedMessage : 'Error: ${result.message}';
+          _syncMessage = result.success
+              ? result.detailedMessage
+              : 'Error: ${result.message}';
           _syncedCount = result.syncedCount;
         });
       }
@@ -154,14 +165,25 @@ class _SyncScreenState extends State<SyncScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    Icon(Icons.receipt, size: 16, color: Colors.blue.shade700),
+                                    Icon(
+                                      Icons.receipt,
+                                      size: 16,
+                                      color: Colors.blue.shade700,
+                                    ),
                                     const SizedBox(width: 8),
-                                    Text('Pending invoices:',
-                                        style: TextStyle(color: Colors.blue.shade700)),
+                                    Text(
+                                      'Pending invoices:',
+                                      style: TextStyle(
+                                        color: Colors.blue.shade700,
+                                      ),
+                                    ),
                                   ],
                                 ),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: Colors.blue.shade100,
                                     borderRadius: BorderRadius.circular(12),
@@ -184,14 +206,25 @@ class _SyncScreenState extends State<SyncScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    Icon(Icons.shopping_cart, size: 16, color: Colors.orange.shade700),
+                                    Icon(
+                                      Icons.shopping_cart,
+                                      size: 16,
+                                      color: Colors.orange.shade700,
+                                    ),
                                     const SizedBox(width: 8),
-                                    Text('Pending purchases:',
-                                        style: TextStyle(color: Colors.orange.shade700)),
+                                    Text(
+                                      'Pending purchases:',
+                                      style: TextStyle(
+                                        color: Colors.orange.shade700,
+                                      ),
+                                    ),
                                   ],
                                 ),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: Colors.orange.shade100,
                                     borderRadius: BorderRadius.circular(12),
@@ -210,18 +243,30 @@ class _SyncScreenState extends State<SyncScreen> {
                             Padding(
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
-                                      Icon(Icons.link, size: 16, color: Colors.purple.shade700),
+                                      Icon(
+                                        Icons.link,
+                                        size: 16,
+                                        color: Colors.purple.shade700,
+                                      ),
                                       const SizedBox(width: 8),
-                                      Text('Pending PLU mappings:',
-                                          style: TextStyle(color: Colors.purple.shade700)),
+                                      Text(
+                                        'Pending PLU mappings:',
+                                        style: TextStyle(
+                                          color: Colors.purple.shade700,
+                                        ),
+                                      ),
                                     ],
                                   ),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.purple.shade100,
                                       borderRadius: BorderRadius.circular(12),
@@ -241,18 +286,30 @@ class _SyncScreenState extends State<SyncScreen> {
                             Padding(
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
-                                      Icon(Icons.inventory, size: 16, color: Colors.green.shade700),
+                                      Icon(
+                                        Icons.inventory,
+                                        size: 16,
+                                        color: Colors.green.shade700,
+                                      ),
                                       const SizedBox(width: 8),
-                                      Text('Pending stock counts:',
-                                          style: TextStyle(color: Colors.green.shade700)),
+                                      Text(
+                                        'Pending stock counts:',
+                                        style: TextStyle(
+                                          color: Colors.green.shade700,
+                                        ),
+                                      ),
                                     ],
                                   ),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.green.shade100,
                                       borderRadius: BorderRadius.circular(12),
@@ -308,9 +365,7 @@ class _SyncScreenState extends State<SyncScreen> {
                               ? 'Tap sync to upload pending data'
                               : _syncMessage,
                           textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.grey[600],
-                          ),
+                          style: TextStyle(color: Colors.grey[600]),
                         ),
                         if (_syncedCount > 0)
                           Padding(
@@ -336,13 +391,13 @@ class _SyncScreenState extends State<SyncScreen> {
                       onPressed: _isSyncing ? null : _syncNow,
                       icon: _isSyncing
                           ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2,
-                        ),
-                      )
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
                           : const Icon(Icons.sync),
                       label: Text(
                         _isSyncing ? 'Syncing...' : 'Sync Now',

@@ -50,7 +50,8 @@ class _SupplierMappingScreenState extends State<SupplierMappingScreen> {
   }
 
   Future<void> _addVariation() async {
-    if (_selectedSupplierId == null || _variationController.text.isEmpty) return;
+    if (_selectedSupplierId == null || _variationController.text.isEmpty)
+      return;
 
     final variation = _variationController.text.trim();
     final storage = context.read<OfflineStorage>();
@@ -83,105 +84,117 @@ class _SupplierMappingScreenState extends State<SupplierMappingScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Map supplier name variations to a single supplier',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 16),
-                    DropdownButtonFormField<String>(
-                      decoration: const InputDecoration(
-                        labelText: 'Select Supplier',
-                        border: OutlineInputBorder(),
-                      ),
-                      initialValue: _selectedSupplierId,
-                      items: _suppliers.map((s) {
-                        return DropdownMenuItem(
-                          value: s['supplierID']?.toString(),
-                          child: Text(s['Supplier']?.toString() ?? 'Unknown'),
-                        );
-                      }).toList(),
-                      onChanged: (val) => setState(() => _selectedSupplierId = val),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _variationController,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Map supplier name variations to a single supplier',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 16),
+                          DropdownButtonFormField<String>(
                             decoration: const InputDecoration(
-                              labelText: 'Name Variation',
-                              hintText: 'e.g., DURBAN NORTH LIQ',
+                              labelText: 'Select Supplier',
                               border: OutlineInputBorder(),
                             ),
+                            initialValue: _selectedSupplierId,
+                            items: _suppliers.map((s) {
+                              return DropdownMenuItem(
+                                value: s['supplierID']?.toString(),
+                                child: Text(
+                                  s['Supplier']?.toString() ?? 'Unknown',
+                                ),
+                              );
+                            }).toList(),
+                            onChanged: (val) =>
+                                setState(() => _selectedSupplierId = val),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton.filled(
-                          icon: const Icon(Icons.add),
-                          onPressed: _addVariation,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _suppliers.length,
-              itemBuilder: (context, index) {
-                final supplier = _suppliers[index];
-                final supplierId = supplier['supplierID']?.toString() ?? '';
-                final variations = _variations[supplierId] ?? [];
-
-                if (variations.isEmpty) return const SizedBox.shrink();
-
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          supplier['Supplier']?.toString() ?? 'Unknown',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ...variations.map((v) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Row(
+                          const SizedBox(height: 16),
+                          Row(
                             children: [
-                              const Icon(Icons.subdirectory_arrow_right, size: 16, color: Colors.grey),
+                              Expanded(
+                                child: TextField(
+                                  controller: _variationController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Name Variation',
+                                    hintText: 'e.g., DURBAN NORTH LIQ',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
                               const SizedBox(width: 8),
-                              Expanded(child: Text(v)),
+                              IconButton.filled(
+                                icon: const Icon(Icons.add),
+                                onPressed: _addVariation,
+                              ),
                             ],
                           ),
-                        )),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                );
-              },
+                ),
+
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _suppliers.length,
+                    itemBuilder: (context, index) {
+                      final supplier = _suppliers[index];
+                      final supplierId =
+                          supplier['supplierID']?.toString() ?? '';
+                      final variations = _variations[supplierId] ?? [];
+
+                      if (variations.isEmpty) return const SizedBox.shrink();
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                supplier['Supplier']?.toString() ?? 'Unknown',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              ...variations.map(
+                                (v) => Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 2,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.subdirectory_arrow_right,
+                                        size: 16,
+                                        color: Colors.grey,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(child: Text(v)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 

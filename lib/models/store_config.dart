@@ -13,9 +13,5 @@ class StoreConfig {
   @HiveField(2)
   final String scriptUrl;
 
-  StoreConfig({
-    required this.id,
-    required this.name,
-    required this.scriptUrl,
-  });
+  StoreConfig({required this.id, required this.name, required this.scriptUrl});
 }

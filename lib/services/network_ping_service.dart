@@ -24,8 +24,8 @@ class NetworkPingService with ChangeNotifier {
   String get connectionQuality {
     if (_latencyMs < 0 || _speedKbps <= 0) return 'Offline';
     // More realistic thresholds based on actual speed
-    if (_speedKbps >= 1500) return 'Strong';      // >= 1.5 Mbps
-    if (_speedKbps >= 300) return 'Average';       // >= 300 Kbps
+    if (_speedKbps >= 1500) return 'Strong'; // >= 1.5 Mbps
+    if (_speedKbps >= 300) return 'Average'; // >= 300 Kbps
     return 'Weak';
   }
 
@@ -50,7 +50,9 @@ class NetworkPingService with ChangeNotifier {
       _isOnline = false;
       _latencyMs = -1;
       _speedKbps = 0.0;
-      _lastError = _isEnabled ? 'Waiting for connection...' : 'Ping monitoring disabled';
+      _lastError = _isEnabled
+          ? 'Waiting for connection...'
+          : 'Ping monitoring disabled';
     }
 
     notifyListeners();
@@ -92,7 +94,9 @@ class NetworkPingService with ChangeNotifier {
     for (final url in _testUrls) {
       try {
         final startTime = DateTime.now();
-        final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 8));
+        final response = await http
+            .get(Uri.parse(url))
+            .timeout(const Duration(seconds: 8));
         final endTime = DateTime.now();
 
         if (response.statusCode == 200 || response.statusCode == 204) {
@@ -100,11 +104,16 @@ class NetworkPingService with ChangeNotifier {
           bytesDownloaded = response.bodyBytes.length;
 
           // Calculate actual speed in Kbps
-          final durationInMilliseconds = endTime.difference(startTime).inMilliseconds;
+          final durationInMilliseconds = endTime
+              .difference(startTime)
+              .inMilliseconds;
           if (durationInMilliseconds > 0) {
             // Convert bytes to kilobits (8 bits per byte)
             final kilobits = bytesDownloaded * 8 / 1000;
-            _speedKbps = (kilobits / (durationInMilliseconds / 1000.0)).clamp(0.0, 100000.0);
+            _speedKbps = (kilobits / (durationInMilliseconds / 1000.0)).clamp(
+              0.0,
+              100000.0,
+            );
           }
           break;
         }

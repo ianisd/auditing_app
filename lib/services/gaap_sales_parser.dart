@@ -34,18 +34,12 @@ class GaapSalesParser {
       // because v1 intentionally mirrors the existing copy/paste workflow.
       final cells = List<String>.generate(
         _gaapColumnCount,
-            (column) => column < source.length
-            ? source[column].toString().trim()
-            : '',
+        (column) =>
+            column < source.length ? source[column].toString().trim() : '',
         growable: false,
       );
 
-      rows.add(
-        GaapSalesRow(
-          sourceRowNumber: i + 1,
-          cells: cells,
-        ),
-      );
+      rows.add(GaapSalesRow(sourceRowNumber: i + 1, cells: cells));
     }
 
     // Extract once and use both values.
@@ -93,22 +87,16 @@ class GaapSalesParser {
     return null;
   }
 
-  (DateTime?, DateTime?) _extractReportRange(
-      List<List<dynamic>> rows,
-      ) {
+  (DateTime?, DateTime?) _extractReportRange(List<List<dynamic>> rows) {
     for (var i = 0; i < rows.length && i < 20; i++) {
       // GAAP can split words and dates across CSV cells:
       // [Repo, rt Dates : 02/07/2026 -> 02/, 07/2026]
       //
       // Joining without spaces reconstructs:
       // Report Dates : 02/07/2026 -> 02/07/2026
-      final joined = rows[i]
-          .map((cell) => cell.toString().trim())
-          .join('');
+      final joined = rows[i].map((cell) => cell.toString().trim()).join('');
 
-      final normalized = joined
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
+      final normalized = joined.replaceAll(RegExp(r'\s+'), ' ').trim();
 
       if (!normalized.toLowerCase().contains('report dates')) {
         continue;
@@ -124,9 +112,7 @@ class GaapSalesParser {
 
       final from = _dateFromMatch(matches[0]);
 
-      final to = matches.length > 1
-          ? _dateFromMatch(matches[1])
-          : from;
+      final to = matches.length > 1 ? _dateFromMatch(matches[1]) : from;
 
       return (from, to);
     }

@@ -30,8 +30,11 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
   SalesSortBy _sortBy = SalesSortBy.sales;
   bool _sortAscending = false;
 
-  final NumberFormat _currency =
-  NumberFormat.currency(locale: 'en_ZA', symbol: 'R', decimalDigits: 2);
+  final NumberFormat _currency = NumberFormat.currency(
+    locale: 'en_ZA',
+    symbol: 'R',
+    decimalDigits: 2,
+  );
   final NumberFormat _quantity = NumberFormat('#,##0.##');
 
   @override
@@ -108,9 +111,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
     return num.tryParse(plu.replaceAll(',', '')) != null;
   }
 
-  List<DateTime> _availableAuditDatesFrom(
-      List<Map<String, dynamic>> rows,
-      ) {
+  List<DateTime> _availableAuditDatesFrom(List<Map<String, dynamic>> rows) {
     final unique = <String, DateTime>{};
 
     for (final row in rows) {
@@ -121,8 +122,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
       unique[_dateKey(day)] = day;
     }
 
-    final result = unique.values.toList()
-      ..sort((a, b) => b.compareTo(a));
+    final result = unique.values.toList()..sort((a, b) => b.compareTo(a));
     return result;
   }
 
@@ -158,9 +158,9 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
           comparison = _comparePlu(a['No.'], b['No.']);
           break;
         case SalesSortBy.menuItem:
-          comparison = _displayName(a)
-              .toLowerCase()
-              .compareTo(_displayName(b).toLowerCase());
+          comparison = _displayName(
+            a,
+          ).toLowerCase().compareTo(_displayName(b).toLowerCase());
           break;
         case SalesSortBy.quantity:
           comparison = _number(a['Qty']).compareTo(_number(b['Qty']));
@@ -177,10 +177,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
   }
 
   double _sum(List<Map<String, dynamic>> rows, String key) {
-    return rows.fold<double>(
-      0,
-          (total, row) => total + _number(row[key]),
-    );
+    return rows.fold<double>(0, (total, row) => total + _number(row[key]));
   }
 
   int _comparePlu(dynamic a, dynamic b) {
@@ -277,11 +274,10 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
 
   String _dateKey(DateTime date) =>
       '${date.year.toString().padLeft(4, '0')}-'
-          '${date.month.toString().padLeft(2, '0')}-'
-          '${date.day.toString().padLeft(2, '0')}';
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
 
-  String _formatDate(DateTime date) =>
-      DateFormat('dd MMM yyyy').format(date);
+  String _formatDate(DateTime date) => DateFormat('dd MMM yyyy').format(date);
 
   String _formatQuantity(double value) => _quantity.format(value);
 
@@ -368,9 +364,10 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
                             onSelected: (_) => selectDate(null),
                           ),
                           ..._availableAuditDates.map(
-                                (date) => ChoiceChip(
+                            (date) => ChoiceChip(
                               label: Text(_formatDate(date)),
-                              selected: _selectedAuditDate != null &&
+                              selected:
+                                  _selectedAuditDate != null &&
                                   _sameDate(date, _selectedAuditDate!),
                               onSelected: (_) => selectDate(date),
                             ),
@@ -423,10 +420,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
                           ),
                           child: const Text(
                             'Apply Filters',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
+                            style: TextStyle(color: Colors.white, fontSize: 16),
                           ),
                         ),
                       ),
@@ -442,10 +436,10 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
   }
 
   Widget _sortChip(
-      String label,
-      SalesSortBy value, {
-        required void Function(SalesSortBy) onSelected,
-      }) {
+    String label,
+    SalesSortBy value, {
+    required void Function(SalesSortBy) onSelected,
+  }) {
     final selected = _sortBy == value;
 
     return ChoiceChip(
@@ -644,10 +638,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
               Flexible(
                 child: FilterChip(
                   avatar: const Icon(Icons.event_outlined, size: 16),
-                  label: Text(
-                    auditLabel,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  label: Text(auditLabel, overflow: TextOverflow.ellipsis),
                   selected: _selectedAuditDate != null,
                   onSelected: (_) => _showFilterSheet(),
                   visualDensity: VisualDensity.compact,
@@ -656,10 +647,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
               const SizedBox(width: 8),
               Text(
                 '${_visibleRows.length} lines',
-                style: TextStyle(
-                  color: Colors.grey.shade600,
-                  fontSize: 12,
-                ),
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
               ),
               const Spacer(),
               IconButton(
@@ -693,7 +681,8 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
       return _buildMessageState(
         icon: Icons.point_of_sale_outlined,
         title: 'No Sales Data Yet',
-        message: 'Upload sales or refresh your store data to populate this report.',
+        message:
+            'Upload sales or refresh your store data to populate this report.',
       );
     }
 
@@ -702,7 +691,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
         icon: Icons.receipt_long_outlined,
         title: 'No Sales Lines Found',
         message:
-        'StoreSalesData exists, but no rows contain a numeric PLU in the No. column.',
+            'StoreSalesData exists, but no rows contain a numeric PLU in the No. column.',
       );
     }
 
@@ -789,9 +778,7 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
                         ),
                       ),
                     ),
-                    DataCell(
-                      Text(_formatQuantity(_number(row['Qty']))),
-                    ),
+                    DataCell(Text(_formatQuantity(_number(row['Qty'])))),
                     DataCell(
                       Text(
                         _formatCurrency(_number(row['Sales'])),
@@ -930,18 +917,12 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
             const SizedBox(height: 4),
             Text(
               message,
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.grey.shade600,
-              ),
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
               textAlign: TextAlign.center,
             ),
             if (actionLabel != null && onAction != null) ...[
               const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: onAction,
-                child: Text(actionLabel),
-              ),
+              ElevatedButton(onPressed: onAction, child: Text(actionLabel)),
             ],
           ],
         ),

@@ -930,7 +930,9 @@ class GoogleSheetsService {
       try {
         final response = await _postWithBoundedRedirects(
           Uri.parse(masterScriptUrl),
-          timeoutSeconds: postTimeoutSeconds,
+          timeoutSeconds: endpoint == 'syncPurchases'
+              ? 120
+              : postTimeoutSeconds,
           body: body,
           label: endpoint,
         );
@@ -1260,9 +1262,8 @@ class GoogleSheetsService {
           // where the result is retrieved with GET. If that redirected GET is
           // sent back to script.google.com, following it would hit doGet()
           // without a table parameter and can yield {error: "Empty table name"}.
-          // Abort this transport attempt instead. _sendPostRequest will replay
-          // the original POST body with the SAME transactionId, preserving
-          // receipt/idempotency semantics and avoiding a blind duplicate write.
+          // Abort with an unknown outcome. Purchase sync verifies the stored
+          // rows before acknowledgement; it does not blindly replay this POST.
           final originalWasPost = method.toUpperCase() == 'POST';
           final redirectedPostResult =
               originalWasPost && currentMethod == 'GET';
@@ -1270,7 +1271,7 @@ class GoogleSheetsService {
               redirectedPostResult && next.host == 'script.google.com';
           if (returnedToAppsScript) {
             throw _RedirectFailure(
-              'POST result redirect returned to Apps Script; replay original transaction',
+              'POST result redirect returned to Apps Script; write outcome unknown',
               trace,
             );
           }
@@ -2689,7 +2690,12 @@ class GoogleSheetsService {
         'chunkTotal': (snapshots.length / chunkSize).ceil(),
       });
 
-      var chunkConfirmed = result['success'] == true;
+      final acknowledged = result['confirmedIds'];
+      var chunkConfirmed =
+          result['success'] == true &&
+          (acknowledged is List
+              ? chunkIds.every((id) => acknowledged.contains(id))
+              : result['processedCount'] == chunk.length);
       var reconciled = false;
       final code = result['code']?.toString() ?? '';
       final unknownOutcome = {
@@ -2759,6 +2765,7 @@ class GoogleSheetsService {
         };
       }
 
+      _invalidateCachesAfterMutation('syncPurchases');
       confirmedIds.addAll(chunkIds);
 
       // When reconciliation proves the rows exist, the original POST response
@@ -2869,8 +2876,8 @@ class GoogleSheetsService {
   }
 
   // ---------------------------------------------------------------------------
-// Store Sales Data
-// ---------------------------------------------------------------------------
+  // Store Sales Data
+  // ---------------------------------------------------------------------------
 
   /// Sync raw StoreSalesData rows.
   ///
@@ -2883,9 +2890,9 @@ class GoogleSheetsService {
   /// The positional representation is intentional because StoreSalesData
   /// contains two columns both named "Discounts".
   Future<Map<String, dynamic>> syncStoreSalesData(
-      List<Map<String, dynamic>> rows, {
-        void Function(int completed, int total)? onProgress,
-      }) async {
+    List<Map<String, dynamic>> rows, {
+    void Function(int completed, int total)? onProgress,
+  }) async {
     if (rows.isEmpty) {
       return {
         'success': true,
@@ -2908,13 +2915,10 @@ class GoogleSheetsService {
       final end = math.min(start + chunkSize, rows.length);
       final chunk = rows.sublist(start, end);
 
-      final result = await _sendPostRequest(
-        'syncStoreSalesData',
-        {
-          'endpoint': 'syncStoreSalesData',
-          'data': chunk,
-        },
-      );
+      final result = await _sendPostRequest('syncStoreSalesData', {
+        'endpoint': 'syncStoreSalesData',
+        'data': chunk,
+      });
 
       var confirmed = result['success'] == true;
 
@@ -2935,20 +2939,17 @@ class GoogleSheetsService {
       if (!confirmed && unknownOutcome) {
         print(
           '🔎 StoreSalesData chunk has an unknown POST outcome; '
-              'verifying salesIDs before failing.',
+          'verifying salesIDs before failing.',
         );
 
         for (var attempt = 1; attempt <= 2 && !confirmed; attempt++) {
-          await Future.delayed(
-            Duration(seconds: attempt == 1 ? 2 : 4),
-          );
+          await Future.delayed(Duration(seconds: attempt == 1 ? 2 : 4));
 
           try {
             var allPresent = true;
 
             for (final record in chunk) {
-              final salesId =
-              (record['salesID'] ?? '').toString().trim();
+              final salesId = (record['salesID'] ?? '').toString().trim();
 
               if (salesId.isEmpty) {
                 allPresent = false;
@@ -2968,13 +2969,13 @@ class GoogleSheetsService {
 
               print(
                 '✅ StoreSalesData chunk confirmed from server '
-                    'after unknown POST outcome.',
+                'after unknown POST outcome.',
               );
             }
           } catch (e) {
             print(
               '⚠️ Could not reconcile StoreSalesData '
-                  'attempt $attempt/2: $e',
+              'attempt $attempt/2: $e',
             );
           }
         }
@@ -2990,7 +2991,7 @@ class GoogleSheetsService {
           'updated': totalUpdated,
           'code': result['code'],
           'message':
-          result['message'] ??
+              result['message'] ??
               'StoreSalesData upload could not be confirmed.',
         };
       }
@@ -2998,23 +2999,15 @@ class GoogleSheetsService {
       final responseIds = result['syncedIds'];
 
       if (responseIds is List) {
-        syncedIds.addAll(
-          responseIds.map((e) => e.toString()),
-        );
+        syncedIds.addAll(responseIds.map((e) => e.toString()));
       } else {
         // Reconciled response may not contain the original POST receipt.
-        syncedIds.addAll(
-          chunk.map(
-                (row) => row['salesID'].toString(),
-          ),
-        );
+        syncedIds.addAll(chunk.map((row) => row['salesID'].toString()));
       }
 
-      totalInserted +=
-          int.tryParse('${result['inserted'] ?? 0}') ?? 0;
+      totalInserted += int.tryParse('${result['inserted'] ?? 0}') ?? 0;
 
-      totalUpdated +=
-          int.tryParse('${result['updated'] ?? 0}') ?? 0;
+      totalUpdated += int.tryParse('${result['updated'] ?? 0}') ?? 0;
 
       processed += chunk.length;
 
@@ -3033,19 +3026,14 @@ class GoogleSheetsService {
   }
 
   /// Fetch one StoreSalesData row using its stable salesID.
-  Future<Map<String, dynamic>?> fetchStoreSaleById(
-      String salesId,
-      ) async {
+  Future<Map<String, dynamic>?> fetchStoreSaleById(String salesId) async {
     final cleanId = salesId.trim();
 
     if (cleanId.isEmpty) {
       return null;
     }
 
-    return fetchRecordById(
-      'StoreSalesData',
-      cleanId,
-    );
+    return fetchRecordById('StoreSalesData', cleanId);
   }
 
   /// Sync stock counts with chunking, retry, and progress reporting
@@ -4012,7 +4000,54 @@ class GoogleSheetsService {
       );
     }
 
+    // Match Apps Script's existing unit rules. Zero is a placeholder when
+    // bottle quantity is nonzero; signed explicit units (credit notes) survive.
+    item['Purchase Units'] = _canonicalPurchaseUnits(item);
+    item['purSupplierBottleID'] ??= item['supplierBottleID'] ?? '';
     return item;
+  }
+
+  double _canonicalPurchaseUnits(Map<String, dynamic> purchase) {
+    double number(dynamic value) {
+      if (value is num) return value.toDouble();
+      return double.tryParse(
+            (value ?? '').toString().replaceAll(RegExp(r'[^\d.-]'), ''),
+          ) ??
+          0;
+    }
+
+    final supplied = number(purchase['Purchase Units']);
+    if (supplied != 0) return supplied;
+    final bottles = number(purchase['Purchases Bottles']);
+    final volume = number(purchase['Single Unit Volume']);
+    final category = (purchase['Category'] ?? '').toString().toLowerCase();
+    const bottleCategories = [
+      'Sparkling Wine',
+      'Beer',
+      'Soft Drinks',
+      'Coolers',
+      'Cider',
+      'Champagne',
+      'White Wine',
+      'Red Wine',
+      'Rose',
+      'Champagne XL',
+      'Still Water',
+      'Sparkling Water',
+      'Whiskey',
+      'Vodka',
+      'Gin',
+      'Tequila',
+      'Rum',
+      'Brandy',
+      'Cognac',
+      'Liqueurs',
+      'Liquor',
+    ];
+    if (bottleCategories.any((name) => category.contains(name.toLowerCase()))) {
+      return bottles;
+    }
+    return volume > 0 ? bottles * volume / 25 : bottles;
   }
 
   Map<String, dynamic> _mapInvoiceFields(Map<String, dynamic> invoice) {

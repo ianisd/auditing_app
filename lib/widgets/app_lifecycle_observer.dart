@@ -8,7 +8,8 @@ class AppLifecycleObserver with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       pingService.setAppBackground(true);
     } else if (state == AppLifecycleState.resumed) {
       pingService.setAppBackground(false);

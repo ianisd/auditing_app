@@ -1,6 +1,5 @@
 // lib/utils/safe_date_utils.dart
 
-
 class SafeDateUtils {
   /// Safe date parsing from common API / Google Sheets formats.
   ///
@@ -56,8 +55,11 @@ class SafeDateUtils {
         final wholeDays = value.floor();
         final fraction = value - wholeDays;
         final milliseconds = (fraction * Duration.millisecondsPerDay).round();
-        return DateTime(1899, 12, 30)
-            .add(Duration(days: wholeDays, milliseconds: milliseconds));
+        return DateTime(
+          1899,
+          12,
+          30,
+        ).add(Duration(days: wholeDays, milliseconds: milliseconds));
       }
     } catch (_) {
       return null;
@@ -68,9 +70,9 @@ class SafeDateUtils {
 
   /// Safely sort a list by date field
   static void sortByDate<T>(
-      List<T> items,
-      DateTime? Function(T item) dateGetter,
-      ) {
+    List<T> items,
+    DateTime? Function(T item) dateGetter,
+  ) {
     items.sort((a, b) {
       final dateA = dateGetter(a);
       final dateB = dateGetter(b);
@@ -85,9 +87,9 @@ class SafeDateUtils {
 
   /// Get valid dates (non-null) from a list
   static List<DateTime> getValidDates<T>(
-      List<T> items,
-      DateTime? Function(T item) dateGetter,
-      ) {
+    List<T> items,
+    DateTime? Function(T item) dateGetter,
+  ) {
     return items
         .map(dateGetter)
         .where((d) => d != null)
@@ -97,9 +99,9 @@ class SafeDateUtils {
 
   /// Get the earliest valid date
   static DateTime? getEarliestDate<T>(
-      List<T> items,
-      DateTime? Function(T item) dateGetter,
-      ) {
+    List<T> items,
+    DateTime? Function(T item) dateGetter,
+  ) {
     final dates = getValidDates(items, dateGetter);
     if (dates.isEmpty) return null;
     return dates.reduce((a, b) => a.isBefore(b) ? a : b);
@@ -107,9 +109,9 @@ class SafeDateUtils {
 
   /// Get the latest valid date
   static DateTime? getLatestDate<T>(
-      List<T> items,
-      DateTime? Function(T item) dateGetter,
-      ) {
+    List<T> items,
+    DateTime? Function(T item) dateGetter,
+  ) {
     final dates = getValidDates(items, dateGetter);
     if (dates.isEmpty) return null;
     return dates.reduce((a, b) => a.isAfter(b) ? a : b);
@@ -117,11 +119,11 @@ class SafeDateUtils {
 
   /// Get date range as string
   static String getDateRangeString<T>(
-      List<T> items,
-      DateTime? Function(T item) dateGetter, {
-        String format = 'yyyy-MM-dd',
-        String fallback = 'No dates available',
-      }) {
+    List<T> items,
+    DateTime? Function(T item) dateGetter, {
+    String format = 'yyyy-MM-dd',
+    String fallback = 'No dates available',
+  }) {
     final dates = getValidDates(items, dateGetter);
     if (dates.isEmpty) return fallback;
 

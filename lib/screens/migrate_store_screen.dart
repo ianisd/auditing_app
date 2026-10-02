@@ -25,9 +25,9 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
   Future<void> _updateStore() async {
     final sheetId = _controller.text.trim();
     if (sheetId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a Sheet ID')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Please enter a Sheet ID')));
       return;
     }
 
@@ -49,10 +49,7 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Error: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -83,7 +80,9 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
                 color: isLegacy ? Colors.orange.shade50 : Colors.green.shade50,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: isLegacy ? Colors.orange.shade200 : Colors.green.shade200,
+                  color: isLegacy
+                      ? Colors.orange.shade200
+                      : Colors.green.shade200,
                 ),
               ),
               child: Column(
@@ -97,19 +96,29 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        isLegacy ? 'Legacy Store Detected' : 'Store Configuration',
+                        isLegacy
+                            ? 'Legacy Store Detected'
+                            : 'Store Configuration',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
-                          color: isLegacy ? Colors.orange.shade900 : Colors.green.shade900,
+                          color: isLegacy
+                              ? Colors.orange.shade900
+                              : Colors.green.shade900,
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 12),
                   if (hasSheetId)
-                    _buildInfoRow('✅ Sheet ID:', widget.store['sheetId'].toString())
+                    _buildInfoRow(
+                      '✅ Sheet ID:',
+                      widget.store['sheetId'].toString(),
+                    )
                   else if (hasScriptId)
-                    _buildInfoRow('⚠️ Script ID:', widget.store['scriptId'].toString())
+                    _buildInfoRow(
+                      '⚠️ Script ID:',
+                      widget.store['scriptId'].toString(),
+                    )
                   else
                     const Text('No valid ID found'),
                 ],
@@ -172,13 +181,15 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
               controller: _controller,
               decoration: InputDecoration(
                 labelText: 'Google Sheet ID',
-                hintText: hasSheetId ? widget.store['sheetId'].toString() : 'Paste sheet ID here',
+                hintText: hasSheetId
+                    ? widget.store['sheetId'].toString()
+                    : 'Paste sheet ID here',
                 border: const OutlineInputBorder(),
                 suffixIcon: _controller.text.isNotEmpty
                     ? IconButton(
-                  icon: const Icon(Icons.clear),
-                  onPressed: () => _controller.clear(),
-                )
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => _controller.clear(),
+                      )
                     : null,
               ),
               onChanged: (_) => setState(() {}),
@@ -198,11 +209,14 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
                 ),
                 child: _isLoading
                     ? const SizedBox(
-                  height: 20,
-                  width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-                    : const Text('Update Store', style: TextStyle(fontSize: 16)),
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text(
+                        'Update Store',
+                        style: TextStyle(fontSize: 16),
+                      ),
               ),
             ),
           ],
@@ -219,7 +233,10 @@ class _MigrateStoreScreenState extends State<MigrateStoreScreen> {
         children: [
           SizedBox(
             width: 80,
-            child: Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
           ),
           Expanded(
             child: SelectableText(

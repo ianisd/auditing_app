@@ -22,7 +22,10 @@ class _BarcodeScannerModalState extends State<BarcodeScannerModal> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Scan Barcode', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Scan Barcode',
+          style: TextStyle(color: Colors.white),
+        ),
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
@@ -97,7 +100,11 @@ class ScannerOverlay extends CustomPainter {
     final linePaint = Paint()
       ..color = Colors.red.withOpacity(0.5)
       ..strokeWidth = 1;
-    canvas.drawLine(Offset(rect.left, center.dy), Offset(rect.right, center.dy), linePaint);
+    canvas.drawLine(
+      Offset(rect.left, center.dy),
+      Offset(rect.right, center.dy),
+      linePaint,
+    );
   }
 
   @override

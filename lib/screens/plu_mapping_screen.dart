@@ -24,7 +24,9 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
       final mappings = await storage.getAllPluMappings();
       print('🔍 PLU Mapping Screen - Found ${mappings.length} mappings:');
       for (var m in mappings) {
-        print('  - ${m.csvPlu} (${m.csvDescription}) → ${m.correctPlu} (${m.productName})');
+        print(
+          '  - ${m.csvPlu} (${m.csvDescription}) → ${m.correctPlu} (${m.productName})',
+        );
       }
     });
     _loadData();
@@ -37,7 +39,11 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
 
     // Load suppliers for display
     final suppliers = await storage.getMasterSuppliers();
-    final supplierMap = {for (var s in suppliers) s['supplierID']?.toString() ?? '' : s['Supplier']?.toString() ?? 'Unknown'};
+    final supplierMap = {
+      for (var s in suppliers)
+        s['supplierID']?.toString() ?? '':
+            s['Supplier']?.toString() ?? 'Unknown',
+    };
     print('📊 Loaded ${suppliers.length} suppliers');
 
     // Load mappings
@@ -47,7 +53,9 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
     if (mappings.isEmpty) {
       print('⚠️ No mappings found in _pluMappings box');
     } else {
-      print('✅ First mapping: ${mappings.first.csvPlu} -> ${mappings.first.correctPlu}');
+      print(
+        '✅ First mapping: ${mappings.first.csvPlu} -> ${mappings.first.correctPlu}',
+      );
     }
 
     setState(() {
@@ -62,7 +70,9 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Mapping'),
-        content: Text('Delete mapping for PLU ${mapping.csvPlu}?\n\n${mapping.csvDescription} → ${mapping.productName}'),
+        content: Text(
+          'Delete mapping for PLU ${mapping.csvPlu}?\n\n${mapping.csvDescription} → ${mapping.productName}',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -83,9 +93,9 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
       await _loadData();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Mapping deleted')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Mapping deleted')));
       }
     }
   }
@@ -104,119 +114,138 @@ class _PluMappingScreenState extends State<PluMappingScreen> {
       appBar: AppBar(
         title: const Text('PLU Mappings'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadData,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadData),
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Column(
-        children: [
-          if (suppliers.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    FilterChip(
-                      label: const Text('All'),
-                      selected: _selectedSupplier == null,
-                      onSelected: (_) => setState(() => _selectedSupplier = null),
-                    ),
-                    const SizedBox(width: 8),
-                    ...suppliers.map((sid) {
-                      final supplierName = _supplierNames[sid] ?? sid;
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: FilterChip(
-                          label: Text(supplierName.length > 15
-                              ? '${supplierName.substring(0, 12)}...'
-                              : supplierName),
-                          selected: _selectedSupplier == sid,
-                          onSelected: (_) => setState(() => _selectedSupplier = sid),
-                        ),
-                      );
-                    }),
-                  ],
-                ),
-              ),
-            ),
-          Expanded(
-            child: _filteredMappings.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.link_off, size: 64, color: Colors.grey.shade400),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No PLU mappings yet',
-                    style: TextStyle(color: Colors.grey.shade600),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Mappings will appear when you match\nproducts during GRV import',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                  ),
-                ],
-              ),
-            )
-                : ListView.builder(
-              itemCount: _filteredMappings.length,
-              padding: const EdgeInsets.all(8),
-              itemBuilder: (context, index) {
-                final mapping = _filteredMappings[index];
-                final supplierName = _supplierNames[mapping.supplierId] ?? mapping.supplierId;
-
-                return Card(
-                  elevation: 2,
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.blue.shade100,
-                      child: Text(
-                        mapping.csvPlu,
-                        style: const TextStyle(fontSize: 12),
+              children: [
+                if (suppliers.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          FilterChip(
+                            label: const Text('All'),
+                            selected: _selectedSupplier == null,
+                            onSelected: (_) =>
+                                setState(() => _selectedSupplier = null),
+                          ),
+                          const SizedBox(width: 8),
+                          ...suppliers.map((sid) {
+                            final supplierName = _supplierNames[sid] ?? sid;
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: FilterChip(
+                                label: Text(
+                                  supplierName.length > 15
+                                      ? '${supplierName.substring(0, 12)}...'
+                                      : supplierName,
+                                ),
+                                selected: _selectedSupplier == sid,
+                                onSelected: (_) =>
+                                    setState(() => _selectedSupplier = sid),
+                              ),
+                            );
+                          }),
+                        ],
                       ),
                     ),
-                    title: Text(
-                      mapping.csvDescription,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '→ ${mapping.productName}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          'PLU: ${mapping.correctPlu} | Used: ${mapping.confidence} time${mapping.confidence == 1 ? '' : 's'}',
-                          style: const TextStyle(fontSize: 11, color: Colors.grey),
-                        ),
-                        Text(
-                          'Supplier: $supplierName',
-                          style: const TextStyle(fontSize: 11, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete, color: Colors.red),
-                      onPressed: () => _deleteMapping(mapping),
-                    ),
                   ),
-                );
-              },
+                Expanded(
+                  child: _filteredMappings.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.link_off,
+                                size: 64,
+                                color: Colors.grey.shade400,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No PLU mappings yet',
+                                style: TextStyle(color: Colors.grey.shade600),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Mappings will appear when you match\nproducts during GRV import',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.grey.shade500,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _filteredMappings.length,
+                          padding: const EdgeInsets.all(8),
+                          itemBuilder: (context, index) {
+                            final mapping = _filteredMappings[index];
+                            final supplierName =
+                                _supplierNames[mapping.supplierId] ??
+                                mapping.supplierId;
+
+                            return Card(
+                              elevation: 2,
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.blue.shade100,
+                                  child: Text(
+                                    mapping.csvPlu,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                title: Text(
+                                  mapping.csvDescription,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '→ ${mapping.productName}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      'PLU: ${mapping.correctPlu} | Used: ${mapping.confidence} time${mapping.confidence == 1 ? '' : 's'}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Supplier: $supplierName',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(
+                                    Icons.delete,
+                                    color: Colors.red,
+                                  ),
+                                  onPressed: () => _deleteMapping(mapping),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }

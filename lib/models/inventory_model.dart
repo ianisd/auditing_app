@@ -49,12 +49,14 @@ class InventoryItem {
     return InventoryItem(
       barcode: json['Barcode']?.toString() ?? '',
       // FLEXIBLE: Checks for 'Inventory Product Name' OR 'Product Name'
-      productName: json['Inventory Product Name']?.toString()
-          ?? json['Product Name']?.toString()
-          ?? 'Unknown Product',
+      productName:
+          json['Inventory Product Name']?.toString() ??
+          json['Product Name']?.toString() ??
+          'Unknown Product',
       mainCategory: json['Main Category']?.toString() ?? '',
       category: json['Category']?.toString() ?? '',
-      singleUnitVolume: double.tryParse(json['Single Unit Volume']?.toString() ?? '0') ?? 0.0,
+      singleUnitVolume:
+          double.tryParse(json['Single Unit Volume']?.toString() ?? '0') ?? 0.0,
       uom: json['UoM']?.toString() ?? '',
       gradient: double.tryParse(json['Gradient']?.toString() ?? '0') ?? 0.0,
       intercept: double.tryParse(json['Intercept']?.toString() ?? '0') ?? 0.0,
