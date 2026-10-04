@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'dart:io';
-import 'dart:math';
 import 'dart:convert';
 import '../services/grv_parser.dart';
 import '../services/offline_storage.dart';
@@ -250,23 +249,21 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
       return;
     }
 
-    // Handle the duplicate action
-    String finalInvoiceId;
-
-    if (existingInvoice != null && confirm == 'create_new') {
-      finalInvoiceId = _generateUuid();
-      print('🆕 Creating new GRV with new ID: $finalInvoiceId');
-    } else if (existingInvoice != null && confirm == true) {
-      finalInvoiceId =
-          existingInvoice['invoiceDetailsID']?.toString() ?? _generateUuid();
-      print('🔄 Updating existing GRV with ID: $finalInvoiceId');
-    } else {
-      finalInvoiceId = _generateUuid();
+    // OfflineStorage owns canonical IDs for every new invoice. Existing
+    // invoices retain their historical ID unchanged.
+    final isUpdatingExisting = existingInvoice != null && confirm == true;
+    final existingInvoiceId =
+        existingInvoice?['invoiceDetailsID']?.toString().trim() ?? '';
+    if (isUpdatingExisting && existingInvoiceId.isEmpty) {
+      throw StateError('Existing invoice has no invoiceDetailsID.');
     }
 
-    // Save the invoice
-    final invoiceData = {
-      'invoiceDetailsID': finalInvoiceId,
+    // GrvLineItemsScreen currently expects an invoice record to exist while
+    // reviewing line items. For a brand-new GRV we therefore create a local
+    // provisional header, but remove it again if the user leaves without
+    // saving. For UPDATE, the existing header already exists and must not be
+    // changed merely by opening/cancelling the review screen.
+    final invoiceData = <String, dynamic>{
       'Invoice Number': grvData.invoiceNumber,
       'GRV Reference': grvData.grvReference ?? '',
       'supplierID': supplierId ?? '',
@@ -275,35 +272,79 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
       'Delivery Date': grvData.deliveryDate.toIso8601String(),
       'Total Cost Ex Vat': 0.0,
       'syncStatus': 'pending',
+      if (isUpdatingExisting) 'invoiceDetailsID': existingInvoiceId,
     };
 
-    final savedInvoiceId = await storage.saveInvoiceDetails(invoiceData);
-    print('✅ Invoice saved/updated with ID: $savedInvoiceId');
+    String reviewInvoiceId = existingInvoiceId;
+    var createdProvisionalInvoice = false;
+
+    if (isUpdatingExisting) {
+      print(
+        '📝 Reviewing existing GRV without modifying invoice header: '
+        '$reviewInvoiceId',
+      );
+    } else {
+      reviewInvoiceId = await storage.saveInvoiceDetails(invoiceData);
+      if (reviewInvoiceId.isEmpty) {
+        throw StateError(
+          'Could not create provisional invoice for GRV review.',
+        );
+      }
+      createdProvisionalInvoice = true;
+      print('📝 Provisional invoice created for GRV review: $reviewInvoiceId');
+    }
+
+    if (!mounted) {
+      if (createdProvisionalInvoice) {
+        await storage.hardDeleteInvoice(reviewInvoiceId);
+        print(
+          '🧹 Removed provisional invoice after upload screen was disposed: '
+          '$reviewInvoiceId',
+        );
+      }
+      return;
+    }
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GrvLineItemsScreen(
+          invoiceDetailsID: reviewInvoiceId,
+          supplierName: canonicalName ?? grvData.supplierName,
+          deliveryDate: grvData.deliveryDate,
+          grvReference: grvData.grvReference,
+          preloadedItems: grvData.lineItems,
+        ),
+      ),
+    );
+
+    if (result != true) {
+      // A new/create-new invoice only exists to support the review screen.
+      // Cancelling must leave no pending InvoiceDetails record behind.
+      if (createdProvisionalInvoice) {
+        await storage.hardDeleteInvoice(reviewInvoiceId);
+        print(
+          '🧹 GRV review cancelled; removed provisional invoice: '
+          '$reviewInvoiceId',
+        );
+      } else {
+        print(
+          '↩️ GRV update cancelled; existing invoice left unchanged: '
+          '$reviewInvoiceId',
+        );
+      }
+      return;
+    }
 
     if (mounted) {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => GrvLineItemsScreen(
-            invoiceDetailsID: savedInvoiceId,
-            supplierName: canonicalName ?? grvData.supplierName,
-            deliveryDate: grvData.deliveryDate,
-            grvReference: grvData.grvReference,
-            preloadedItems: grvData.lineItems,
-          ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✓ GRV saved with ${grvData.lineItems.length} items'),
+          backgroundColor: Colors.green,
         ),
       );
-
-      if (result == true && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✓ GRV saved with ${grvData.lineItems.length} items'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        if (Navigator.canPop(context)) {
-          Navigator.pop(context, true);
-        }
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context, true);
       }
     }
   }
@@ -493,14 +534,6 @@ class _GrvUploadScreenState extends State<GrvUploadScreen> {
           ),
         ),
       ),
-    );
-  }
-
-  String _generateUuid() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    final rnd = Random();
-    return String.fromCharCodes(
-      Iterable.generate(8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))),
     );
   }
 }

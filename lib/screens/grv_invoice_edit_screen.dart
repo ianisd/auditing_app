@@ -81,16 +81,12 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     // 🔥 FIX: GRV Reference must never be null/empty downstream
     final grvValue = widget.invoice['GRV Reference']?.toString();
     _grvController = TextEditingController(
-      text: (grvValue != null && grvValue.trim().isNotEmpty)
-          ? grvValue
-          : 'NO_GRV',
+      text: (grvValue != null && grvValue.trim().isNotEmpty) ? grvValue : 'NO_GRV',
     );
     _deliveryDate = _parseDate(widget.invoice['Delivery Date']);
     _purchaseDate = _parseDate(widget.invoice['Date of Purchase']);
-    _supplierName =
-        widget.invoice['Supplier Name']?.toString() ??
-        widget.invoice['Supplier']?.toString() ??
-        '';
+    _supplierName = widget.invoice['Supplier Name']?.toString() ??
+        widget.invoice['Supplier']?.toString() ?? '';
     _supplierId = widget.invoice['supplierID']?.toString() ?? '';
 
     _invoiceNumberController.addListener(_onFieldChanged);
@@ -107,7 +103,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
   void _onScroll() {
     if (_scrollController.position.pixels >=
-            _scrollController.position.maxScrollExtent - 200 &&
+        _scrollController.position.maxScrollExtent - 200 &&
         !_isLoadingMore &&
         _hasMoreItems) {
       _loadMorePurchases();
@@ -137,10 +133,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     }
 
     final isNegative = numVal < 0;
-    final formatted = NumberFormat.currency(
-      symbol: 'R',
-      decimalDigits: 2,
-    ).format(numVal.abs());
+    final formatted = NumberFormat.currency(symbol: 'R', decimalDigits: 2).format(numVal.abs());
     return isNegative ? '-$formatted' : formatted;
   }
 
@@ -167,9 +160,9 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   }
 
   Future<List<Map<String, dynamic>>> _loadPurchasesPaginated(
-    OfflineStorage storage, {
-    bool reset = false,
-  }) async {
+      OfflineStorage storage, {
+        bool reset = false,
+      }) async {
     if (reset) {
       _currentPage = 0;
       _hasMoreItems = true;
@@ -246,10 +239,8 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     if (_supplierId.isEmpty) return;
 
     final match = _suppliers.firstWhere(
-      (s) =>
-          s['supplierID']?.toString() == _supplierId ||
-          s['Supplier']?.toString().toLowerCase() ==
-              _supplierName.toLowerCase(),
+          (s) => s['supplierID']?.toString() == _supplierId ||
+          s['Supplier']?.toString().toLowerCase() == _supplierName.toLowerCase(),
       orElse: () => <String, dynamic>{},
     );
 
@@ -265,8 +256,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
     final storedDate = isDelivery ? _deliveryDate : _purchaseDate;
     final today = DateTime.now();
     final fallbackDate = DateTime(today.year, today.month, today.day);
-    final initialDate =
-        storedDate.isBefore(firstDate) || storedDate.isAfter(lastDate)
+    final initialDate = storedDate.isBefore(firstDate) || storedDate.isAfter(lastDate)
         ? fallbackDate
         : storedDate;
 
@@ -300,8 +290,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => GrvAddLineItemScreen(
-          invoiceDetailsID:
-              widget.invoice['invoiceDetailsID']?.toString() ?? '',
+          invoiceDetailsID: widget.invoice['invoiceDetailsID']?.toString() ?? '',
           supplierName: _supplierName,
           deliveryDate: _deliveryDate,
           grvReference: grvRef,
@@ -329,8 +318,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
-        'supplierBottleID':
-            result.supplierBottleID, // 🔥 carry supplierBottleID
+        'supplierBottleID': result.supplierBottleID, // 🔥 carry supplierBottleID
         'Barcode': result.barcode,
         // In-memory only; _saveChanges now strips these before persisting.
         '_edited': true,
@@ -352,8 +340,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   }
 
   void _insertPurchaseAlphabetically(Map<String, dynamic> newPurchase) {
-    final newName =
-        newPurchase['Purchased Product Name']?.toString().toLowerCase() ?? '';
+    final newName = newPurchase['Purchased Product Name']?.toString().toLowerCase() ?? '';
 
     int insertIndex = _binarySearchInsertPosition(newName);
     _purchases.insert(insertIndex, newPurchase);
@@ -365,9 +352,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
     while (low < high) {
       final mid = (low + high) ~/ 2;
-      final midName =
-          _purchases[mid]['Purchased Product Name']?.toString().toLowerCase() ??
-          '';
+      final midName = _purchases[mid]['Purchased Product Name']?.toString().toLowerCase() ?? '';
 
       if (midName.compareTo(newName) < 0) {
         low = mid + 1;
@@ -405,8 +390,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => GrvAddLineItemScreen(
-          invoiceDetailsID:
-              widget.invoice['invoiceDetailsID']?.toString() ?? '',
+          invoiceDetailsID: widget.invoice['invoiceDetailsID']?.toString() ?? '',
           supplierName: _supplierName,
           deliveryDate: _deliveryDate,
           grvReference: grvRef,
@@ -430,8 +414,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         'Purchases Bottles': result.totalUnits.toDouble(),
         'Cost of Purchases': result.totalValue,
         'purSupplierBottleID': result.plu,
-        'supplierBottleID':
-            result.supplierBottleID, // 🔥 carry supplierBottleID
+        'supplierBottleID': result.supplierBottleID, // 🔥 carry supplierBottleID
         'Barcode': result.barcode,
         '_edited': true,
         // 🔥 FIX: keep a real boolean (old code wrote `null` here)
@@ -460,9 +443,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Item'),
-        content: Text(
-          'Delete ${purchase['Purchased Product Name']} from this invoice?',
-        ),
+        content: Text('Delete ${purchase['Purchased Product Name']} from this invoice?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -526,18 +507,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
       await storage.updateInvoiceDetails(updatedInvoice);
 
-      // 🔥 FIX: To match the "Uploaded GRV" look while being safe for edits/deletes,
-      // we find the highest existing line index and continue the sequence.
-      // This prevents ID collisions and ensures synergy with GAS.
-      int maxLineIndex = -1;
-      for (var p in _purchases) {
-        final pid = p['purchases_ID']?.toString() ?? '';
-        final match = RegExp(r'_line(\d+)$').firstMatch(pid);
-        if (match != null) {
-          final n = int.tryParse(match.group(1)!) ?? -1;
-          if (n > maxLineIndex) maxLineIndex = n;
-        }
-      }
+      // Canonical Purchase IDs are assigned by OfflineStorage.
 
       final List<Future> updateFutures = [];
 
@@ -549,17 +519,15 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         final packSize = _extractPackSize(purchase['Case/Pack Size']);
         final qtyCases = NumberParser.parse(purchase['Qty Purchased']);
         final costPerUnit = NumberParser.parse(purchase['Cost Per Bottle']);
-        final lineTotal =
-            purchase['Cost of Purchases'] != null &&
-                NumberParser.parse(purchase['Cost of Purchases']) != 0.0
+        final lineTotal = purchase['Cost of Purchases'] != null &&
+            NumberParser.parse(purchase['Cost of Purchases']) != 0.0
             ? NumberParser.parse(purchase['Cost of Purchases'])
             : (qtyCases * packSize * costPerUnit);
 
         final Map<String, dynamic> updateData = {
           'GRV Reference': grvRef,
           'Invoice Nr.': _invoiceNumberController.text, // 🔥 Align with upload
-          'Inv. Date of Purchase': _purchaseDate
-              .toIso8601String(), // 🔥 Align with upload
+          'Inv. Date of Purchase': _purchaseDate.toIso8601String(), // 🔥 Align with upload
           'Qty Purchased': qtyCases,
           'Cost Per Bottle': costPerUnit,
           'Case/Pack Size': 'Case $packSize',
@@ -571,36 +539,12 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         final bool isNew = purchase['_isNew'] == true;
 
         if (isNew) {
-          // 🔥 MATCH UPLOAD LOGIC: Use sequential line index to match what GrvLineItemsScreen does.
-          // We increment from the highest known index found in this GRV.
-          maxLineIndex++;
-
-          // Build product key from PLU or Barcode to match GrvLineItemsScreen logic
-          final String productKey =
-              (purchase['supplierBottleID'] ?? purchase['purSupplierBottleID'])
-                      ?.toString()
-                      .isNotEmpty ==
-                  true
-              ? (purchase['supplierBottleID'] ??
-                        purchase['purSupplierBottleID'])
-                    .toString()
-              : (purchase['Barcode']?.toString().isNotEmpty == true
-                    ? purchase['Barcode'].toString()
-                    : 'unknown');
-
-          final canonicalId =
-              'purchase_${widget.invoice['invoiceDetailsID']}_${grvRef}_${productKey}_line$maxLineIndex';
-
-          updateData['Purchased Product Name'] =
-              purchase['Purchased Product Name'];
+          updateData['Purchased Product Name'] = purchase['Purchased Product Name'];
           updateData['purSupplierBottleID'] =
-              purchase['supplierBottleID'] ??
-              purchase['purSupplierBottleID']; // 🔥 Align with upload
+              purchase['supplierBottleID'] ?? purchase['purSupplierBottleID'];
           updateData['supplierBottleID'] =
-              purchase['supplierBottleID'] ??
-              purchase['purSupplierBottleID']; // 🔥 Align with upload
-          updateData['plu'] =
-              purchase['purSupplierBottleID']; // 🔥 Align with upload
+              purchase['supplierBottleID'] ?? purchase['purSupplierBottleID'];
+          updateData['plu'] = purchase['purSupplierBottleID'];
           updateData['Barcode'] = purchase['Barcode'];
           updateData['Main Category'] = purchase['Main Category'];
           updateData['Category'] = purchase['Category'];
@@ -610,7 +554,6 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           final Map<String, dynamic> cleanPayload = {
             ...purchase,
             ...updateData,
-            'purchases_ID': canonicalId, // 🔥 OVERWRITE THE TEMP_ ID HERE
             'invoiceDetailsID': widget.invoice['invoiceDetailsID'],
             'supplierID': _supplierId,
             'Supplier': _supplierName,
@@ -619,13 +562,17 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
             '_edited': false,
             '_isNew': false,
           };
+          // TEMP_/screen IDs are not canonical. Force OfflineStorage to assign
+          // the canonical ID and return it to this in-memory row.
+          cleanPayload.remove('purchases_ID');
           cleanPayload.removeWhere(
-            (k, _) => k.startsWith('_') && k != '_edited' && k != '_isNew',
+                (k, _) => k.startsWith('_') && k != '_edited' && k != '_isNew',
           );
 
-          updateFutures.add(storage.savePurchase(cleanPayload));
-
-          // Update the in-memory object so the UI uses the real ID going forward
+          final canonicalId = await storage.savePurchase(cleanPayload);
+          if (canonicalId == null || canonicalId.isEmpty) {
+            throw StateError('Failed to assign canonical Purchase ID');
+          }
           purchase['purchases_ID'] = canonicalId;
         } else if (purchaseId != null && purchaseId.isNotEmpty) {
           updateFutures.add(storage.updatePurchaseItem(purchaseId, updateData));
@@ -643,10 +590,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice updated'),
-            backgroundColor: Colors.green,
-          ),
+          const SnackBar(content: Text('Invoice updated'), backgroundColor: Colors.green),
         );
         widget.onUpdated?.call();
         Navigator.pop(context, true);
@@ -667,9 +611,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Invoice'),
-        content: const Text(
-          'Delete this invoice and all its items? This will sync deletion to the server.',
-        ),
+        content: const Text('Delete this invoice and all its items? This will sync deletion to the server.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -695,10 +637,7 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Invoice deleted'),
-              backgroundColor: Colors.green,
-            ),
+            const SnackBar(content: Text('Invoice deleted'), backgroundColor: Colors.green),
           );
           widget.onDeleted?.call();
           Navigator.pop(context, true);
@@ -779,10 +718,10 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
               onPressed: _isSaving ? null : _saveChanges,
               icon: _isSaving
                   ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
                   : const Icon(Icons.save),
               color: Colors.green,
               tooltip: 'Save GRV/Credit Note',
@@ -814,13 +753,13 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
               onPressed: _isSaving ? null : _saveChanges,
               icon: _isSaving
                   ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
                   : const Icon(Icons.save, size: 18),
               label: const Text('Save GRV/Credit Note'),
               style: ElevatedButton.styleFrom(
@@ -835,373 +774,315 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _refreshPurchases,
-              child: SingleChildScrollView(
-                controller: _scrollController,
-                // 🔥 Extra bottom padding so the last card's edit/delete
-                // buttons are never clipped or covered.
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Invoice Details Card
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          children: [
-                            DropdownButtonFormField<String>(
-                              initialValue:
-                                  _suppliers.any(
-                                    (s) =>
-                                        s['supplierID']?.toString() ==
-                                        _supplierId,
-                                  )
-                                  ? _supplierId
-                                  : null,
-                              decoration: InputDecoration(
-                                labelText: 'Supplier',
-                                hintText: _supplierName.isNotEmpty
-                                    ? _supplierName
-                                    : 'Select Supplier',
-                                border: const OutlineInputBorder(),
-                              ),
-                              items: _suppliers.map((s) {
-                                return DropdownMenuItem(
-                                  value: s['supplierID']?.toString(),
-                                  child: Text(s['Supplier']?.toString() ?? ''),
-                                );
-                              }).toList(),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  final supplier = _suppliers.firstWhere(
-                                    (s) => s['supplierID']?.toString() == val,
-                                  );
-                                  setState(() {
-                                    _supplierId = val;
-                                    _supplierName =
-                                        supplier['Supplier']?.toString() ?? '';
-                                    _hasUnsavedChanges = true;
-                                  });
-                                }
-                              },
-                            ),
-                            const SizedBox(height: 16),
-
-                            // GRV Reference Field
-                            TextFormField(
-                              controller: _grvController,
-                              decoration: const InputDecoration(
-                                labelText: 'GRV Reference',
-                                border: OutlineInputBorder(),
-                              ),
-                              onChanged: (_) => _onFieldChanged(),
-                            ),
-                            const SizedBox(height: 16),
-
-                            TextFormField(
-                              controller: _invoiceNumberController,
-                              decoration: const InputDecoration(
-                                labelText: 'Invoice Number',
-                                border: OutlineInputBorder(),
-                              ),
-                              onChanged: (_) => _onFieldChanged(),
-                            ),
-                            const SizedBox(height: 16),
-                            ListTile(
-                              leading: const Icon(Icons.calendar_today),
-                              title: const Text('Delivery Date'),
-                              subtitle: Text(
-                                DateFormat('dd MMM yyyy').format(_deliveryDate),
-                              ),
-                              onTap: () => _selectDate(context, true),
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.receipt),
-                              title: const Text('Purchase Date'),
-                              subtitle: Text(
-                                DateFormat('dd MMM yyyy').format(_purchaseDate),
-                              ),
-                              onTap: () => _selectDate(context, false),
-                            ),
-                          ],
+        onRefresh: _refreshPurchases,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          // 🔥 Extra bottom padding so the last card's edit/delete
+          // buttons are never clipped or covered.
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Invoice Details Card
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      DropdownButtonFormField<String>(
+                        initialValue: _suppliers.any((s) => s['supplierID']?.toString() == _supplierId)
+                            ? _supplierId
+                            : null,
+                        decoration: InputDecoration(
+                          labelText: 'Supplier',
+                          hintText: _supplierName.isNotEmpty ? _supplierName : 'Select Supplier',
+                          border: const OutlineInputBorder(),
                         ),
+                        items: _suppliers.map((s) {
+                          return DropdownMenuItem(
+                            value: s['supplierID']?.toString(),
+                            child: Text(s['Supplier']?.toString() ?? ''),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            final supplier = _suppliers.firstWhere(
+                                  (s) => s['supplierID']?.toString() == val,
+                            );
+                            setState(() {
+                              _supplierId = val;
+                              _supplierName = supplier['Supplier']?.toString() ?? '';
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
+                      // GRV Reference Field
+                      TextFormField(
+                        controller: _grvController,
+                        decoration: const InputDecoration(
+                          labelText: 'GRV Reference',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => _onFieldChanged(),
+                      ),
+                      const SizedBox(height: 16),
+
+                      TextFormField(
+                        controller: _invoiceNumberController,
+                        decoration: const InputDecoration(
+                          labelText: 'Invoice Number',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => _onFieldChanged(),
+                      ),
+                      const SizedBox(height: 16),
+                      ListTile(
+                        leading: const Icon(Icons.calendar_today),
+                        title: const Text('Delivery Date'),
+                        subtitle: Text(DateFormat('dd MMM yyyy').format(_deliveryDate)),
+                        onTap: () => _selectDate(context, true),
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.receipt),
+                        title: const Text('Purchase Date'),
+                        subtitle: Text(DateFormat('dd MMM yyyy').format(_purchaseDate)),
+                        onTap: () => _selectDate(context, false),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // Items Header
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Items (${_purchases.length})',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      if (_hasMoreItems && _purchases.length >= _pageSize)
+                        Text(
+                          'Showing ${_purchases.length}+ items',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                    ],
+                  ),
+                  Text(
+                    'Total: ${_formatCurrency(grandTotal)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: isCreditNote ? Colors.green : Colors.red,
+                    ),
+                  ),
+                ],
+              ),
+
+              // MOBILE ONLY: full-width Add Product directly below Items / Total.
+              if (isMobile) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton.icon(
+                    onPressed: _addNewProduct,
+                    icon: const Icon(Icons.add),
+                    label: const Text(
+                      'Add Product',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-
-                    const SizedBox(height: 24),
-
-                    // Items Header
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Items (${_purchases.length})',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            if (_hasMoreItems && _purchases.length >= _pageSize)
-                              Text(
-                                'Showing ${_purchases.length}+ items',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey.shade600,
-                                ),
-                              ),
-                          ],
-                        ),
-                        Text(
-                          'Total: ${_formatCurrency(grandTotal)}',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: isCreditNote ? Colors.green : Colors.red,
-                          ),
-                        ),
-                      ],
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                     ),
+                  ),
+                ),
+              ],
 
-                    // MOBILE ONLY: full-width Add Product directly below Items / Total.
-                    if (isMobile) ...[
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: ElevatedButton.icon(
-                          onPressed: _addNewProduct,
-                          icon: const Icon(Icons.add),
-                          label: const Text(
-                            'Add Product',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
+              const SizedBox(height: 16),
+
+              // Items List or Empty State
+              _purchases.isEmpty
+                  ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32.0),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.inbox,
+                        size: 64,
+                        color: Colors.grey[400],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No items on this invoice',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Use "Add Product" in the top bar to add your first product',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[500],
                         ),
                       ),
                     ],
+                  ),
+                ),
+              )
+                  : Column(
+                children: [
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _purchases.length + (_hasMoreItems ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      if (index == _purchases.length) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16.0),
+                          child: Center(
+                            child: _isLoadingMore
+                                ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                                : const SizedBox.shrink(),
+                          ),
+                        );
+                      }
 
-                    const SizedBox(height: 16),
+                      final purchase = _purchases[index];
+                      final qtyCases = NumberParser.parse(purchase['Qty Purchased']);
+                      final pricePerUnit = NumberParser.parse(purchase['Cost Per Bottle']);
+                      final packSize = _extractPackSize(purchase['Case/Pack Size']);
+                      final lineTotal = _calculateLineTotal(purchase);
+                      final isNew = _isNewItem(purchase);
 
-                    // Items List or Empty State
-                    _purchases.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(32.0),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.inbox,
-                                    size: 64,
-                                    color: Colors.grey[400],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'No items on this invoice',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Use "Add Product" in the top bar to add your first product',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey[500],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        : Column(
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          title: Row(
                             children: [
-                              ListView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount:
-                                    _purchases.length + (_hasMoreItems ? 1 : 0),
-                                itemBuilder: (context, index) {
-                                  if (index == _purchases.length) {
-                                    return Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16.0,
-                                      ),
-                                      child: Center(
-                                        child: _isLoadingMore
-                                            ? const SizedBox(
-                                                width: 24,
-                                                height: 24,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                              )
-                                            : const SizedBox.shrink(),
-                                      ),
-                                    );
-                                  }
-
-                                  final purchase = _purchases[index];
-                                  final qtyCases = NumberParser.parse(
-                                    purchase['Qty Purchased'],
-                                  );
-                                  final pricePerUnit = NumberParser.parse(
-                                    purchase['Cost Per Bottle'],
-                                  );
-                                  final packSize = _extractPackSize(
-                                    purchase['Case/Pack Size'],
-                                  );
-                                  final lineTotal = _calculateLineTotal(
-                                    purchase,
-                                  );
-                                  final isNew = _isNewItem(purchase);
-
-                                  return Card(
-                                    margin: const EdgeInsets.only(bottom: 8),
-                                    child: ListTile(
-                                      title: Row(
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              purchase['Purchased Product Name'] ??
-                                                  '',
-                                              style: TextStyle(
-                                                fontWeight: isNew
-                                                    ? FontWeight.bold
-                                                    : FontWeight.normal,
-                                              ),
-                                            ),
-                                          ),
-                                          if (isNew)
-                                            Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 8,
-                                                    vertical: 2,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.blue,
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                              child: const Text(
-                                                'NEW',
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 10,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                      subtitle: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '${qtyCases.toStringAsFixed(2)} cases ($packSize pk) @ R${pricePerUnit.toStringAsFixed(2)}/unit',
-                                          ),
-                                          if (_isUnsaved(purchase))
-                                            const Text(
-                                              '* Unsaved changes',
-                                              style: TextStyle(
-                                                color: Colors.orange,
-                                                fontSize: 10,
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            _formatCurrency(lineTotal),
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              color: lineTotal < 0
-                                                  ? Colors.green
-                                                  : Colors.red,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.edit,
-                                              size: 20,
-                                              color: Colors.blue,
-                                            ),
-                                            onPressed: () =>
-                                                _editPurchaseItem(index),
-                                            tooltip: 'Edit item',
-                                            padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.delete_outline,
-                                              size: 20,
-                                              color: Colors.red,
-                                            ),
-                                            onPressed: () =>
-                                                _deletePurchaseItem(index),
-                                            tooltip: 'Delete item',
-                                            padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              if (_isLoadingMore && _purchases.isNotEmpty)
-                                const Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16.0,
+                              Expanded(
+                                child: Text(
+                                  purchase['Purchased Product Name'] ?? '',
+                                  style: TextStyle(
+                                    fontWeight: isNew ? FontWeight.bold : FontWeight.normal,
                                   ),
-                                  child: Center(
-                                    child: SizedBox(
-                                      width: 24,
-                                      height: 24,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
+                                ),
+                              ),
+                              if (isNew)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'NEW',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ),
                             ],
                           ),
-                  ],
-                ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${qtyCases.toStringAsFixed(2)} cases ($packSize pk) @ R${pricePerUnit.toStringAsFixed(2)}/unit'),
+                              if (_isUnsaved(purchase))
+                                const Text(
+                                  '* Unsaved changes',
+                                  style: TextStyle(color: Colors.orange, fontSize: 10),
+                                ),
+                            ],
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _formatCurrency(lineTotal),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: lineTotal < 0 ? Colors.green : Colors.red,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              IconButton(
+                                icon: const Icon(Icons.edit, size: 20, color: Colors.blue),
+                                onPressed: () => _editPurchaseItem(index),
+                                tooltip: 'Edit item',
+                                padding: const EdgeInsets.all(8),
+                                constraints: const BoxConstraints(),
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
+                                onPressed: () => _deletePurchaseItem(index),
+                                tooltip: 'Delete item',
+                                padding: const EdgeInsets.all(8),
+                                constraints: const BoxConstraints(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  if (_isLoadingMore && _purchases.isNotEmpty)
+                    const Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16.0),
+                      child: Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-            ),
+            ],
+          ),
+        ),
+      ),
       // 🔥 FAB REMOVED — it was covering the last item's edit/delete buttons.
     );
   }
 
   // 🔥 NEW helpers — single source of truth for the UI badges.
-  // UI state is now DERIVED from syncStatus, not from persisted flags alone.
+// UI state is now DERIVED from syncStatus, not from persisted flags alone.
   bool _isUnsaved(Map<String, dynamic> purchase) =>
       purchase['_edited'] == true || purchase['syncStatus'] == 'pending';
 
   bool _isNewItem(Map<String, dynamic> purchase) =>
       purchase['_isNew'] == true ||
-      ((purchase['purchases_ID']?.toString().startsWith('TEMP_') ?? false) &&
-          purchase['syncStatus'] == 'pending');
+          ((purchase['purchases_ID']?.toString().startsWith('TEMP_') ?? false) &&
+              purchase['syncStatus'] == 'pending');
+
 }

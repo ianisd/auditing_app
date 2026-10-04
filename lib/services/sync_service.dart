@@ -103,6 +103,118 @@ class SyncService with ChangeNotifier {
     offlineStorage.checkRefreshStore(_postStoreId!, _postStoreGeneration!);
   }
 
+  Future<void> _ensureInvoicesMigratedToFirestore() async {
+    _checkPostSession();
+    final invoiceFirestore = firestore;
+    final storeId = offlineStorage.firestoreKey;
+    if (invoiceFirestore == null || storeId == null || storeId.isEmpty) {
+      throw StateError(
+        'Firestore InvoiceDetails migration is unavailable for the active store.',
+      );
+    }
+    if (await invoiceFirestore.isInvoicesMigrationComplete(storeId)) return;
+    _checkPostSession();
+
+    logger?.info(
+      'InvoiceDetails migration: seeding Firestore from the existing Google Sheet for store=$storeId',
+    );
+    final legacyRows = await googleSheets.fetchInvoices();
+    _checkPostSession();
+
+    final byId = <String, Map<String, dynamic>>{};
+    var invalid = 0;
+    var duplicates = 0;
+    for (final raw in legacyRows) {
+      final row = Map<String, dynamic>.from(raw);
+      final id = row['invoiceDetailsID']?.toString().trim();
+      if (id == null || id.isEmpty) {
+        invalid++;
+        continue;
+      }
+      if (byId.containsKey(id)) duplicates++;
+      byId[id] = row;
+    }
+    final validRows = byId.values.toList();
+    logger?.info(
+      'InvoiceDetails migration: source=${legacyRows.length} validUnique=${validRows.length} invalid=$invalid duplicateExcess=$duplicates',
+    );
+
+    const batchSize = 250;
+    for (var offset = 0; offset < validRows.length; offset += batchSize) {
+      _checkPostSession();
+      final end = offset + batchSize < validRows.length
+          ? offset + batchSize
+          : validRows.length;
+      await invoiceFirestore.saveInvoicesBatch(
+        storeId,
+        validRows.sublist(offset, end),
+      );
+    }
+    _checkPostSession();
+
+    // Verify the seed before making Firestore authoritative. This is a one-time
+    // migration read; routine refreshes remain incremental.
+    final seeded = await invoiceFirestore.getInvoices(storeId);
+    _checkPostSession();
+    final seededIds = seeded
+        .map((r) => r['invoiceDetailsID']?.toString().trim())
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (seededIds.length != validRows.length ||
+        !seededIds.containsAll(byId.keys)) {
+      throw StateError(
+        'InvoiceDetails migration verification failed: expected ${validRows.length} unique IDs, found ${seededIds.length}.',
+      );
+    }
+
+    await invoiceFirestore.markInvoicesMigrationComplete(storeId);
+    _checkPostSession();
+    logger?.info(
+      'InvoiceDetails migration: Firestore is authoritative for store=$storeId; imported=${validRows.length}; skippedInvalid=$invalid; duplicateExcess=$duplicates',
+    );
+  }
+
+  Future<void> _ensurePurchasesMigratedToFirestore() async {
+    _checkPostSession();
+    final purchaseFirestore = firestore;
+    final storeId = offlineStorage.firestoreKey;
+    if (purchaseFirestore == null || storeId == null || storeId.isEmpty) {
+      throw StateError(
+        'Firestore Purchases migration is unavailable for the active store.',
+      );
+    }
+
+    if (await purchaseFirestore.isPurchasesMigrationComplete(storeId)) return;
+    _checkPostSession();
+
+    logger?.info(
+      'Purchases migration: seeding Firestore from the existing Google Sheet for store=$storeId',
+    );
+    final legacyRows = await googleSheets.fetchPurchases();
+    _checkPostSession();
+
+    // Keep comfortably below Firestore's 500-write batch limit.
+    const batchSize = 400;
+    for (var offset = 0; offset < legacyRows.length; offset += batchSize) {
+      _checkPostSession();
+      final end = offset + batchSize < legacyRows.length
+          ? offset + batchSize
+          : legacyRows.length;
+      await purchaseFirestore.savePurchasesBatch(
+        storeId,
+        legacyRows.sublist(offset, end),
+      );
+    }
+
+    _checkPostSession();
+    await purchaseFirestore.markPurchasesMigrationComplete(storeId);
+    _checkPostSession();
+    logger?.info(
+      'Purchases migration: Firestore is authoritative for store=$storeId; imported=${legacyRows.length}',
+    );
+  }
+
   Future<Map<String, dynamic>> _syncVersionedRows(
     String table,
     List<Map<String, dynamic>> records, {
@@ -110,6 +222,13 @@ class SyncService with ChangeNotifier {
     Function(int processed, int total)? onProgress,
   }) async {
     _checkPostSession();
+    if (table == 'InvoiceDetails') {
+      await _ensureInvoicesMigratedToFirestore();
+      _checkPostSession();
+    } else if (table == 'Purchases') {
+      await _ensurePurchasesMigratedToFirestore();
+      _checkPostSession();
+    }
     final problems = offlineStorage.getPostRecoveryIssues();
     if (problems.isNotEmpty) throw StateError(problems.join('\n'));
     final size = deleting
@@ -135,20 +254,109 @@ class SyncService with ChangeNotifier {
         deleting: deleting,
       );
       Map<String, dynamic> result;
-      if (deleting) {
-        final ok = table == 'InvoiceDetails'
-            ? await googleSheets.deleteInvoice(snapshot.rows.keys.single)
-            : await googleSheets.deletePurchases(snapshot.rows.keys.toList());
-        result = {'success': ok};
+      if (table == 'Purchases') {
+        final purchaseFirestore = firestore;
+        final storeId = offlineStorage.firestoreKey;
+        if (purchaseFirestore == null || storeId == null || storeId.isEmpty) {
+          throw StateError(
+            'Firestore Purchases sync is unavailable for the active store.',
+          );
+        }
+
+        // Purchases are authoritative in Firestore, but Google Sheets remains
+        // a reporting mirror while variance/pivot reporting still runs there.
+        // Do not acknowledge the local snapshot until BOTH destinations confirm.
+        if (deleting) {
+          await purchaseFirestore.deletePurchasesBatch(
+            storeId,
+            snapshot.rows.keys.toList(),
+          );
+          _checkPostSession();
+
+          final sheetConfirmed = await googleSheets.deletePurchases(
+            snapshot.rows.keys.toList(),
+          );
+          result = {
+            'success': sheetConfirmed,
+            'message': sheetConfirmed
+                ? 'Purchase deletes confirmed in Firestore and Sheets.'
+                : 'Firestore delete succeeded but the Purchases reporting mirror is unconfirmed.',
+          };
+        } else {
+          // FirestoreService copies/sanitizes these rows and never mutates the
+          // immutable acknowledgement snapshot held by OfflineStorage.
+          final firestoreOutgoing = batch
+              .map((r) => Map<String, dynamic>.from(r))
+              .toList();
+          await purchaseFirestore.savePurchasesBatch(
+            storeId,
+            firestoreOutgoing,
+          );
+          _checkPostSession();
+
+          // Reuse the existing idempotent Purchases Sheet upsert. It keys rows
+          // by purchases_ID, so retrying after Firestore already succeeded is safe.
+          final sheetsOutgoing = batch
+              .map((r) => Map<String, dynamic>.from(r))
+              .toList();
+          result = await googleSheets.syncPurchasesWithResult(sheetsOutgoing);
+          if (result['success'] != true) {
+            result = {
+              ...result,
+              'message':
+                  'Firestore write succeeded but the Purchases reporting mirror is unconfirmed: ${result['message'] ?? 'unknown Sheets error'}',
+            };
+          }
+        }
+      } else if (table == 'InvoiceDetails') {
+        final invoiceFirestore = firestore;
+        final storeId = offlineStorage.firestoreKey;
+        if (invoiceFirestore == null || storeId == null || storeId.isEmpty) {
+          throw StateError(
+            'Firestore InvoiceDetails sync is unavailable for the active store.',
+          );
+        }
+        if (deleting) {
+          final ids = snapshot.rows.keys.toList();
+          await invoiceFirestore.deleteInvoicesBatch(storeId, ids);
+          _checkPostSession();
+          // Keep InvoiceDetails in Sheets as the reporting/export mirror.
+          // deleteInvoice is idempotent and may also remove linked Sheet
+          // Purchases; the dedicated Purchase delete remains safe to retry.
+          var sheetsConfirmed = true;
+          for (final id in ids) {
+            if (!await googleSheets.deleteInvoice(id)) sheetsConfirmed = false;
+          }
+          result = {
+            'success': sheetsConfirmed,
+            'message': sheetsConfirmed
+                ? 'Invoice deletes confirmed in Firestore and Sheets.'
+                : 'Firestore delete succeeded but the InvoiceDetails reporting mirror is unconfirmed.',
+          };
+        } else {
+          final firestoreOutgoing = batch
+              .map((r) => Map<String, dynamic>.from(r))
+              .toList();
+          await invoiceFirestore.saveInvoicesBatch(storeId, firestoreOutgoing);
+          _checkPostSession();
+          final sheetsOutgoing = batch
+              .map((r) => Map<String, dynamic>.from(r))
+              .toList();
+          result = await googleSheets.syncInvoiceDetailsWithResult(
+            sheetsOutgoing,
+          );
+          if (result['success'] != true) {
+            result = {
+              ...result,
+              'message':
+                  'Firestore write succeeded but the InvoiceDetails reporting mirror is unconfirmed: ${result['message'] ?? 'unknown Sheets error'}',
+            };
+          }
+        }
+      } else if (deleting) {
+        throw StateError('Unsupported delete table: $table');
       } else {
-        // Mapping functions may normalize fields. Never give them immutable maps
-        // or reuse their output as the local acknowledgement snapshot.
-        final outgoing = batch
-            .map((r) => Map<String, dynamic>.from(r))
-            .toList();
-        result = table == 'InvoiceDetails'
-            ? await googleSheets.syncInvoiceDetailsWithResult(outgoing)
-            : await googleSheets.syncPurchasesWithResult(outgoing);
+        throw StateError('Unsupported versioned sync table: $table');
       }
       _checkPostSession();
       if (result['success'] != true) {
@@ -1429,10 +1637,30 @@ class SyncService with ChangeNotifier {
       }
     }
 
-    Future<void> save(String table, List<Map<String, dynamic>>? rows) async {
+    Future<void> save(
+      String table,
+      List<Map<String, dynamic>>? rows, {
+      bool unchanged = false,
+    }) async {
       if (rows == null) return; // Never substitute a failed download with [].
       try {
         checkActive();
+
+        // The caller captures verified-reuse state immediately after the fetch
+        // that produced these rows. Do not re-read mutable GoogleSheetsService
+        // refresh state here: bundled/concurrent fetches may advance that state
+        // before local persistence runs.
+        if (useVersionChecks && unchanged) {
+          saved[table] = 0;
+          _refreshTableStates[table] = 'Unchanged; local data retained';
+          if (table == 'Inventory') _inventoryLoaded = true;
+          logger?.info(
+            'Refresh $table unchanged: local data retained; 0 remote changes applied',
+          );
+          _safeNotify();
+          return;
+        }
+
         _refreshTableStates[table] = 'Saving ${rows.length} rows';
         final count = await offlineStorage.applyDownloadedTable(
           table,
@@ -1460,6 +1688,164 @@ class SyncService with ChangeNotifier {
       }
     }
 
+    Future<void> refreshFirestoreOperationalData() async {
+      final firestoreWatch = Stopwatch()..start();
+      logger?.info(
+        'Firestore operational refresh started in parallel with Google Sheets refresh',
+      );
+      try {
+        // 3. InvoiceDetails is authoritative in Firestore. Normal refreshes
+        // consume only the delta; an empty local cache or explicit recovery uses
+        // the complete Firestore collection.
+        final invoiceFirestore = firestore;
+        final invoiceStoreId = offlineStorage.firestoreKey;
+        if (invoiceFirestore == null ||
+            invoiceStoreId == null ||
+            invoiceStoreId.isEmpty) {
+          reportFailure(
+            'InvoiceDetails',
+            StateError(
+              'Firestore InvoiceDetails download is unavailable for the active store.',
+            ),
+          );
+        } else {
+          try {
+            await _ensureInvoicesMigratedToFirestore();
+            checkActive();
+            final localInvoices =
+                offlineStorage.getStoredTableRows()['InvoiceDetails'] ??
+                const <Map<String, dynamic>>[];
+            final needsBootstrap = forceFullDownload || localInvoices.isEmpty;
+            if (needsBootstrap) {
+              final rows = await invoiceFirestore.getInvoices(invoiceStoreId);
+              checkActive();
+              await save('InvoiceDetails', rows);
+            } else {
+              final cursors = await offlineStorage.getInvoiceRefreshCursors(
+                storeId,
+              );
+              checkActive();
+              _refreshTableStates['InvoiceDetails'] =
+                  'Checking Firestore changes';
+              _safeNotify();
+              final delta = await invoiceFirestore.getInvoiceChanges(
+                invoiceStoreId,
+                upsertsSince: cursors['upserts'],
+                deletesSince: cursors['deletes'],
+              );
+              checkActive();
+              final applied = await offlineStorage.applyInvoiceChanges(
+                delta.upserts,
+                delta.deletedIds,
+                storeId: storeId,
+                generation: generation,
+              );
+              checkActive();
+              await offlineStorage.saveInvoiceRefreshCursors(
+                storeId,
+                upserts: delta.upsertCursor,
+                deletes: delta.deleteCursor,
+              );
+              checkActive();
+              saved['InvoiceDetails'] = applied;
+              _refreshTableStates['InvoiceDetails'] =
+                  'Applied $applied changes (${delta.upserts.length} upserts, ${delta.deletedIds.length} deletes)';
+              logger?.info(
+                'Refresh InvoiceDetails incremental: $applied local changes applied from ${delta.upserts.length} upserts and ${delta.deletedIds.length} deletes',
+              );
+              _safeNotify();
+            }
+          } catch (e) {
+            reportFailure('InvoiceDetails', e);
+          }
+        }
+
+        // 4. Purchases are authoritative in Firestore.
+        // Routine refreshes are incremental so an 8k+ Purchase collection does not
+        // consume thousands of reads every time the user refreshes.
+        final purchaseFirestore = firestore;
+        final purchaseStoreId = offlineStorage.firestoreKey;
+        if (purchaseFirestore == null ||
+            purchaseStoreId == null ||
+            purchaseStoreId.isEmpty) {
+          reportFailure(
+            'Purchases',
+            StateError(
+              'Firestore Purchases download is unavailable for the active store.',
+            ),
+          );
+        } else {
+          try {
+            await _ensurePurchasesMigratedToFirestore();
+            checkActive();
+
+            if (forceFullDownload) {
+              // Explicit recovery/bootstrap only. This intentionally reads the
+              // complete collection and should not be the normal refresh path.
+              final rows = await purchaseFirestore.getPurchases(
+                purchaseStoreId,
+              );
+              checkActive();
+              await save('Purchases', rows);
+            } else {
+              final cursors = await offlineStorage.getPurchaseRefreshCursors(
+                storeId,
+              );
+              checkActive();
+              // Use the persisted Firestore cursors exactly. The queries use a
+              // strict `>` comparison, so subtracting an overlap here would replay
+              // already-consumed batch timestamps on every refresh.
+              final upsertsSince = cursors['upserts'];
+              final deletesSince = cursors['deletes'];
+
+              _refreshTableStates['Purchases'] = 'Checking Firestore changes';
+              _safeNotify();
+              final delta = await purchaseFirestore.getPurchaseChanges(
+                purchaseStoreId,
+                upsertsSince: upsertsSince,
+                deletesSince: deletesSince,
+              );
+              checkActive();
+
+              final applied = await offlineStorage.applyPurchaseChanges(
+                delta.upserts,
+                delta.deletedIds,
+                storeId: storeId,
+                generation: generation,
+              );
+              checkActive();
+
+              // Advance cursors only after Hive successfully applied the delta.
+              await offlineStorage.savePurchaseRefreshCursors(
+                storeId,
+                upserts: delta.upsertCursor,
+                deletes: delta.deleteCursor,
+              );
+              checkActive();
+
+              saved['Purchases'] = applied;
+              _refreshTableStates['Purchases'] =
+                  'Applied $applied changes '
+                  '(${delta.upserts.length} upserts, ${delta.deletedIds.length} deletes)';
+              logger?.info(
+                'Refresh Purchases incremental: $applied local changes applied '
+                'from ${delta.upserts.length} upserts and ${delta.deletedIds.length} deletes',
+              );
+              _safeNotify();
+            }
+          } catch (e) {
+            reportFailure('Purchases', e);
+          }
+        }
+      } finally {
+        logger?.info(
+          'Firestore operational refresh finished: elapsed_ms=${firestoreWatch.elapsedMilliseconds}',
+        );
+      }
+    }
+
+    Future<void>? firestoreRefreshFuture;
+
     _isSyncing = true;
     _lastError = null;
     _lastSyncCount = 0;
@@ -1478,6 +1864,7 @@ class SyncService with ChangeNotifier {
         );
       }
       checkActive();
+
       if (useVersionChecks) {
         final snapshot = await offlineStorage.getDownloadSnapshot(storeId);
         checkActive();
@@ -1486,6 +1873,12 @@ class SyncService with ChangeNotifier {
           legacyRows: offlineStorage.getStoredTableRows(),
         );
         checkActive();
+
+        // Firestore-backed InvoiceDetails/Purchases are independent of the GAS
+        // version manifest. Start them after the local snapshot has been read so
+        // Hive is not being mutated while restoreDownloadSnapshot inspects it.
+        firestoreRefreshFuture = refreshFirestoreOperationalData();
+
         await googleSheets.beginVersionedRefresh(const [
           'Inventory',
           'Locations',
@@ -1494,14 +1887,16 @@ class SyncService with ChangeNotifier {
           'StockIssues',
           'ItemsIssuedMap',
           'PluMappings',
-          'InvoiceDetails',
+          // InvoiceDetails is authoritative in Firestore.
           'ItemsIssued',
           'ItemSales',
-          'Purchases',
+          // Purchases are authoritative in Firestore and no longer participate
+          // in the Google Sheets versioned-download snapshot.
           'StoreSalesData',
         ], forceFullDownload: forceFullDownload);
       } else {
         googleSheets.clearCache();
+        firestoreRefreshFuture = refreshFirestoreOperationalData();
       }
       checkActive();
       // Complete the small core group before enqueueing the large sales tables.
@@ -1511,17 +1906,24 @@ class SyncService with ChangeNotifier {
         fetch('MasterCostsComputed', () => googleSheets.fetchComputedCosts()),
       ]);
       checkActive();
-      await save('MasterCostsComputed', core[2]);
-      // If costs failed, retain the prices supplied by Inventory itself.
+      final coreReused = googleSheets.reusedRefreshTables;
+      final costsUnchanged = coreReused.contains('MasterCostsComputed');
+      final inventoryUnchanged =
+          coreReused.contains('Inventory') && costsUnchanged;
+      final locationsUnchanged = coreReused.contains('Locations');
+      await save('MasterCostsComputed', core[2], unchanged: costsUnchanged);
+      // Inventory can be skipped only when both its raw rows and the computed
+      // costs are unchanged. A cost change must still be merged into Inventory.
       await save(
         'Inventory',
         core[0] == null
             ? null
-            : core[2] == null
+            : inventoryUnchanged || core[2] == null
             ? core[0]
             : _mergeCostsIntoInventory(core[0]!, _buildCostMap(core[2]!)),
+        unchanged: inventoryUnchanged,
       );
-      await save('Locations', core[1]);
+      await save('Locations', core[1], unchanged: locationsUnchanged);
       checkActive();
       // 1. Bundle 4 small auxiliary tables into 1 single round-trip
       const smallTables = [
@@ -1541,6 +1943,7 @@ class SyncService with ChangeNotifier {
 
           final bundle = await googleSheets.fetchBundledTables(smallTables);
           checkActive();
+          final bundleReused = googleSheets.reusedRefreshTables;
 
           for (final t in smallTables) {
             final rows = bundle[t];
@@ -1555,7 +1958,7 @@ class SyncService with ChangeNotifier {
             }
             _refreshTableStates[t] =
                 'Received ${rows.length} rows (bundled or verified cache)';
-            await save(t, rows);
+            await save(t, rows, unchanged: bundleReused.contains(t));
           }
         } catch (e) {
           logger?.error('Bundled fetch failed, reporting errors', e);
@@ -1565,40 +1968,44 @@ class SyncService with ChangeNotifier {
         }
       }
 
-      // 2. Invoices & Small Tables (InvoiceDetails, ItemSales, ItemsIssued + _bundle)
+      // 2. Remaining Google Sheets tables (ItemSales, ItemsIssued + _bundle)
       final prePurchaseJobs =
           <String, Future<List<Map<String, dynamic>>> Function()>{
-            'InvoiceDetails': () => googleSheets.fetchInvoices(),
             'ItemsIssued': () => googleSheets.fetchItemsIssued(),
             'ItemSales': () => googleSheets.fetchItemSales(),
           };
 
-      // Download and save Invoices and small tables first
+      // Download and save the remaining small tables first
       await Future.wait([
         fetchAndSaveBundle(),
         ...prePurchaseJobs.entries.map((job) async {
           final rows = await fetch(job.key, job.value);
-          await save(job.key, rows);
+          final unchanged = googleSheets.reusedRefreshTables.contains(job.key);
+          await save(job.key, rows, unchanged: unchanged);
         }),
       ]);
 
       checkActive();
 
-      // 3. Purchases runs ALONE after Invoices are fully committed
-      final purchaseRows = await fetch(
-        'Purchases',
-        () => googleSheets.fetchPurchases(),
-      );
-      await save('Purchases', purchaseRows);
+      // InvoiceDetails and Purchases were refreshed concurrently with the
+      // Google Sheets manifest/download work. Wait for that branch before the
+      // final StoreSalesData step and completion accounting.
+      final activeFirestoreRefresh = firestoreRefreshFuture;
+      if (activeFirestoreRefresh != null) {
+        await activeFirestoreRefresh;
+      }
 
       checkActive();
 
-      // 4. Heavyweight: StoreSalesData runs ALONE without Google sheet lock contention
+      // 5. Heavyweight: StoreSalesData runs ALONE without Google sheet lock contention
       final salesRows = await fetch(
         'StoreSalesData',
         () => googleSheets.fetchStoreSalesData(),
       );
-      await save('StoreSalesData', salesRows);
+      final salesUnchanged = googleSheets.reusedRefreshTables.contains(
+        'StoreSalesData',
+      );
+      await save('StoreSalesData', salesRows, unchanged: salesUnchanged);
 
       checkActive();
       if (useVersionChecks) {
@@ -1648,6 +2055,16 @@ class SyncService with ChangeNotifier {
         message: 'Refresh stopped: $e',
       );
     } finally {
+      // Do not leave the parallel Firestore branch running after the master
+      // refresh has returned (for example if the GAS manifest fails).
+      final pendingFirestoreRefresh = firestoreRefreshFuture;
+      if (pendingFirestoreRefresh != null) {
+        try {
+          await pendingFirestoreRefresh;
+        } catch (e) {
+          logger?.error('Parallel Firestore refresh did not finish cleanly', e);
+        }
+      }
       googleSheets.abortVersionedRefresh();
       logger?.info(
         'Master refresh finished: elapsed_ms=${refreshWatch.elapsedMilliseconds}',

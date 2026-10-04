@@ -129,9 +129,6 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final invoiceId = DateTime.now().millisecondsSinceEpoch.toString();
-      print('DEBUG: Creating invoice with ID: $invoiceId');
-
       // Get GRV Reference from controller
       _grvReference = _grvController.text.trim(); // 🔥 ADDED
 
@@ -160,7 +157,6 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
 
       // 🔥 CRITICAL: Create invoice with ALL fields including GRV Reference
       final invoice = <String, dynamic>{
-        'invoiceDetailsID': invoiceId,
         'Invoice Number': invoiceNumber,
         'GRV Reference': _grvReference, // 🔥 ADDED
         'supplierID': _selectedSupplierId!,
@@ -172,14 +168,19 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
       };
 
       print('✅ FINAL INVOICE DATA:');
-      print('  - Invoice ID: ${invoice['invoiceDetailsID']}');
       print('  - Invoice Number: "${invoice['Invoice Number']}"');
       print('  - GRV Reference: "${invoice['GRV Reference']}"'); // 🔥 ADDED
       print('  - Supplier: ${invoice['Supplier']}');
       print('  - Supplier ID: ${invoice['supplierID']}');
 
       print('DEBUG: Saving invoice details to storage...');
-      await context.read<OfflineStorage>().saveInvoiceDetails(invoice);
+      final invoiceId = await context.read<OfflineStorage>().saveInvoiceDetails(
+        invoice,
+      );
+      if (invoiceId.isEmpty) {
+        throw StateError('Could not create invoice.');
+      }
+      print('DEBUG: OfflineStorage assigned invoice ID: $invoiceId');
 
       // Navigate to line items screen for manual entry
       final navigationResult = await Navigator.push(

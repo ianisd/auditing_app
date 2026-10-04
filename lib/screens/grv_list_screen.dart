@@ -10,6 +10,7 @@ import 'grv_invoice_screen.dart';
 // Constants for better maintainability
 class InvoiceStatus {
   static const String pending = 'pending';
+  static const String deleted = 'deleted';
   static const String synced = 'synced';
   static const String all = 'All';
   static const String pendingLabel = 'Pending';
@@ -270,9 +271,11 @@ class _GrvListScreenState extends State<GrvListScreen> {
 
     // Status Filter
     if (_statusFilter == InvoiceStatus.pendingLabel) {
-      filtered = filtered
-          .where((i) => i['syncStatus'] == InvoiceStatus.pending)
-          .toList();
+      filtered = filtered.where((i) {
+        final status = i['syncStatus']?.toString();
+        return status == InvoiceStatus.pending ||
+            status == InvoiceStatus.deleted;
+      }).toList();
     } else if (_statusFilter == InvoiceStatus.syncedLabel) {
       filtered = filtered
           .where((i) => i['syncStatus'] == InvoiceStatus.synced)
@@ -519,9 +522,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   Future<void> _syncInvoices() async {
-    final pendingCount = _invoices
-        .where((i) => i['syncStatus'] == InvoiceStatus.pending)
-        .length;
+    final pendingCount = _invoices.where((i) {
+      final status = i['syncStatus']?.toString();
+      return status == InvoiceStatus.pending || status == InvoiceStatus.deleted;
+    }).length;
 
     if (pendingCount == 0) {
       _showSnackBar('All invoices are up to date!');
@@ -531,9 +535,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Sync Pending Invoices'),
+        title: const Text('Sync Pending GRV Changes'),
         content: Text(
-          'Upload $pendingCount pending invoice(s) to Google Sheets?',
+          'Sync $pendingCount pending GRV change(s), including any pending deletes?',
         ),
         actions: [
           TextButton(
@@ -900,9 +904,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
   @override
   Widget build(BuildContext context) {
     final filteredInvoices = _getFilteredAndSortedInvoices();
-    final pendingCount = _invoices
-        .where((i) => i['syncStatus'] == InvoiceStatus.pending)
-        .length;
+    final pendingCount = _invoices.where((i) {
+      final status = i['syncStatus']?.toString();
+      return status == InvoiceStatus.pending || status == InvoiceStatus.deleted;
+    }).length;
 
     // ✅ FIX: Use explicit type argument for fold
     _cachedTotalValueSum ??= filteredInvoices.fold<double>(
@@ -1073,6 +1078,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   Widget _buildSearchAndFilters(int pendingCount) {
+    final syncedCount = _invoices
+        .where((i) => i['syncStatus'] == InvoiceStatus.synced)
+        .length;
+
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -1157,7 +1166,7 @@ class _GrvListScreenState extends State<GrvListScreen> {
               ),
               const SizedBox(width: 6),
               FilterChip(
-                label: Text('Synced (${_invoices.length - pendingCount})'),
+                label: Text('Synced ($syncedCount)'),
                 selected: _statusFilter == InvoiceStatus.syncedLabel,
                 selectedColor: Colors.green.shade100,
                 onSelected: (_) => setState(() {
@@ -1210,7 +1219,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
 
   Widget _buildInvoiceCard(Map<String, dynamic> invoice) {
     final invoiceId = invoice['invoiceDetailsID']?.toString() ?? '';
-    final isSynced = invoice['syncStatus'] == InvoiceStatus.synced;
+    final syncStatus = invoice['syncStatus']?.toString();
+    final isSynced = syncStatus == InvoiceStatus.synced;
+    final isPendingDelete = syncStatus == InvoiceStatus.deleted;
     final isExpanded = _expandedInvoices.contains(invoiceId);
     final isLoadingItems = _loadingInvoiceIds.contains(invoiceId);
     final purchases = _expandedPurchasesCache[invoiceId] ?? [];
@@ -1321,6 +1332,14 @@ class _GrvListScreenState extends State<GrvListScreen> {
                                 : Colors.orange.shade800,
                           ),
                         ),
+                        if (isPendingDelete) ...[
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.delete_outline,
+                            size: 12,
+                            color: Colors.orange.shade800,
+                          ),
+                        ],
                       ],
                     ),
                   ),

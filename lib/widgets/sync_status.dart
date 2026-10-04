@@ -75,15 +75,26 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
         final totalPending = pending['total'] ?? 0;
         final pendingInvoices = pending['invoices'] ?? 0;
         final pendingPurchases = pending['purchases'] ?? 0;
+        final deletedInvoices = pending['deletedInvoices'] ?? 0;
+        final deletedPurchases = pending['deletedPurchases'] ?? 0;
         final pendingPluMappings = pending['pluMappings'] ?? 0;
         final pendingStockCounts = pending['stockCounts'] ?? 0;
 
         // Build pending details string
         String pendingDetails = '';
         if (pendingInvoices > 0) pendingDetails += '$pendingInvoices Inv';
-        if (pendingPurchases > 0)
+        if (pendingPurchases > 0) {
           pendingDetails +=
               '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPurchases Pur';
+        }
+        if (deletedInvoices > 0) {
+          pendingDetails +=
+              '${pendingDetails.isNotEmpty ? ", " : ""}$deletedInvoices Inv delete';
+        }
+        if (deletedPurchases > 0) {
+          pendingDetails +=
+              '${pendingDetails.isNotEmpty ? ", " : ""}$deletedPurchases Pur delete';
+        }
         if (pendingPluMappings > 0)
           pendingDetails +=
               '${pendingDetails.isNotEmpty ? ", " : ""}$pendingPluMappings PLU';
@@ -114,7 +125,7 @@ class _SyncStatusWidgetState extends State<SyncStatusWidget> {
           bgColor = Colors.orange.shade50;
           icon = Icons.cloud_upload_outlined;
           iconColor = Colors.orange.shade700;
-          statusText = '$totalPending items pending sync';
+          statusText = '$totalPending changes pending sync';
           subText = pendingDetails.isNotEmpty
               ? '$pendingDetails pending'
               : 'Tap sync to upload';

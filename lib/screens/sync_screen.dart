@@ -136,6 +136,8 @@ class _SyncScreenState extends State<SyncScreen> {
         final hasPending = syncStatus.pendingCount > 0;
         final pendingInvoices = pendingCounts['invoices'] ?? 0;
         final pendingPurchases = pendingCounts['purchases'] ?? 0;
+        final deletedInvoices = pendingCounts['deletedInvoices'] ?? 0;
+        final deletedPurchases = pendingCounts['deletedPurchases'] ?? 0;
         final pendingPluMappings = pendingCounts['pluMappings'] ?? 0;
         final pendingStockCounts = pendingCounts['stockCounts'] ?? 0;
 
@@ -238,6 +240,72 @@ class _SyncScreenState extends State<SyncScreen> {
                                   ),
                                 ),
                               ],
+                            ),
+                          if (deletedInvoices > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.delete_outline,
+                                        size: 16,
+                                        color: Colors.red.shade700,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Invoices to delete:',
+                                        style: TextStyle(
+                                          color: Colors.red.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  Text(
+                                    '$deletedInvoices',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.red.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (deletedPurchases > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.delete_sweep_outlined,
+                                        size: 16,
+                                        color: Colors.red.shade700,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Purchases to delete:',
+                                        style: TextStyle(
+                                          color: Colors.red.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  Text(
+                                    '$deletedPurchases',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.red.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           if (pendingPluMappings > 0)
                             Padding(
@@ -353,7 +421,11 @@ class _SyncScreenState extends State<SyncScreen> {
                         ),
                         const SizedBox(height: 16),
                         Text(
-                          _isSyncing ? 'Syncing...' : 'Ready to Sync',
+                          _isSyncing
+                              ? 'Syncing...'
+                              : hasPending
+                              ? 'Changes Ready to Sync'
+                              : 'All Up to Date',
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
@@ -362,7 +434,9 @@ class _SyncScreenState extends State<SyncScreen> {
                         const SizedBox(height: 8),
                         Text(
                           _syncMessage.isEmpty
-                              ? 'Tap sync to upload pending data'
+                              ? hasPending
+                                    ? 'Tap sync to process pending changes'
+                                    : 'No pending changes'
                               : _syncMessage,
                           textAlign: TextAlign.center,
                           style: TextStyle(color: Colors.grey[600]),

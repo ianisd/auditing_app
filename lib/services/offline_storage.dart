@@ -586,32 +586,31 @@ class OfflineStorage with ChangeNotifier {
   // 🔥 ENHANCED PENDING COUNTS - INCLUDES ALL TYPES
   // ============================================================================
 
-  /// Get total pending items count (invoices + purchases + PLU mappings + counts)
+  /// Get total outstanding sync work, including delete tombstones.
   Future<int> getTotalPendingItemsCount() async {
     if (!_isReady) return 0;
 
     try {
-      final invoices = await getPendingInvoiceDetails();
-      final purchases = await getPendingPurchases();
-      final mappings = await getPendingPluMappings();
-      final counts = pendingCounts;
-
-      return invoices.length +
-          purchases.length +
-          mappings.length +
-          counts.length;
+      final counts = await getDetailedPendingCounts();
+      return counts['total'] ?? 0;
     } catch (e) {
       print('❌ Error getting total pending count: $e');
       return 0;
     }
   }
 
-  /// Get detailed pending counts for UI display
+  /// Get detailed outstanding sync counts for UI display.
+  ///
+  /// Deleted invoices/purchases are intentionally included: they are local
+  /// tombstones that still require a remote delete acknowledgement before
+  /// they can be hard-deleted locally.
   Future<Map<String, int>> getDetailedPendingCounts() async {
     if (!_isReady) {
       return {
         'invoices': 0,
         'purchases': 0,
+        'deletedInvoices': 0,
+        'deletedPurchases': 0,
         'pluMappings': 0,
         'stockCounts': 0,
         'total': 0,
@@ -621,17 +620,23 @@ class OfflineStorage with ChangeNotifier {
     try {
       final invoices = await getPendingInvoiceDetails();
       final purchases = await getPendingPurchases();
+      final deletedInvoices = await getDeletedInvoices();
+      final deletedPurchases = await getDeletedPurchases();
       final mappings = await getPendingPluMappings();
       final counts = pendingCounts;
 
       return {
         'invoices': invoices.length,
         'purchases': purchases.length,
+        'deletedInvoices': deletedInvoices.length,
+        'deletedPurchases': deletedPurchases.length,
         'pluMappings': mappings.length,
         'stockCounts': counts.length,
         'total':
             invoices.length +
             purchases.length +
+            deletedInvoices.length +
+            deletedPurchases.length +
             mappings.length +
             counts.length,
       };
@@ -640,6 +645,8 @@ class OfflineStorage with ChangeNotifier {
       return {
         'invoices': 0,
         'purchases': 0,
+        'deletedInvoices': 0,
+        'deletedPurchases': 0,
         'pluMappings': 0,
         'stockCounts': 0,
         'total': 0,
@@ -647,7 +654,7 @@ class OfflineStorage with ChangeNotifier {
     }
   }
 
-  /// Check if there are any pending items
+  /// Check if there is any outstanding sync work.
   Future<bool> hasPendingItems() async {
     final counts = await getDetailedPendingCounts();
     return (counts['total'] ?? 0) > 0;
@@ -2100,18 +2107,12 @@ class OfflineStorage with ChangeNotifier {
       );
     }
 
-    // 🔥 FIX: Use the ID provided, don't look for duplicates
-    // The duplicate detection is done in the upload screen
-    final id = safeDetails['invoiceDetailsID']?.toString();
-
-    String finalId;
-    if (id != null && id.isNotEmpty) {
-      finalId = id;
-    } else {
-      // Generate ID only if none provided
-      finalId = _generateUuid();
-      safeDetails['invoiceDetailsID'] = finalId;
-    }
+    // OfflineStorage owns canonical InvoiceDetails ID assignment. Preserve any
+    // existing/historical ID supplied by an update/import, but assign the ID
+    // here for every genuinely new invoice.
+    final existingId = safeDetails['invoiceDetailsID']?.toString().trim() ?? '';
+    final finalId = existingId.isNotEmpty ? existingId : _generateUuid();
+    safeDetails['invoiceDetailsID'] = finalId;
 
     // Ensure syncStatus is set
     safeDetails['syncStatus'] = safeDetails['syncStatus'] ?? 'pending';
@@ -2565,17 +2566,58 @@ class OfflineStorage with ChangeNotifier {
   // PUBLIC METHODS - PURCHASES
   // ===========================================================================
 
-  /// Save a single purchase
-  Future<void> savePurchase(Map<String, dynamic> purchase) async {
-    if (!_isReady || _purchases == null) return;
+  /// Save a single purchase.
+  ///
+  /// OfflineStorage owns canonical Purchase ID creation. Existing canonical IDs
+  /// are preserved; missing/TEMP_ IDs are replaced with the next zero-based
+  /// `purchase_{invoice}_{grv}_{product}_lineN` ID for that invoice.
+  Future<String?> savePurchase(Map<String, dynamic> purchase) async {
+    if (!_isReady || _purchases == null) return null;
 
-    final id = purchase['purchases_ID'] ?? _generateUuid();
+    var id = purchase['purchases_ID']?.toString().trim() ?? '';
+    if (id.isEmpty || id.startsWith('TEMP_')) {
+      final invoiceId = purchase['invoiceDetailsID']?.toString().trim() ?? '';
+      if (invoiceId.isEmpty) {
+        throw StateError(
+          'Cannot create canonical Purchase ID: invoiceDetailsID is missing',
+        );
+      }
+      id = await _nextCanonicalPurchaseId(invoiceId, purchase);
+    }
+
     purchase['purchases_ID'] = id;
     purchase['syncStatus'] = purchase['syncStatus'] ?? 'pending';
 
     await _purchases!.put(id, purchase);
     _updatePurchaseIndexes(id, purchase);
     notifyListeners();
+    return id;
+  }
+
+  Future<String> _nextCanonicalPurchaseId(
+    String invoiceId,
+    Map<String, dynamic> purchase,
+  ) async {
+    final existingPurchases = await getPurchasesByInvoiceId(invoiceId);
+    var maxLineIndex = -1;
+    for (final existing in existingPurchases) {
+      final existingId = existing['purchases_ID']?.toString() ?? '';
+      final match = RegExp(r'_line(\d+)$').firstMatch(existingId);
+      if (match != null) {
+        final lineNum = int.tryParse(match.group(1) ?? '') ?? -1;
+        if (lineNum > maxLineIndex) maxLineIndex = lineNum;
+      }
+    }
+
+    final plu = purchase['plu']?.toString().trim() ?? '';
+    final barcode = purchase['Barcode']?.toString().trim() ?? '';
+    final productKey = plu.isNotEmpty
+        ? plu
+        : (barcode.isNotEmpty ? barcode : 'unknown');
+    final rawGrv = purchase['GRV Reference']?.toString().trim() ?? '';
+    final grvToUse = rawGrv.isNotEmpty ? rawGrv : 'NOGRV';
+
+    return 'purchase_${invoiceId}_${grvToUse}_${productKey}_line${maxLineIndex + 1}';
   }
 
   /// Save multiple purchases (bulk operation)
@@ -2639,13 +2681,13 @@ class OfflineStorage with ChangeNotifier {
     int insertedCount = 0;
 
     // Track the highest line index for new items
-    int maxLineIndex = 0;
+    int maxLineIndex = -1;
     for (var purchase in existingPurchases) {
       final id = purchase['purchases_ID']?.toString() ?? '';
       // Extract line number from pattern: purchase_{invoiceId}_{grv}_{productKey}_line{number}
       final match = RegExp(r'_line(\d+)$').firstMatch(id);
       if (match != null) {
-        final lineNum = int.tryParse(match.group(1) ?? '0') ?? 0;
+        final lineNum = int.tryParse(match.group(1) ?? '') ?? -1;
         if (lineNum > maxLineIndex) maxLineIndex = lineNum;
       }
     }
@@ -5036,6 +5078,190 @@ class OfflineStorage with ChangeNotifier {
     } catch (_) {
       return {};
     }
+  }
+
+  /// Applies an incremental Firestore Purchase delta without treating the
+  /// incoming rows as a complete collection snapshot.
+  Future<int> applyInvoiceChanges(
+    List<Map<String, dynamic>> upserts,
+    List<String> deletedIds, {
+    required String storeId,
+    required int generation,
+  }) {
+    final task = _refreshSaveTail.then((_) async {
+      checkRefreshStore(storeId, generation);
+      final box = _invoiceDetails;
+      if (box == null || !box.isOpen)
+        throw StateError('InvoiceDetails storage is unavailable');
+      var applied = 0;
+      for (final incoming in upserts) {
+        final item = Map<String, dynamic>.from(incoming);
+        final id = item['invoiceDetailsID']?.toString().trim();
+        if (id == null || id.isEmpty) continue;
+        final local = box.get(id);
+        if (_keepLocalRefreshRow(local, 'InvoiceDetails')) continue;
+        item['syncStatus'] = 'synced';
+        await box.put(id, item);
+        applied++;
+      }
+      for (final rawId in deletedIds) {
+        final id = rawId.trim();
+        if (id.isEmpty) continue;
+        final local = box.get(id);
+        if (local == null) continue;
+        if (_keepLocalRefreshRow(local, 'InvoiceDetails')) {
+          if (local is Map && local['syncStatus'] != 'deleted') {
+            final kept = _safeCast(local);
+            kept['postRecoveryConflict'] =
+                'Remote Invoice $id was deleted while local changes were pending.';
+            await box.put(id, kept);
+          }
+          continue;
+        }
+        await box.delete(id);
+        applied++;
+      }
+      await box.flush();
+      checkRefreshStore(storeId, generation);
+      if (!_isDisposed) notifyListeners();
+      return applied;
+    });
+    _refreshSaveTail = task.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return task;
+  }
+
+  Future<Map<String, DateTime?>> getInvoiceRefreshCursors(
+    String storeId,
+  ) async {
+    if (!_isReady || _currentStoreId != storeId)
+      return {'upserts': null, 'deletes': null};
+    try {
+      final box = await Hive.openBox(
+        'store_${storeId}_invoice_delta_cursor_v1',
+      );
+      DateTime? parse(dynamic value) =>
+          value == null ? null : DateTime.tryParse(value.toString())?.toUtc();
+      return {
+        'upserts': parse(box.get('upserts')),
+        'deletes': parse(box.get('deletes')),
+      };
+    } catch (_) {
+      return {'upserts': null, 'deletes': null};
+    }
+  }
+
+  Future<void> saveInvoiceRefreshCursors(
+    String storeId, {
+    DateTime? upserts,
+    DateTime? deletes,
+  }) async {
+    if (!_isReady || _currentStoreId != storeId) return;
+    final box = await Hive.openBox('store_${storeId}_invoice_delta_cursor_v1');
+    if (!_isReady || _currentStoreId != storeId) return;
+    if (upserts != null)
+      await box.put('upserts', upserts.toUtc().toIso8601String());
+    if (deletes != null)
+      await box.put('deletes', deletes.toUtc().toIso8601String());
+    await box.flush();
+  }
+
+  Future<int> applyPurchaseChanges(
+    List<Map<String, dynamic>> upserts,
+    List<String> deletedIds, {
+    required String storeId,
+    required int generation,
+  }) {
+    final task = _refreshSaveTail.then((_) async {
+      checkRefreshStore(storeId, generation);
+      final box = _purchases;
+      if (box == null || !box.isOpen) {
+        throw StateError('Purchases storage is unavailable');
+      }
+
+      var applied = 0;
+      for (final incoming in upserts) {
+        final item = Map<String, dynamic>.from(incoming);
+        final id = item['purchases_ID']?.toString().trim();
+        if (id == null || id.isEmpty) continue;
+        final local = box.get(id);
+        if (_keepLocalRefreshRow(local, 'Purchases')) continue;
+        item['syncStatus'] = 'synced';
+        await box.put(id, item);
+        applied++;
+      }
+
+      for (final rawId in deletedIds) {
+        final id = rawId.trim();
+        if (id.isEmpty) continue;
+        final local = box.get(id);
+        if (local == null) continue;
+        if (_keepLocalRefreshRow(local, 'Purchases')) {
+          // Never destroy unsynced local work because another client deleted
+          // the remote document. Surface it for later conflict handling.
+          if (local is Map && local['syncStatus'] != 'deleted') {
+            final kept = _safeCast(local);
+            kept['postRecoveryConflict'] =
+                'Remote Purchase $id was deleted while local changes were pending.';
+            await box.put(id, kept);
+          }
+          continue;
+        }
+        await box.delete(id);
+        applied++;
+      }
+
+      await box.flush();
+      checkRefreshStore(storeId, generation);
+      await _rebuildIndexes();
+      if (!_isDisposed) notifyListeners();
+      return applied;
+    });
+    _refreshSaveTail = task.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return task;
+  }
+
+  Future<Map<String, DateTime?>> getPurchaseRefreshCursors(
+    String storeId,
+  ) async {
+    if (!_isReady || _currentStoreId != storeId) {
+      return {'upserts': null, 'deletes': null};
+    }
+    try {
+      final box = await Hive.openBox(
+        'store_${storeId}_purchase_delta_cursor_v1',
+      );
+      DateTime? parse(dynamic value) =>
+          value == null ? null : DateTime.tryParse(value.toString())?.toUtc();
+      return {
+        'upserts': parse(box.get('upserts')),
+        'deletes': parse(box.get('deletes')),
+      };
+    } catch (_) {
+      return {'upserts': null, 'deletes': null};
+    }
+  }
+
+  Future<void> savePurchaseRefreshCursors(
+    String storeId, {
+    DateTime? upserts,
+    DateTime? deletes,
+  }) async {
+    if (!_isReady || _currentStoreId != storeId) return;
+    final box = await Hive.openBox('store_${storeId}_purchase_delta_cursor_v1');
+    if (!_isReady || _currentStoreId != storeId) return;
+    if (upserts != null) {
+      await box.put('upserts', upserts.toUtc().toIso8601String());
+    }
+    if (deletes != null) {
+      await box.put('deletes', deletes.toUtc().toIso8601String());
+    }
+    await box.flush();
   }
 
   /// Separate raw download snapshot: never populated from locally merged rows.

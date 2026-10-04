@@ -61,6 +61,10 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  integration_test:
+    sdk: flutter
+
   mockito: ^5.4.0
 
   # Code Generation
@@ -71,6 +75,7 @@ dev_dependencies:
 
   connectivity_plus_platform_interface: any
   msix: ^3.18.0
+
 flutter:
   uses-material-design: true
 
