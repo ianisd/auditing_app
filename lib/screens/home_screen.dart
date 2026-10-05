@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/offline_storage.dart';
 import '../widgets/sync_status.dart';
 import '../widgets/store_drawer.dart';
 import '../models/sync_model.dart'; // 🔥 ADD THIS
@@ -16,399 +15,167 @@ import 'variance_report_screen.dart';
 import 'plu_mapping_screen.dart';
 import 'setup_store_screen.dart';
 import '../services/store_manager.dart';
-import 'package:flutter/foundation.dart';
 import 'network_status_screen.dart';
 import 'sales_upload_screen.dart';
 import 'sales_report_screen.dart';
 
-class HomeScreen extends StatefulWidget {
+import 'process_menu_screen.dart';
+
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
-
-  // 🔥 FIX: Cache the pending count future
-  Future<int>? _pendingCountFuture;
-  bool _isPendingCountLoading = false;
-
-  static const List<_NavItem> _navItems = [
-    _NavItem(icon: Icons.cloud_upload, label: 'Sync'),
-
-    _NavItem(icon: Icons.upload_file, label: 'Upload GRV'),
-    _NavItem(icon: Icons.receipt, label: 'GRV Invoices'),
-
-    _NavItem(icon: Icons.point_of_sale, label: 'Upload Sales'),
-    _NavItem(icon: Icons.assessment_outlined, label: 'Sales Report'),
-
-    _NavItem(icon: Icons.link, label: 'PLU Mappings'),
-    _NavItem(icon: Icons.analytics, label: 'Variance'),
-    _NavItem(icon: Icons.inventory_2_outlined, label: 'Inventory'),
-    _NavItem(icon: Icons.location_on, label: 'Locations'),
-    _NavItem(icon: Icons.store, label: 'Stores'),
-    _NavItem(icon: Icons.list_alt, label: 'Counts'),
-    _NavItem(icon: Icons.add_circle_outline, label: 'New Count'),
+  // Keep each action beside its destination; no parallel navigation arrays.
+  static final List<ProcessMenu> _processes = [
+    ProcessMenu(title: 'Data & Sync', description: 'Sync changes and inspect local data',
+        icon: Icons.sync, color: Colors.orange, actions: [
+          ProcessAction(title: 'Sync Data', description: 'Review and sync pending changes',
+              icon: Icons.cloud_upload, builder: (_) => const SyncScreen()),
+          ProcessAction(title: 'Offline Data', description: 'Inspect locally stored data',
+              icon: Icons.storage, builder: (_) => const OfflineScreen()),
+          ProcessAction(title: 'Network Status', description: 'View connection and sync details',
+              icon: Icons.wifi, builder: (_) => const NetworkStatusScreen()),
+        ]),
+    ProcessMenu(title: 'Stock Counting', description: 'Start a count or review saved counts',
+        icon: Icons.fact_check_outlined, color: Colors.blue, actions: [
+          ProcessAction(title: 'New Count', description: 'Scan and count items',
+              icon: Icons.add_circle_outline, builder: (_) => const CountScreen()),
+          ProcessAction(title: 'View Counts', description: 'Browse and edit counts',
+              icon: Icons.list_alt, builder: (_) => const ViewCountsScreen()),
+        ]),
+    ProcessMenu(title: 'GRVs & Purchases', description: 'Import and manage supplier invoices',
+        icon: Icons.receipt_long, color: Colors.deepOrange, actions: [
+          ProcessAction(title: 'Upload GRV CSV', description: 'Auto-extract from a CSV file',
+              icon: Icons.upload_file, builder: (_) => const GrvUploadScreen()),
+          ProcessAction(title: 'GRV Invoices', description: 'Create, view and edit invoices',
+              icon: Icons.receipt, builder: (_) => const GrvListScreen()),
+          ProcessAction(title: 'PLU Mappings', description: 'Manage GRV product mappings',
+              icon: Icons.link, builder: (_) => const PluMappingScreen()),
+        ]),
+    ProcessMenu(title: 'Sales', description: 'Import sales and review reports',
+        icon: Icons.point_of_sale, color: Colors.green, actions: [
+          ProcessAction(title: 'Upload Sales', description: 'Import GAAP sales data',
+              icon: Icons.upload_file, builder: (_) => const SalesUploadScreen()),
+          ProcessAction(title: 'Sales Report', description: 'Search and review imported sales',
+              icon: Icons.assessment_outlined, builder: (_) => const SalesReportScreen()),
+        ]),
+    ProcessMenu(title: 'Reports', description: 'Compare stock, purchases and sales',
+        icon: Icons.analytics_outlined, color: Colors.purple, actions: [
+          ProcessAction(title: 'Variance Report', description: 'Compare counts against sales and purchases',
+              icon: Icons.analytics, builder: (_) => const VarianceReportScreen()),
+        ]),
+    ProcessMenu(title: 'Inventory & Locations', description: 'Manage products and stock locations',
+        icon: Icons.inventory_2_outlined, color: Colors.indigo, actions: [
+          ProcessAction(title: 'Inventory', description: 'View the master product list',
+              icon: Icons.inventory_2_outlined, builder: (_) => const InventoryScreen()),
+          ProcessAction(title: 'Locations', description: 'View and manage locations',
+              icon: Icons.location_on, builder: (_) => const LocationsScreen()),
+        ]),
   ];
 
-  static const List<Widget> _screens = [
-    SyncScreen(),
-
-    GrvUploadScreen(),
-    GrvListScreen(),
-
-    SalesUploadScreen(),
-    SalesReportScreen(),
-
-    PluMappingScreen(),
-    VarianceReportScreen(),
-    InventoryScreen(),
-    LocationsScreen(),
-    SetupStoreScreen(),
-    ViewCountsScreen(),
-    CountScreen(),
-  ];
-
-  bool get _isDesktop =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.windows ||
-          defaultTargetPlatform == TargetPlatform.macOS ||
-          defaultTargetPlatform == TargetPlatform.linux);
-
-  // 🔥 FIX: Listen to storage changes to refresh badge
-  @override
-  void initState() {
-    super.initState();
-    _refreshPendingCount();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final storage = context.read<OfflineStorage>();
-      storage.addListener(_onStorageChanged);
-    });
-  }
-
-  void _onStorageChanged() {
-    if (mounted) {
-      _refreshPendingCount();
-    }
-  }
-
-  void _refreshPendingCount() {
-    if (!mounted || _isPendingCountLoading) return;
-    _isPendingCountLoading = true;
-    setState(() {
-      _pendingCountFuture = context
-          .read<OfflineStorage>()
-          .getTotalPendingItemsCount();
-    });
-    // Reset loading flag after the future completes
-    _pendingCountFuture
-        ?.then((_) {
-          if (mounted) {
-            _isPendingCountLoading = false;
-          }
-        })
-        .catchError((_) {
-          if (mounted) {
-            _isPendingCountLoading = false;
-          }
-        });
-  }
-
-  @override
-  void dispose() {
-    try {
-      context.read<OfflineStorage>().removeListener(_onStorageChanged);
-    } catch (e) {
-      // Ignore
-    }
-    super.dispose();
+  void _open(BuildContext context, Widget screen) {
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => screen));
   }
 
   @override
   Widget build(BuildContext context) {
-    return _isDesktop ? _buildDesktopLayout() : _buildMobileLayout();
-  }
-
-  // ─── DESKTOP LAYOUT ───────────────────────────────────────────────────────
-  Widget _buildDesktopLayout() {
     return Scaffold(
-      appBar: _buildAppBar(),
-      body: Row(
-        children: [
-          // Left navigation rail
-          SingleChildScrollView(
-            child: IntrinsicHeight(
-              child: NavigationRail(
-                selectedIndex: _selectedIndex,
-                onDestinationSelected: (i) =>
-                    setState(() => _selectedIndex = i),
-                labelType: NavigationRailLabelType.all,
-                minWidth: 88,
-                destinations: _navItems
-                    .map(
-                      (item) => NavigationRailDestination(
-                        icon: Icon(item.icon),
-                        label: Text(
-                          item.label,
-                          style: const TextStyle(fontSize: 11),
+      drawer: const StoreDrawer(),
+      appBar: AppBar(
+        title: const Text('Stock Counter'),
+        actions: [
+          IconButton(
+            tooltip: 'Manage Stores',
+            icon: const Icon(Icons.store_outlined),
+            onPressed: () => _open(context, const SetupStoreScreen()),
+          ),
+          Consumer<SyncStatus>(
+            builder: (context, status, _) => Stack(
+              children: [
+                IconButton(
+                  tooltip: 'Sync Data (${status.pendingCount} pending)',
+                  icon: const Icon(Icons.sync),
+                  onPressed: () => _open(context, const SyncScreen()),
+                ),
+                if (status.pendingCount > 0)
+                  Positioned(
+                    right: 4,
+                    top: 4,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          status.pendingCount > 99 ? '99+' : '${status.pendingCount}',
+                          style: const TextStyle(color: Colors.white, fontSize: 10),
                         ),
                       ),
-                    )
-                    .toList(),
-                leading: Column(
-                  children: [
-                    const SizedBox(height: 8),
-                    Consumer<StoreManager>(
-                      builder: (context, storeManager, _) {
-                        final storeName =
-                            storeManager.activeStore?['name'] ?? 'No Store';
-                        return Tooltip(
-                          message: 'Switch Store: $storeName',
-                          child: InkWell(
-                            onTap: () => _showStoreSwitcher(context),
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              width: 72,
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 6,
-                                horizontal: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade50,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: Colors.blue.shade100),
-                              ),
-                              child: Column(
-                                children: [
-                                  const Icon(
-                                    Icons.store,
-                                    color: Colors.blue,
-                                    size: 22,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    storeName,
-                                    maxLines: 2,
-                                    textAlign: TextAlign.center,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.blue,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                ),
-                trailing: Expanded(
-                  child: Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: _buildPendingBadge(),
                     ),
                   ),
-                ),
-              ),
-            ),
-          ),
-
-          const VerticalDivider(thickness: 1, width: 1),
-
-          // Right content area
-          Expanded(
-            child: Column(
-              children: [
-                const SyncStatusWidget(),
-                Expanded(child: _screens[_selectedIndex]),
-                const NetworkStatusBar(),
               ],
             ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
-    );
-  }
-
-  // ─── MOBILE LAYOUT ────────────────────────────────────────────────────────
-  Widget _buildMobileLayout() {
-    return Scaffold(
-      drawer: const StoreDrawer(),
-      appBar: _buildAppBar(showDrawer: true),
       body: SafeArea(
         child: Column(
           children: [
             const SyncStatusWidget(),
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildFeatureCard(
-                      icon: Icons.cloud_upload,
-                      title: 'Sync Data',
-                      subtitle: 'Upload counts to server',
-                      color: Colors.orange,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const SyncScreen()),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.add_circle_outline,
-                      title: 'New Count',
-                      subtitle: 'Scan and count items',
-                      color: Colors.blue,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const CountScreen()),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.list_alt,
-                      title: 'View Counts',
-                      subtitle: 'Browse and edit counts',
-                      color: Colors.green,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ViewCountsScreen(),
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1040),
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      Consumer<StoreManager>(
+                        builder: (context, manager, _) => Card(
+                          child: Builder(
+                            builder: (context) => ListTile(
+                              leading: const Icon(Icons.store_outlined),
+                              title: Text('${manager.activeStore?['name'] ?? 'No Store'}'),
+                              subtitle: const Text('Switch active store'),
+                              trailing: const Icon(Icons.swap_horiz),
+                              onTap: () => Scaffold.of(context).openDrawer(),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.upload_file,
-                      title: 'Upload GRV CSV',
-                      subtitle: 'Auto-extract from CSV file',
-                      color: Colors.brown,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const GrvUploadScreen(),
-                        ),
+                      const SizedBox(height: 20),
+                      Text('What would you like to do?',
+                          style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(height: 16),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final scale = MediaQuery.textScalerOf(context).scale(1);
+                          final columns = constraints.maxWidth < 300 || scale > 1.5
+                              ? 1 : constraints.maxWidth >= 720 ? 3 : 2;
+                          return GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: _processes.length,
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: columns,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              childAspectRatio: 1,
+                            ),
+                            itemBuilder: (context, index) {
+                              final menu = _processes[index];
+                              return _ProcessTile(
+                                menu: menu,
+                                onTap: () => _open(context, ProcessMenuScreen(menu: menu)),
+                              );
+                            },
+                          );
+                        },
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.receipt,
-                      title: 'GRV Invoices',
-                      subtitle: 'View saved GRV invoices',
-                      color: Colors.deepOrange,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const GrvListScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.point_of_sale,
-                      title: 'Upload Sales',
-                      subtitle: 'Import GAAP sales data',
-                      color: Colors.blue,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const SalesUploadScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.assessment_outlined,
-                      title: 'Sales Report',
-                      subtitle: 'Search and review imported sales',
-                      color: Colors.green,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const SalesReportScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.link,
-                      title: 'PLU Mappings',
-                      subtitle: 'Manage GRV PLU mappings',
-                      color: Colors.amber.shade700,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const PluMappingScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.analytics,
-                      title: 'Variance Report',
-                      subtitle: 'Compare counts vs sales & purchases',
-                      color: Colors.purple,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const VarianceReportScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.inventory_2_outlined,
-                      title: 'Inventory',
-                      subtitle: 'View master product list',
-                      color: Colors.indigo,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const InventoryScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.location_on,
-                      title: 'Locations',
-                      subtitle: 'View and manage locations',
-                      color: Colors.teal,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const LocationsScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFeatureCard(
-                      icon: Icons.store,
-                      title: 'Manage Stores',
-                      subtitle: 'Add or switch stores',
-                      color: Colors.blueGrey,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const SetupStoreScreen(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildPendingBadge(),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -418,192 +185,46 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
 
-  // ─── SHARED WIDGETS ───────────────────────────────────────────────────────
-  PreferredSizeWidget _buildAppBar({bool showDrawer = false}) {
-    return AppBar(
-      title: const Text('Stock Counter'),
-      centerTitle: true,
-      automaticallyImplyLeading: showDrawer,
-      actions: [
-        if (!_isDesktop)
-          IconButton(
-            icon: const Icon(Icons.storage),
-            tooltip: 'Offline Data',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const OfflineScreen()),
+class _ProcessTile extends StatelessWidget {
+  final ProcessMenu menu;
+  final VoidCallback onTap;
+
+  const _ProcessTile({required this.menu, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: menu.description,
+      child: Card(
+        margin: EdgeInsets.zero,
+        elevation: 2,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(menu.icon, size: 36, color: menu.color),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: Text(menu.title,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                ),
+              ],
             ),
           ),
-        // 🔥 FIX: Use cached future for badge
-        Consumer<SyncStatus>(
-          builder: (context, syncStatus, _) {
-            final pendingCount = syncStatus.pendingCount;
-            return Stack(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.sync),
-                  onPressed: () {
-                    if (_isDesktop) {
-                      setState(() => _selectedIndex = 0);
-                    } else {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const SyncScreen()),
-                      );
-                    }
-                  },
-                ),
-                if (pendingCount > 0)
-                  Positioned(
-                    right: 8,
-                    top: 8,
-                    child: Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: Colors.red,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      constraints: const BoxConstraints(
-                        minWidth: 16,
-                        minHeight: 16,
-                      ),
-                      child: Text(
-                        pendingCount > 9 ? '9+' : pendingCount.toString(),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  void _showStoreSwitcher(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: SizedBox(
-          width: 380,
-          height: 520,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: const StoreDrawer(),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPendingBadge() {
-    return Consumer<OfflineStorage>(
-      builder: (context, storage, _) {
-        final pending = storage.pendingCounts.length;
-        if (pending == 0) return const SizedBox.shrink();
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.orange[50],
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.orange.shade300),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.warning_amber_rounded,
-                color: Colors.orange[800],
-                size: 16,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '$pending pending',
-                style: TextStyle(
-                  color: Colors.orange[800],
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildFeatureCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, color: color, size: 28),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                    ),
-                  ],
-                ),
-              ),
-              Icon(Icons.chevron_right, color: Colors.grey[400]),
-            ],
-          ),
         ),
       ),
     );
   }
 }
 
-// Simple data class for nav items
-class _NavItem {
-  final IconData icon;
-  final String label;
-
-  const _NavItem({required this.icon, required this.label});
-}
-
-// ─── NETWORK STATUS BAR ───────────────────────────────────────────────────
 class NetworkStatusBar extends StatelessWidget {
   const NetworkStatusBar({super.key});
 
