@@ -195,7 +195,7 @@ class SyncService with ChangeNotifier {
     _checkPostSession();
 
     // Keep comfortably below Firestore's 500-write batch limit.
-    const batchSize = 400;
+    const batchSize = 250;
     for (var offset = 0; offset < legacyRows.length; offset += batchSize) {
       _checkPostSession();
       final end = offset + batchSize < legacyRows.length
