@@ -50,3 +50,6 @@ key.properties
 **/*.keystore
 /test/
 /code.gs
+
+# Generated integration/diagnostic test output
+/test-results/
