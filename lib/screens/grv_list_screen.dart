@@ -49,6 +49,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   double? _cachedTotalValueSum;
   List<Map<String, dynamic>>? _cachedFilteredInvoices;
   Timer? _debounceTimer;
+  Timer? _storageRefreshDebounce;
+  OfflineStorage? _listenedStorage;
 
   // Search & Filters
   String _searchQuery = '';
@@ -77,7 +79,31 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final storage = context.read<OfflineStorage>();
+    if (!identical(_listenedStorage, storage)) {
+      _listenedStorage?.removeListener(_onStorageChanged);
+      _listenedStorage = storage;
+      storage.addListener(_onStorageChanged);
+    }
+  }
+
+  void _onStorageChanged() {
+    // Invoice save/acknowledgement updates Hive first, then OfflineStorage
+    // notifies listeners. Refresh this screen's local snapshot automatically.
+    _storageRefreshDebounce?.cancel();
+    _storageRefreshDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (mounted) {
+        _loadInvoices(showLoading: false);
+      }
+    });
+  }
+
+  @override
   void dispose() {
+    _storageRefreshDebounce?.cancel();
+    _listenedStorage?.removeListener(_onStorageChanged);
     _debounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
@@ -120,9 +146,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
     });
   }
 
-  Future<void> _loadInvoices({int retryCount = 3}) async {
+  Future<void> _loadInvoices({int retryCount = 3, bool showLoading = true}) async {
     if (!mounted) return;
-    setState(() => _isLoading = true);
+    if (showLoading) setState(() => _isLoading = true);
 
     try {
       final storage = context.read<OfflineStorage>();
@@ -163,7 +189,10 @@ class _GrvListScreenState extends State<GrvListScreen> {
     } catch (e) {
       if (retryCount > 0 && mounted) {
         await Future.delayed(Duration(seconds: (3 - retryCount + 1) * 2));
-        return _loadInvoices(retryCount: retryCount - 1);
+        return _loadInvoices(
+          retryCount: retryCount - 1,
+          showLoading: showLoading,
+        );
       }
 
       if (mounted) {
@@ -299,8 +328,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   List<Map<String, dynamic>> _applyDateFilter(
-    List<Map<String, dynamic>> filtered,
-  ) {
+      List<Map<String, dynamic>> filtered,
+      ) {
     if (_dateFilter == DateFilter.all) return filtered;
 
     final now = DateTime.now();
@@ -317,8 +346,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
           final weekStart = today.subtract(Duration(days: today.weekday - 1));
           final weekEnd = weekStart.add(const Duration(days: 7));
           return invoiceDate.isAfter(
-                weekStart.subtract(const Duration(days: 1)),
-              ) &&
+            weekStart.subtract(const Duration(days: 1)),
+          ) &&
               invoiceDate.isBefore(weekEnd);
         case DateFilter.thisMonth:
           return invoiceDate.year == now.year && invoiceDate.month == now.month;
@@ -338,8 +367,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
             59,
           );
           return invoiceDate.isAfter(
-                start.subtract(const Duration(seconds: 1)),
-              ) &&
+            start.subtract(const Duration(seconds: 1)),
+          ) &&
               invoiceDate.isBefore(end.add(const Duration(seconds: 1)));
         default:
           return true;
@@ -348,8 +377,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   List<Map<String, dynamic>> _applySearchFilter(
-    List<Map<String, dynamic>> filtered,
-  ) {
+      List<Map<String, dynamic>> filtered,
+      ) {
     if (_searchMode == SearchMode.invoice) {
       // Search by invoice fields
       return filtered.where((invoice) {
@@ -358,7 +387,7 @@ class _GrvListScreenState extends State<GrvListScreen> {
         final supplier = _getSupplierName(invoice).toLowerCase();
         final grvRef =
             invoice['GRV Reference']?.toString().toLowerCase() ??
-            ''; // 🔥 ADDED
+                ''; // 🔥 ADDED
         final deliveryDate =
             invoice['Delivery Date']?.toString().toLowerCase() ?? '';
         final purchaseDate =
@@ -381,7 +410,7 @@ class _GrvListScreenState extends State<GrvListScreen> {
           return purchases.any((purchase) {
             final productName =
                 purchase['Purchased Product Name']?.toString().toLowerCase() ??
-                '';
+                    '';
             return productName.contains(_searchQuery);
           });
         }
@@ -394,8 +423,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   List<Map<String, dynamic>> _applySorting(
-    List<Map<String, dynamic>> filtered,
-  ) {
+      List<Map<String, dynamic>> filtered,
+      ) {
     filtered.sort((a, b) {
       int comp = 0;
       switch (_sortBy) {
@@ -419,8 +448,8 @@ class _GrvListScreenState extends State<GrvListScreen> {
   DateTime _parseInvoiceDate(Map<String, dynamic> invoice) {
     final str =
         invoice['Delivery Date']?.toString() ??
-        invoice['Date of Purchase']?.toString() ??
-        '';
+            invoice['Date of Purchase']?.toString() ??
+            '';
     return DateTime.tryParse(str) ?? DateTime.now();
   }
 
@@ -701,16 +730,16 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   Future<void> _pickCustomDateRange(
-    BuildContext context,
-    StateSetter setSheetState,
-  ) async {
+      BuildContext context,
+      StateSetter setSheetState,
+      ) async {
     final picked = await showDateRangePicker(
       context: context,
       useRootNavigator: true,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
       initialDateRange:
-          _customDateRange ??
+      _customDateRange ??
           DateTimeRange(
             start: DateTime.now().subtract(const Duration(days: 7)),
             end: DateTime.now(),
@@ -912,7 +941,7 @@ class _GrvListScreenState extends State<GrvListScreen> {
     // ✅ FIX: Use explicit type argument for fold
     _cachedTotalValueSum ??= filteredInvoices.fold<double>(
       0.0,
-      (sum, inv) => sum + _getInvoiceTotal(inv),
+          (sum, inv) => sum + _getInvoiceTotal(inv),
     );
 
     return Scaffold(
@@ -984,9 +1013,9 @@ class _GrvListScreenState extends State<GrvListScreen> {
   }
 
   Widget _buildKpiDashboard(
-    List<Map<String, dynamic>> filteredInvoices,
-    int pendingCount,
-  ) {
+      List<Map<String, dynamic>> filteredInvoices,
+      int pendingCount,
+      ) {
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -1207,13 +1236,13 @@ class _GrvListScreenState extends State<GrvListScreen> {
           : filteredInvoices.isEmpty
           ? _buildEmptyState()
           : ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              itemCount: filteredInvoices.length,
-              itemBuilder: (context, index) {
-                final invoice = filteredInvoices[index];
-                return _buildInvoiceCard(invoice);
-              },
-            ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        itemCount: filteredInvoices.length,
+        itemBuilder: (context, index) {
+          final invoice = filteredInvoices[index];
+          return _buildInvoiceCard(invoice);
+        },
+      ),
     );
   }
 

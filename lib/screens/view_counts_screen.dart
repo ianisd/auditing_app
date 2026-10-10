@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
@@ -25,6 +26,9 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
 
   Map<String, Map<String, List<Map<String, dynamic>>>> _groupedCounts = {};
 
+  OfflineStorage? _storage;
+  Timer? _storageReloadDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -33,21 +37,49 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final storage = context.read<OfflineStorage>();
+    if (!identical(_storage, storage)) {
+      _storage?.removeListener(_onStorageChanged);
+      _storage = storage;
+      _storage!.addListener(_onStorageChanged);
+    }
+  }
+
+  void _onStorageChanged() {
+    _storageReloadDebounce?.cancel();
+    _storageReloadDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (mounted) {
+        unawaited(_loadCounts(showLoading: false));
+      }
+    });
+  }
+
+  @override
   void dispose() {
+    _storageReloadDebounce?.cancel();
+    _storage?.removeListener(_onStorageChanged);
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadCounts() async {
-    setState(() => _isLoading = true);
-    final storage = context.read<OfflineStorage>();
-    final counts = await storage.getStockCounts();
+  Future<void> _loadCounts({bool showLoading = true}) async {
+    if (!mounted) return;
+    if (showLoading) {
+      setState(() => _isLoading = true);
+    }
 
-    setState(() {
-      _allCounts = counts;
-      _applyFilters();
-      _isLoading = false;
-    });
+    final storage = _storage ?? context.read<OfflineStorage>();
+    final counts = await storage.getStockCounts();
+    if (!mounted) return;
+
+    _allCounts = counts;
+    _applyFilters();
+
+    if (showLoading && mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 
   void _applyFilters() {
@@ -127,7 +159,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
             ),
           ),
           ...locations.map(
-            (loc) => SimpleDialogOption(
+                (loc) => SimpleDialogOption(
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
               onPressed: () {
                 setState(() => _selectedLocationFilter = loc);
@@ -263,7 +295,7 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
   void _groupCounts() {
     _groupedCounts = {};
     _filteredCounts.sort(
-      (a, b) => (b['date'] ?? '').compareTo(a['date'] ?? ''),
+          (a, b) => (b['date'] ?? '').compareTo(a['date'] ?? ''),
     );
 
     for (var count in _filteredCounts) {
@@ -302,30 +334,25 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
             ],
           ),
         ) ??
-        false;
+            false;
 
     if (confirm) {
       final storage = context.read<OfflineStorage>();
       await storage.deleteStockCount(id);
 
-      // 🔥 REAL-TIME SOFT-DELETE ON FIRESTORE
-      // (was a hard .delete() before — that raced with the background sync
-      // recreating the doc a few seconds later, which is why `deleted`
-      // kept reverting to false)
-      final syncService = context.read<StoreManager>().syncService;
-      if (syncService.firestore != null && storage.firestoreKey != null) {
-        final deletedData = <String, dynamic>{
-          'id': id,
-          'deleted': true,
-          'deletedAt': DateTime.now().toIso8601String(),
-        };
-        await syncService.firestore!.saveStockCount(
-          storage.firestoreKey!,
-          deletedData,
-        );
+      // Refresh from Hive immediately. The user should see the row disappear
+      // without waiting for Firestore/native networking.
+      if (mounted) {
+        await _loadCounts();
       }
 
-      _loadCounts();
+      final syncService = context.read<StoreManager>().syncService;
+      final firestore = syncService.firestore;
+      final firestoreKey = storage.firestoreKey;
+      if (firestore != null && firestoreKey != null) {
+        // Non-blocking, version-safe acknowledgement of the exact Hive tombstone.
+        unawaited(syncService.syncStockCountInBackground(id));
+      }
     }
   }
 
@@ -434,11 +461,11 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
                       avatar: const Icon(Icons.place, size: 18),
                       onDeleted: _selectedLocationFilter != null
                           ? () {
-                              setState(() {
-                                _selectedLocationFilter = null;
-                                _applyFilters();
-                              });
-                            }
+                        setState(() {
+                          _selectedLocationFilter = null;
+                          _applyFilters();
+                        });
+                      }
                           : null,
                     ),
                   ],
@@ -452,168 +479,168 @@ class _ViewCountsScreenState extends State<ViewCountsScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _filteredCounts.isEmpty
           ? const Center(
-              child: Text(
-                'No counts found',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
-              ),
-            )
+        child: Text(
+          'No counts found',
+          style: TextStyle(fontSize: 16, color: Colors.grey),
+        ),
+      )
           : ListView.builder(
-              padding: const EdgeInsets.all(8),
-              itemCount: _groupedCounts.keys.length,
-              itemBuilder: (context, dateIndex) {
-                final dateKey = _groupedCounts.keys.elementAt(dateIndex);
-                final locationMap = _groupedCounts[dateKey]!;
+        padding: const EdgeInsets.all(8),
+        itemCount: _groupedCounts.keys.length,
+        itemBuilder: (context, dateIndex) {
+          final dateKey = _groupedCounts.keys.elementAt(dateIndex);
+          final locationMap = _groupedCounts[dateKey]!;
 
-                String displayDate = dateKey;
-                bool isToday = false;
-                try {
-                  final dt = DateTime.parse(dateKey);
-                  displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
-                  final now = DateTime.now();
-                  if (dt.year == now.year &&
-                      dt.month == now.month &&
-                      dt.day == now.day)
-                    isToday = true;
-                } catch (e) {}
+          String displayDate = dateKey;
+          bool isToday = false;
+          try {
+            final dt = DateTime.parse(dateKey);
+            displayDate = DateFormat('EEE, dd MMM yyyy').format(dt);
+            final now = DateTime.now();
+            if (dt.year == now.year &&
+                dt.month == now.month &&
+                dt.day == now.day)
+              isToday = true;
+          } catch (e) {}
 
-                final headerColor = isToday
-                    ? Colors.green.shade100
-                    : Colors.grey.shade200;
+          final headerColor = isToday
+              ? Colors.green.shade100
+              : Colors.grey.shade200;
 
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  color: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    side: BorderSide(
-                      color: isToday ? Colors.green : Colors.grey.shade300,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: ExpansionTile(
-                    initiallyExpanded: dateIndex == 0,
-                    collapsedBackgroundColor: headerColor,
-                    backgroundColor: headerColor.withOpacity(0.3),
-                    title: Row(
-                      children: [
-                        Icon(
-                          isToday ? Icons.today : Icons.history,
-                          color: isToday ? Colors.green[800] : Colors.grey[700],
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isToday ? 'Today ($displayDate)' : displayDate,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: isToday ? Colors.green[900] : Colors.black87,
-                          ),
-                        ),
-                      ],
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(
-                            Icons.add_circle_outline,
-                            color: Colors.blue,
-                          ),
-                          onPressed: () => _addCountToDate(dateKey),
-                        ),
-                        const Icon(Icons.expand_more),
-                      ],
-                    ),
-                    children: locationMap.keys.map((locationKey) {
-                      final items = locationMap[locationKey]!;
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                            color: Colors.white,
-                            child: Text(
-                              locationKey,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.purple,
-                              ),
-                            ),
-                          ),
-                          ...items.map((item) {
-                            return Dismissible(
-                              key: Key(item['id']),
-                              background: Container(
-                                color: Colors.red,
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.only(right: 20),
-                                child: const Icon(
-                                  Icons.delete,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              direction: DismissDirection.endToStart,
-                              confirmDismiss: (dir) async {
-                                _deleteCount(item['id']);
-                                return false;
-                              },
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.only(
-                                  left: 32,
-                                  right: 16,
-                                ),
-                                title: Text(
-                                  item['productName'] ?? 'Unknown',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                subtitle: Text('${item['pack_size']}'),
-                                trailing: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      (double.tryParse(
-                                                item['total_bottles']
-                                                        ?.toString() ??
-                                                    '0',
-                                              ) ??
-                                              0)
-                                          .toStringAsFixed(2),
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    if (item['syncStatus'] == 'pending')
-                                      const Icon(
-                                        Icons.cloud_upload,
-                                        size: 12,
-                                        color: Colors.orange,
-                                      )
-                                    else
-                                      const Icon(
-                                        Icons.check_circle,
-                                        size: 12,
-                                        color: Colors.green,
-                                      ),
-                                  ],
-                                ),
-                                onTap: () => _editCount(item),
-                              ),
-                            );
-                          }),
-                          const Divider(height: 1),
-                        ],
-                      );
-                    }).toList(),
-                  ),
-                );
-              },
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            color: Colors.white,
+            shape: RoundedRectangleBorder(
+              side: BorderSide(
+                color: isToday ? Colors.green : Colors.grey.shade300,
+              ),
+              borderRadius: BorderRadius.circular(8),
             ),
+            child: ExpansionTile(
+              initiallyExpanded: dateIndex == 0,
+              collapsedBackgroundColor: headerColor,
+              backgroundColor: headerColor.withOpacity(0.3),
+              title: Row(
+                children: [
+                  Icon(
+                    isToday ? Icons.today : Icons.history,
+                    color: isToday ? Colors.green[800] : Colors.grey[700],
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    isToday ? 'Today ($displayDate)' : displayDate,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: isToday ? Colors.green[900] : Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(
+                      Icons.add_circle_outline,
+                      color: Colors.blue,
+                    ),
+                    onPressed: () => _addCountToDate(dateKey),
+                  ),
+                  const Icon(Icons.expand_more),
+                ],
+              ),
+              children: locationMap.keys.map((locationKey) {
+                final items = locationMap[locationKey]!;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      color: Colors.white,
+                      child: Text(
+                        locationKey,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.purple,
+                        ),
+                      ),
+                    ),
+                    ...items.map((item) {
+                      return Dismissible(
+                        key: Key(item['id']),
+                        background: Container(
+                          color: Colors.red,
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 20),
+                          child: const Icon(
+                            Icons.delete,
+                            color: Colors.white,
+                          ),
+                        ),
+                        direction: DismissDirection.endToStart,
+                        confirmDismiss: (dir) async {
+                          _deleteCount(item['id']);
+                          return false;
+                        },
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.only(
+                            left: 32,
+                            right: 16,
+                          ),
+                          title: Text(
+                            item['productName'] ?? 'Unknown',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          subtitle: Text('${item['pack_size']}'),
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                (double.tryParse(
+                                  item['total_bottles']
+                                      ?.toString() ??
+                                      '0',
+                                ) ??
+                                    0)
+                                    .toStringAsFixed(2),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              if (item['syncStatus'] == 'pending')
+                                const Icon(
+                                  Icons.cloud_upload,
+                                  size: 12,
+                                  color: Colors.orange,
+                                )
+                              else
+                                const Icon(
+                                  Icons.check_circle,
+                                  size: 12,
+                                  color: Colors.green,
+                                ),
+                            ],
+                          ),
+                          onTap: () => _editCount(item),
+                        ),
+                      );
+                    }),
+                    const Divider(height: 1),
+                  ],
+                );
+              }).toList(),
+            ),
+          );
+        },
+      ),
     );
   }
 }

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
+import '../services/store_manager.dart';
 import 'grv_line_items_screen.dart';
 
 class GrvInvoiceScreen extends StatefulWidget {
@@ -15,30 +17,25 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
   final _formKey = GlobalKey<FormState>();
   late String _supplierName;
   late String _invoiceNumber;
-  late String _grvReference; // 🔥 ADDED
+  late String _grvReference;  // 🔥 ADDED
   late DateTime _deliveryDate;
   String? _selectedSupplierId;
   bool _isLoadingSuppliers = true;
   bool _isLoading = false;
   List<Map<String, dynamic>> _suppliers = [];
   bool _isDisposed = false;
-  final TextEditingController _invoiceNumberController =
-      TextEditingController();
-  final TextEditingController _grvController =
-      TextEditingController(); // 🔥 ADDED
+  final TextEditingController _invoiceNumberController = TextEditingController();
+  final TextEditingController _grvController = TextEditingController();  // 🔥 ADDED
 
   @override
   void dispose() {
     _isDisposed = true;
     _invoiceNumberController.dispose();
-    _grvController.dispose(); // 🔥 ADDED
+    _grvController.dispose();  // 🔥 ADDED
     super.dispose();
   }
 
-  void _safeShowSnackBar(
-    String message, {
-    Color backgroundColor = Colors.blue,
-  }) {
+  void _safeShowSnackBar(String message, {Color backgroundColor = Colors.blue}) {
     if (_isDisposed || !mounted) return;
     print('DEBUG: Showing snackbar: $message');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -51,7 +48,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     super.initState();
     _supplierName = '';
     _invoiceNumber = '';
-    _grvReference = ''; // 🔥 ADDED
+    _grvReference = '';  // 🔥 ADDED
     _deliveryDate = DateTime.now();
     _loadSuppliers();
   }
@@ -60,9 +57,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     print('DEBUG: Loading suppliers...');
     setState(() => _isLoadingSuppliers = true);
     try {
-      final suppliers = await context
-          .read<OfflineStorage>()
-          .getMasterSuppliers();
+      final suppliers = await context.read<OfflineStorage>().getMasterSuppliers();
       print('DEBUG: Loaded ${suppliers.length} suppliers');
 
       if (!mounted) return;
@@ -87,18 +82,15 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     // Try to find supplier by name if not selected
     if (_selectedSupplierId == null && _supplierName.isNotEmpty) {
       print('DEBUG: Attempting to find supplier by name: $_supplierName');
-      final foundId = await context
-          .read<OfflineStorage>()
+      final foundId = await context.read<OfflineStorage>()
           .findSupplierIdByAnyName(_supplierName);
 
       if (foundId != null) {
         _selectedSupplierId = foundId;
 
-        final suppliers = await context
-            .read<OfflineStorage>()
-            .getMasterSuppliers();
+        final suppliers = await context.read<OfflineStorage>().getMasterSuppliers();
         final supplier = suppliers.firstWhere(
-          (s) => s['supplierID']?.toString() == foundId,
+              (s) => s['supplierID']?.toString() == foundId,
           orElse: () => <String, dynamic>{},
         );
 
@@ -120,17 +112,18 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
 
     // Final check for supplier ID
     if (_selectedSupplierId == null) {
-      _safeShowSnackBar(
-        'Please select a supplier or enter a valid supplier name',
-      );
+      _safeShowSnackBar('Please select a supplier or enter a valid supplier name');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
+      final invoiceId = DateTime.now().millisecondsSinceEpoch.toString();
+      print('DEBUG: Creating invoice with ID: $invoiceId');
+
       // Get GRV Reference from controller
-      _grvReference = _grvController.text.trim(); // 🔥 ADDED
+      _grvReference = _grvController.text.trim();  // 🔥 ADDED
 
       String rawInvoiceNumber = _invoiceNumber;
       String invoiceNumber = rawInvoiceNumber.trim();
@@ -143,44 +136,36 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
       print('  - Length: ${invoiceNumber.length} characters');
       if (invoiceNumber.isNotEmpty) {
         print('  - First character: "${invoiceNumber[0]}"');
-        print(
-          '  - Last character: "${invoiceNumber[invoiceNumber.length - 1]}"',
-        );
-        print(
-          '  - Contains only digits: ${RegExp(r'^\d+$').hasMatch(invoiceNumber)}',
-        );
-        if (RegExp(r'^\d+$').hasMatch(invoiceNumber) &&
-            invoiceNumber.length > 1) {
+        print('  - Last character: "${invoiceNumber[invoiceNumber.length - 1]}"');
+        print('  - Contains only digits: ${RegExp(r'^\d+$').hasMatch(invoiceNumber)}');
+        if (RegExp(r'^\d+$').hasMatch(invoiceNumber) && invoiceNumber.length > 1) {
           print('  - Leading zeros: ${invoiceNumber[0] == '0' ? 'YES' : 'NO'}');
         }
       }
 
       // 🔥 CRITICAL: Create invoice with ALL fields including GRV Reference
       final invoice = <String, dynamic>{
+        'invoiceDetailsID': invoiceId,
         'Invoice Number': invoiceNumber,
-        'GRV Reference': _grvReference, // 🔥 ADDED
+        'GRV Reference': _grvReference,  // 🔥 ADDED
         'supplierID': _selectedSupplierId!,
         'Supplier': _supplierName.trim(),
         'Date of Purchase': _deliveryDate.toIso8601String(),
         'Delivery Date': _deliveryDate.toIso8601String(),
         'Total Cost Ex Vat': 0.0,
-        'syncStatus': 'pending',
+        'syncStatus': 'draft',
       };
 
       print('✅ FINAL INVOICE DATA:');
+      print('  - Invoice ID: ${invoice['invoiceDetailsID']}');
       print('  - Invoice Number: "${invoice['Invoice Number']}"');
-      print('  - GRV Reference: "${invoice['GRV Reference']}"'); // 🔥 ADDED
+      print('  - GRV Reference: "${invoice['GRV Reference']}"');  // 🔥 ADDED
       print('  - Supplier: ${invoice['Supplier']}');
       print('  - Supplier ID: ${invoice['supplierID']}');
 
-      print('DEBUG: Saving invoice details to storage...');
-      final invoiceId = await context.read<OfflineStorage>().saveInvoiceDetails(
-        invoice,
-      );
-      if (invoiceId.isEmpty) {
-        throw StateError('Could not create invoice.');
-      }
-      print('DEBUG: OfflineStorage assigned invoice ID: $invoiceId');
+      print('DEBUG: Creating local draft invoice...');
+      final storage = context.read<OfflineStorage>();
+      await storage.saveInvoiceDetails(invoice);
 
       // Navigate to line items screen for manual entry
       final navigationResult = await Navigator.push(
@@ -190,18 +175,23 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
             invoiceDetailsID: invoiceId,
             supplierName: _supplierName,
             deliveryDate: _deliveryDate,
-            grvReference: _grvReference, // 🔥 ADDED - PASS GRV
+            grvReference: _grvReference,  // 🔥 ADDED - PASS GRV
             preloadedItems: null,
           ),
         ),
       );
 
-      if (navigationResult == true && mounted) {
-        Navigator.pop(context, true);
-      }
+      if (navigationResult == true) {
+        if (mounted) {
+          Navigator.pop(context, true);
+        }
+      } else {
+        await storage.hardDeleteInvoice(invoiceId);
+        print('🧹 Cancelled manual GRV draft: $invoiceId');
 
-      if (!_isDisposed && mounted) {
-        _safeShowSnackBar('✓ Invoice saved - add line items manually');
+        if (!_isDisposed && mounted) {
+          _safeShowSnackBar('GRV cancelled — nothing saved');
+        }
       }
     } catch (e) {
       print('ERROR: Save invoice failed: $e');
@@ -216,7 +206,9 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Manual GRV Entry')),
+      appBar: AppBar(
+        title: const Text('Manual GRV Entry'),
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 720),
@@ -235,8 +227,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
                     prefixIcon: Icon(Icons.receipt_long),
                     helperText: 'Goods Received Voucher number',
                   ),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Required' : null,
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                   onChanged: (v) => setState(() => _grvReference = v),
                 ),
                 const SizedBox(height: 16),
@@ -251,19 +242,14 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
                           labelText: 'Invoice Number *',
                           prefixIcon: Icon(Icons.description),
                         ),
-                        validator: (v) =>
-                            (v == null || v.trim().isEmpty) ? 'Required' : null,
+                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                         keyboardType: TextInputType.text,
                         onChanged: (v) => setState(() => _invoiceNumber = v),
                       ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: _buildDateField(
-                        'Delivery Date *',
-                        _deliveryDate,
-                        (date) => setState(() => _deliveryDate = date),
-                      ),
+                      child: _buildDateField('Delivery Date *', _deliveryDate, (date) => setState(() => _deliveryDate = date)),
                     ),
                   ],
                 ),
@@ -275,17 +261,9 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
                   child: ElevatedButton.icon(
                     onPressed: _isLoading ? null : _saveInvoiceAndNavigate,
                     icon: _isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator.adaptive(
-                              strokeWidth: 2,
-                            ),
-                          )
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
                         : const Icon(Icons.add),
-                    label: Text(
-                      _isLoading ? 'Creating...' : 'Create Invoice & Add Items',
-                    ),
+                    label: Text(_isLoading ? 'Creating...' : 'Create Invoice & Add Items'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       backgroundColor: Colors.green,
@@ -327,19 +305,17 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
           ),
           items: _suppliers
               .where((s) => s['supplierID'] != null)
-              .map(
-                (s) => DropdownMenuItem<String>(
-                  value: s['supplierID']?.toString(),
-                  child: Text(s['Supplier']?.toString() ?? 'Unknown'),
-                ),
-              )
+              .map((s) => DropdownMenuItem<String>(
+            value: s['supplierID']?.toString(),
+            child: Text(s['Supplier']?.toString() ?? 'Unknown'),
+          ))
               .toList(),
           onChanged: (String? val) {
             setState(() {
               _selectedSupplierId = val;
               if (val != null) {
                 final supplier = _suppliers.firstWhere(
-                  (s) => s['supplierID']?.toString() == val,
+                      (s) => s['supplierID']?.toString() == val,
                   orElse: () => <String, dynamic>{},
                 );
                 _supplierName = supplier['Supplier']?.toString() ?? '';
@@ -361,11 +337,7 @@ class _GrvInvoiceScreenState extends State<GrvInvoiceScreen> {
     );
   }
 
-  Widget _buildDateField(
-    String label,
-    DateTime date,
-    ValueChanged<DateTime> onChanged,
-  ) {
+  Widget _buildDateField(String label, DateTime date, ValueChanged<DateTime> onChanged) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

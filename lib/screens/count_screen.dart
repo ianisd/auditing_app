@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../services/sales_price_index.dart';
@@ -48,7 +49,7 @@ class PricingResolver {
   }) {
     final name =
         product['Inventory Product Name']?.toString().toLowerCase().trim() ??
-        '';
+            '';
     double unitCost = _safeDouble(product['Cost Price']);
     double unitRetail = FoodStockFields.isFood(product)
         ? 0.0
@@ -154,7 +155,7 @@ class _CountScreenState extends State<CountScreen> {
   List<Map<String, dynamic>> _locations = [];
   List<Map<String, dynamic>> _inventory = [];
   List<Map<String, dynamic>> _itemSalesRaw =
-      []; // 🔥 Keep raw for index rebuild
+  []; // 🔥 Keep raw for index rebuild
   bool _isLoading = true;
   bool _isEditMode = false;
 
@@ -302,22 +303,22 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _loadExistingData(
-    Map<String, dynamic> data,
-    List<Map<String, dynamic>> inventory,
-  ) async {
+      Map<String, dynamic> data,
+      List<Map<String, dynamic>> inventory,
+      ) async {
     data = normalizeStockRecord(data);
     final barcode = data['barcode']?.toString() ?? '';
     final name = data['productName']?.toString() ?? '';
     Map<String, dynamic>? product;
     if (barcode.isNotEmpty) {
       product = inventory.firstWhere(
-        (i) => i['Barcode']?.toString() == barcode,
+            (i) => i['Barcode']?.toString() == barcode,
         orElse: () => {},
       );
     }
     if ((product == null || product.isEmpty) && name.isNotEmpty) {
       product = inventory.firstWhere(
-        (i) => i['Inventory Product Name']?.toString() == name,
+            (i) => i['Inventory Product Name']?.toString() == name,
         orElse: () => {},
       );
     }
@@ -345,8 +346,8 @@ class _CountScreenState extends State<CountScreen> {
       if (_isFood) _selectedPackSize = 'Loose (g)';
       _countController.text = _isFood
           ? (FoodStockFields.isWeightRecord(data)
-                ? FoodStockFields.recordedGrams(data).toString()
-                : '')
+          ? FoodStockFields.recordedGrams(data).toString()
+          : '')
           : data['count']?.toString() ?? '0';
       _weightController.text = data['weight']?.toString() ?? '0';
     });
@@ -371,8 +372,8 @@ class _CountScreenState extends State<CountScreen> {
     final productCounts = allCounts
         .where(
           (c) =>
-              c['productName'] == productName && c['syncStatus'] != 'deleted',
-        )
+      c['productName'] == productName && c['syncStatus'] != 'deleted',
+    )
         .toList();
 
     final dateToUse = widget.initialDate ?? DateTime.now();
@@ -426,9 +427,9 @@ class _CountScreenState extends State<CountScreen> {
   ///
   /// The returned map is productName (lowercased, trimmed) → bottle retail price.
   Map<String, double> _buildSalesPriceIndex(
-    List<Map<String, dynamic>> itemSalesData,
-    List<Map<String, dynamic>> inventory,
-  ) {
+      List<Map<String, dynamic>> itemSalesData,
+      List<Map<String, dynamic>> inventory,
+      ) {
     return buildSalesPriceIndex(
       itemSalesData: itemSalesData,
       inventory: inventory,
@@ -620,7 +621,7 @@ class _CountScreenState extends State<CountScreen> {
               ],
             ),
           ) ??
-          false;
+              false;
       if (confirm) {
         await storage.importFromMasterToLocal(product);
         final newInv = await storage.getAllInventory();
@@ -886,24 +887,20 @@ class _CountScreenState extends State<CountScreen> {
 
       await storage.deleteStockCount(id);
 
-      // 🔥 REAL-TIME SOFT-DELETE ON FIRESTORE
-      // (was a hard .delete() before — that raced with the background sync
-      // recreating the doc a few seconds later, which is why `deleted`
-      // kept reverting to false)
+      // Hive is authoritative for immediate UI behaviour. Leave the local
+      // tombstone pending and close this screen immediately; Firestore must
+      // never block the Delete button/navigation.
       final syncService = context.read<StoreManager>().syncService;
-      if (syncService.firestore != null && storage.firestoreKey != null) {
-        final deletedData = <String, dynamic>{
-          'id': id,
-          'deleted': true,
-          'deletedAt': DateTime.now().toIso8601String(),
-        };
-        await syncService.firestore!.saveStockCount(
-          storage.firestoreKey!,
-          deletedData,
-        );
-      }
+      final firestore = syncService.firestore;
+      final firestoreKey = storage.firestoreKey;
 
-      if (mounted) Navigator.pop(context);
+      if (mounted) Navigator.pop(context, true);
+
+      if (firestore != null && firestoreKey != null) {
+        // Non-blocking. SyncService snapshots the exact Hive tombstone and only
+        // removes it after that same version is acknowledged by Firestore.
+        unawaited(syncService.syncStockCountInBackground(id.toString()));
+      }
     }
   }
 
@@ -959,8 +956,8 @@ class _CountScreenState extends State<CountScreen> {
 
     try {
       final existingEntry = allCounts.firstWhere(
-        (c) =>
-            c['date'].toString().startsWith(dateToUse) &&
+            (c) =>
+        c['date'].toString().startsWith(dateToUse) &&
             c['location'] == locationToUse &&
             c['productName'] == productName &&
             (_isFood
@@ -978,8 +975,8 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   Future<void> _showDuplicateInterventionDialog(
-    Map<String, dynamic> existingEntry,
-  ) async {
+      Map<String, dynamic> existingEntry,
+      ) async {
     final currentCount = _isFood
         ? FoodStockFields.recordedGrams(existingEntry)
         : double.tryParse(existingEntry['count']?.toString() ?? '0') ?? 0.0;
@@ -1151,11 +1148,11 @@ class _CountScreenState extends State<CountScreen> {
         final cost = _isFood
             ? _resolvedUnitCost
             : stockRecordedUnitValue(preserved, 'cost_value') ??
-                  _resolvedUnitCost;
+            _resolvedUnitCost;
         final retail = _isFood
             ? _resolvedUnitRetail
             : stockRecordedUnitValue(preserved, 'retail_value') ??
-                  _resolvedUnitRetail;
+            _resolvedUnitRetail;
         if (!_isFood) validateStockEdit(preserved, product, cost, retail);
         _selectedProduct = product;
         _resolvedUnitCost = cost;
@@ -1172,8 +1169,8 @@ class _CountScreenState extends State<CountScreen> {
     final dateToUse = _isEditMode
         ? preserved['date']
         : (widget.initialDate != null
-              ? widget.initialDate!.toIso8601String().split('T')[0]
-              : DateTime.now().toIso8601String().split('T')[0]);
+        ? widget.initialDate!.toIso8601String().split('T')[0]
+        : DateTime.now().toIso8601String().split('T')[0]);
 
     final timeToUse = DateTime.now()
         .toIso8601String()
@@ -1205,8 +1202,8 @@ class _CountScreenState extends State<CountScreen> {
     // 🔥 FIX: Handle both createdAt and created_at to avoid losing the original timestamp
     final createdDate = _isEditMode
         ? (widget.existingCount!['createdAt'] ??
-              widget.existingCount!['created_at'] ??
-              DateTime.now().toIso8601String())
+        widget.existingCount!['created_at'] ??
+        DateTime.now().toIso8601String())
         : DateTime.now().toIso8601String();
 
     _recalculateTotals();
@@ -1218,7 +1215,7 @@ class _CountScreenState extends State<CountScreen> {
       'date': dateToUse,
       'barcode': _selectedBarcode,
       'productName':
-          _selectedProduct?['Inventory Product Name'] ??
+      _selectedProduct?['Inventory Product Name'] ??
           _productController.text,
       'mainCategory': _selectedProduct?['Main Category'] ?? '',
       'category': _selectedProduct?['Category'] ?? '',
@@ -1244,7 +1241,10 @@ class _CountScreenState extends State<CountScreen> {
       'cost_value': _calcCostValue,
       'retail_value': _calcRetailValue,
       'createdAt': preserved['createdAt'] ?? createdDate,
-      'updatedAt': DateTime.now().toIso8601String(),
+      // A brand-new StockCount must not carry updatedAt. Firestore uses the
+      // presence of updatedAt to distinguish create from update activity.
+      if (isUpdate || _isEditMode)
+        'updatedAt': DateTime.now().toIso8601String(),
       'auditId': preserved['auditId'] ?? _selectedAudit,
       'syncStatus': 'pending',
     };
@@ -1256,12 +1256,7 @@ class _CountScreenState extends State<CountScreen> {
         // 🔥 REAL-TIME UPDATE TO FIRESTORE
         final syncService = context.read<StoreManager>().syncService;
         if (syncService.firestore != null && storage.currentStoreId != null) {
-          final firestoreData = Map<String, dynamic>.from(countData);
-          firestoreData['deleted'] = false; // Explicitly ensure active state
-          await syncService.firestore!.saveStockCount(
-            storage.firestoreKey!,
-            firestoreData,
-          );
+          unawaited(syncService.syncStockCountInBackground(id.toString()));
         }
 
         _logger?.info('Updated: ${_productController.text} ($id)');
@@ -1283,12 +1278,7 @@ class _CountScreenState extends State<CountScreen> {
         // 🔥 REAL-TIME WRITE TO FIRESTORE FOR NEW CREATIONS
         final syncService = context.read<StoreManager>().syncService;
         if (syncService.firestore != null && storage.currentStoreId != null) {
-          final firestoreData = Map<String, dynamic>.from(countData);
-          firestoreData['deleted'] = false;
-          await syncService.firestore!.saveStockCount(
-            storage.firestoreKey!,
-            firestoreData,
-          );
+          unawaited(syncService.syncStockCountInBackground(id.toString()));
         }
 
         _logger?.info('Saved: ${_productController.text} ($id)');
@@ -1379,8 +1369,8 @@ class _CountScreenState extends State<CountScreen> {
       final now = DateTime.now();
       isSameDay =
           now.year == widget.initialDate!.year &&
-          now.month == widget.initialDate!.month &&
-          now.day == widget.initialDate!.day;
+              now.month == widget.initialDate!.month &&
+              now.day == widget.initialDate!.day;
     }
 
     return Scaffold(
@@ -1465,12 +1455,12 @@ class _CountScreenState extends State<CountScreen> {
                           border: const OutlineInputBorder(),
                           prefixIcon: const Icon(Icons.inventory),
                           suffixIcon:
-                              (_isEditMode || widget.initialProduct != null)
+                          (_isEditMode || widget.initialProduct != null)
                               ? const Icon(Icons.lock, color: Colors.grey)
                               : IconButton(
-                                  icon: const Icon(Icons.qr_code_scanner),
-                                  onPressed: _scanBarcode,
-                                ),
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scanBarcode,
+                          ),
                         ),
                         onTap: () {
                           if (!_isEditMode &&
@@ -1532,16 +1522,16 @@ class _CountScreenState extends State<CountScreen> {
                   items: currentPackSizes
                       .map(
                         (p) => DropdownMenuItem(
-                          value: p,
-                          child: Text(
-                            _isFood
-                                ? (p == 'Loose (kg)'
-                                      ? 'Kilograms (kg)'
-                                      : 'Grams (g)')
-                                : p,
-                          ),
-                        ),
-                      )
+                      value: p,
+                      child: Text(
+                        _isFood
+                            ? (p == 'Loose (kg)'
+                            ? 'Kilograms (kg)'
+                            : 'Grams (g)')
+                            : p,
+                      ),
+                    ),
+                  )
                       .toList(),
                   onChanged: (val) {
                     if (!mounted) return;
@@ -1640,10 +1630,10 @@ class _CountScreenState extends State<CountScreen> {
                           decoration: InputDecoration(
                             labelText: _selectedPackSize == 'Open Bottle'
                                 ? (_measurementType == 'Shots'
-                                      ? 'Number of Shots'
-                                      : (_measurementType == 'Volume'
-                                            ? 'Volume (mL)'
-                                            : 'Weight (g)'))
+                                ? 'Number of Shots'
+                                : (_measurementType == 'Volume'
+                                ? 'Volume (mL)'
+                                : 'Weight (g)'))
                                 : 'Net Weight',
                             border: const OutlineInputBorder(),
                           ),

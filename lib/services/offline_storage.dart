@@ -15,10 +15,10 @@ import 'stock_record_fields.dart';
 class OfflineStorage with ChangeNotifier {
   // Capture the exact local versions before any network await.
   PostWriteSnapshot capturePostSnapshot(
-    String table,
-    List<Map<String, dynamic>> rows, {
-    bool deleting = false,
-  }) {
+      String table,
+      List<Map<String, dynamic>> rows, {
+        bool deleting = false,
+      }) {
     if (_currentStoreId == null) throw StateError('No active store');
     checkRefreshStore(_currentStoreId!, _refreshStoreGeneration);
     final Box? box = table == 'Purchases'
@@ -27,6 +27,8 @@ class OfflineStorage with ChangeNotifier {
         ? _invoiceDetails
         : table == 'StockCounts'
         ? _counts
+        : table == 'Inventory'
+        ? _inventory
         : null;
     if (box == null || !box.isOpen)
       throw StateError('Storage unavailable: $table');
@@ -34,12 +36,14 @@ class OfflineStorage with ChangeNotifier {
         ? 'purchases_ID'
         : table == 'InvoiceDetails'
         ? 'invoiceDetailsID'
+        : table == 'Inventory'
+        ? 'Barcode'
         : 'id';
     final captured = <String, Map<String, dynamic>>{};
     for (final row in rows) {
       final id =
-          (row[idField] ?? (table == 'StockCounts' ? row['stock_id'] : null))
-              ?.toString();
+      (row[idField] ?? (table == 'StockCounts' ? row['stock_id'] : null))
+          ?.toString();
       if (id == null || id.isEmpty || captured.containsKey(id)) {
         throw StateError('Missing or repeated $idField');
       }
@@ -66,7 +70,7 @@ class OfflineStorage with ChangeNotifier {
             );
           }
           children[entry.key.toString()] =
-              _postFreeze(row) as Map<String, dynamic>;
+          _postFreeze(row) as Map<String, dynamic>;
         }
       }
     }
@@ -113,9 +117,9 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<List<String>> acknowledgePostSnapshot(
-    PostWriteSnapshot snapshot,
-    Iterable<String> confirmedIds,
-  ) {
+      PostWriteSnapshot snapshot,
+      Iterable<String> confirmedIds,
+      ) {
     final confirmed = confirmedIds.toSet();
     final task = _refreshSaveTail.then((_) async {
       void check() {
@@ -124,6 +128,8 @@ class OfflineStorage with ChangeNotifier {
             ? _purchases
             : snapshot.table == 'InvoiceDetails'
             ? _invoiceDetails
+            : snapshot.table == 'Inventory'
+            ? _inventory
             : _counts;
         if (!identical(currentBox, snapshot._box) || !snapshot._box.isOpen) {
           throw StateError(
@@ -213,7 +219,7 @@ class OfflineStorage with ChangeNotifier {
       return marked;
     });
     _refreshSaveTail = task.then<void>(
-      (_) {},
+          (_) {},
       onError: (Object _, StackTrace __) {},
     );
     return task;
@@ -263,11 +269,11 @@ class OfflineStorage with ChangeNotifier {
 
   // Used only by master refresh. Existing upload APIs are unchanged.
   Future<int> applyDownloadedTable(
-    String table,
-    List<Map<String, dynamic>> rows, {
-    required String storeId,
-    required int generation,
-  }) {
+      String table,
+      List<Map<String, dynamic>> rows, {
+        required String storeId,
+        required int generation,
+      }) {
     final task = _refreshSaveTail.then((_) async {
       checkRefreshStore(storeId, generation);
       final boxes = <String, Box?>{
@@ -351,7 +357,7 @@ class OfflineStorage with ChangeNotifier {
             item['Cost Price'] ??= item['cost'] ?? item['avgCost'] ?? 0.0;
             break;
           case 'ItemsIssued':
-            // These tables are consumed as rows. Index keys preserve repeated PLUs.
+          // These tables are consumed as rows. Index keys preserve repeated PLUs.
             key = i;
             for (final field in [
               'ROW ID',
@@ -458,9 +464,9 @@ class OfflineStorage with ChangeNotifier {
         final stale = box.keys
             .where(
               (key) =>
-                  !batch.containsKey(key) &&
-                  !_keepLocalRefreshRow(box.get(key), table),
-            )
+          !batch.containsKey(key) &&
+              !_keepLocalRefreshRow(box.get(key), table),
+        )
             .toList();
         await box.deleteAll(stale);
         await box.flush();
@@ -496,12 +502,12 @@ class OfflineStorage with ChangeNotifier {
       if (missingKeys > 0)
         warnings.add(
           '$missingKeys rows without usable IDs skipped (zero-based download indexes: '
-          '${missingExamples.join(', ')}); unmatched local records retained',
+              '${missingExamples.join(', ')}); unmatched local records retained',
         );
       if (duplicateKeys > 0)
         warnings.add(
           '$duplicateKeys repeated keys resolved using the last server row '
-          '(examples: ${duplicateExamples.join(', ')})',
+              '(examples: ${duplicateExamples.join(', ')})',
         );
       if (warnings.isNotEmpty)
         _refreshSaveWarnings[table] = warnings.join('; ');
@@ -509,7 +515,7 @@ class OfflineStorage with ChangeNotifier {
       return appliedCount;
     });
     _refreshSaveTail = task.then<void>(
-      (_) {},
+          (_) {},
       onError: (Object _, StackTrace __) {},
     );
     return task;
@@ -565,9 +571,9 @@ class OfflineStorage with ChangeNotifier {
   Box? _supplierMappings;
   bool _supplierMappingsLoaded = false;
   Map<String, String> _supplierNameToIdMap =
-      {}; // "DURBAN NORTH LIQ" -> "16876"
+  {}; // "DURBAN NORTH LIQ" -> "16876"
   Map<String, List<String>> _supplierNameVariations =
-      {}; // "16876" -> ["Durban North Liquors", "DURBAN NORTH LIQ", ...]
+  {}; // "16876" -> ["Durban North Liquors", "DURBAN NORTH LIQ", ...]
 
   // PLU Mapping Boxes (add with other Box declarations)
   Box? _pluMappings; // Stores PLU mappings
@@ -633,7 +639,7 @@ class OfflineStorage with ChangeNotifier {
         'pluMappings': mappings.length,
         'stockCounts': counts.length,
         'total':
-            invoices.length +
+        invoices.length +
             purchases.length +
             deletedInvoices.length +
             deletedPurchases.length +
@@ -874,10 +880,10 @@ class OfflineStorage with ChangeNotifier {
     final generation = _refreshStoreGeneration;
     bool current() =>
         !_isDisposed &&
-        _isReady &&
-        generation == _refreshStoreGeneration &&
-        identical(supplierBox, _masterSuppliers) &&
-        supplierBox.isOpen;
+            _isReady &&
+            generation == _refreshStoreGeneration &&
+            identical(supplierBox, _masterSuppliers) &&
+            supplierBox.isOpen;
     _isLoadingSuppliers = true;
     _lastSupplierLoadTime = DateTime.now();
 
@@ -975,9 +981,9 @@ class OfflineStorage with ChangeNotifier {
 
   /// Batch mark invoices as synced for better performance
   Future<void> bulkMarkInvoicesAsSynced(
-    List<String> ids, {
-    PostWriteSnapshot? snapshot,
-  }) async {
+      List<String> ids, {
+        PostWriteSnapshot? snapshot,
+      }) async {
     if (snapshot == null ||
         snapshot.table != 'InvoiceDetails' ||
         snapshot.deleting) {
@@ -990,9 +996,9 @@ class OfflineStorage with ChangeNotifier {
 
   /// Batch mark purchases as synced for better performance
   Future<void> bulkMarkPurchasesAsSynced(
-    List<String> ids, {
-    PostWriteSnapshot? snapshot,
-  }) async {
+      List<String> ids, {
+        PostWriteSnapshot? snapshot,
+      }) async {
     if (snapshot == null ||
         snapshot.table != 'Purchases' ||
         snapshot.deleting) {
@@ -1376,7 +1382,7 @@ class OfflineStorage with ChangeNotifier {
         final invoiceId = item['invoiceDetailsID']?.toString();
         if (invoiceId != null) {
           final hasPurchases = purchases.any(
-            (p) => p['invoiceDetailsID']?.toString() == invoiceId,
+                (p) => p['invoiceDetailsID']?.toString() == invoiceId,
           );
           if (!hasPurchases) {
             issues['invoicesWithMissingPurchases']!.add(invoiceId);
@@ -1510,7 +1516,7 @@ class OfflineStorage with ChangeNotifier {
       'pluMappings': _pluMappings?.length ?? 0,
       'itemsIssuedMap': _itemsIssuedMap?.length ?? 0,
       'total':
-          (_counts?.length ?? 0) +
+      (_counts?.length ?? 0) +
           (_inventory?.length ?? 0) +
           (_purchases?.length ?? 0) +
           (_invoiceDetails?.length ?? 0),
@@ -1550,8 +1556,8 @@ class OfflineStorage with ChangeNotifier {
         .map(_safeCast)
         .firstWhere(
           (s) => s['supplierID']?.toString() == supplierID,
-          orElse: () => <String, dynamic>{},
-        );
+      orElse: () => <String, dynamic>{},
+    );
 
     return supplier['Supplier']?.toString();
   }
@@ -1593,9 +1599,9 @@ class OfflineStorage with ChangeNotifier {
 
   // Add a method to add a mapping
   Future<void> addSupplierMapping(
-    String normalizedName,
-    String supplierId,
-  ) async {
+      String normalizedName,
+      String supplierId,
+      ) async {
     if (_supplierMappings == null) return;
 
     final key = normalizedName.toLowerCase().trim();
@@ -1616,9 +1622,9 @@ class OfflineStorage with ChangeNotifier {
 
   // Method to find supplier ID from any name variation
   Future<String?> findSupplierIdByAnyName(
-    String supplierName, {
-    bool allowAutoCreate = true,
-  }) async {
+      String supplierName, {
+        bool allowAutoCreate = true,
+      }) async {
     if (supplierName.isEmpty) return null;
 
     final normalized = _normalizeSupplierName(supplierName);
@@ -1899,8 +1905,8 @@ class OfflineStorage with ChangeNotifier {
     final itemsIssued = await getItemsIssued(); // 🔴 CHANGED
 
     final stillValid = itemsIssued.any(
-      (issue) =>
-          issue['PLU']?.toString() == mapping.correctPlu &&
+          (issue) =>
+      issue['PLU']?.toString() == mapping.correctPlu &&
           _fuzzyMatch(
             issue['Menu Item']?.toString() ?? '', // Field from ItemsIssued
             mapping.productName,
@@ -1939,7 +1945,7 @@ class OfflineStorage with ChangeNotifier {
     final itemsIssued = await getItemsIssued(); // 🔴 CHANGED
 
     final match = itemsIssued.firstWhere(
-      (issue) => _fuzzyMatch(issue['Menu Item']?.toString() ?? '', productName),
+          (issue) => _fuzzyMatch(issue['Menu Item']?.toString() ?? '', productName),
       orElse: () => <String, dynamic>{},
     );
 
@@ -1951,7 +1957,7 @@ class OfflineStorage with ChangeNotifier {
     final stockIssues = await getStockIssues();
 
     final match = stockIssues.firstWhere(
-      (issue) => _fuzzyMatch(issue['Item']?.toString() ?? '', itemName),
+          (issue) => _fuzzyMatch(issue['Item']?.toString() ?? '', itemName),
       orElse: () => <String, dynamic>{},
     );
 
@@ -1963,9 +1969,9 @@ class OfflineStorage with ChangeNotifier {
   // ===========================================================================
 
   Future<double?> getCostBySupplierAndBottleId(
-    String supplierID,
-    String supplierBottleID,
-  ) async {
+      String supplierID,
+      String supplierBottleID,
+      ) async {
     if (!_isReady || _masterCatalog == null) {
       print('🔍 getCostBySupplierAndBottleId: Storage not ready');
       return null;
@@ -1979,8 +1985,8 @@ class OfflineStorage with ChangeNotifier {
 
     // Strategy 1: Match by supplierID + supplierBottleID (most specific)
     var match = allCosts.firstWhere(
-      (c) =>
-          c['supplierID']?.toString() == supplierID &&
+          (c) =>
+      c['supplierID']?.toString() == supplierID &&
           c['supplierBottleID']?.toString() == supplierBottleID,
       orElse: () => <String, dynamic>{},
     );
@@ -1998,8 +2004,8 @@ class OfflineStorage with ChangeNotifier {
       print('🔍 Strategy 2: Trying to match by product name: "$productName"');
 
       match = allCosts.firstWhere(
-        (c) =>
-            c['supplierID']?.toString() == supplierID &&
+            (c) =>
+        c['supplierID']?.toString() == supplierID &&
             _fuzzyMatch(c['Product Name']?.toString() ?? '', productName),
         orElse: () => <String, dynamic>{},
       );
@@ -2027,39 +2033,39 @@ class OfflineStorage with ChangeNotifier {
           .map(_safeCast)
           .where(
             (c) =>
-                c['Cost Price'] != null ||
-                c['cost'] != null ||
-                c['avgCost'] != null,
-          )
+        c['Cost Price'] != null ||
+            c['cost'] != null ||
+            c['avgCost'] != null,
+      )
           .map(
             (c) => {
-              // ✅ Use supplierBottleID from the data
-              'supplierBottleID': c['supplierBottleID']?.toString() ?? '',
+          // ✅ Use supplierBottleID from the data
+          'supplierBottleID': c['supplierBottleID']?.toString() ?? '',
 
-              // ✅ Try multiple field names for bottleID
-              'bottleID':
-                  c['bottleID']?.toString() ??
-                  c['supplierBottleID']?.toString() ??
-                  '',
+          // ✅ Try multiple field names for bottleID
+          'bottleID':
+          c['bottleID']?.toString() ??
+              c['supplierBottleID']?.toString() ??
+              '',
 
-              // ✅ supplierID is correct
-              'supplierID': c['supplierID']?.toString() ?? '',
+          // ✅ supplierID is correct
+          'supplierID': c['supplierID']?.toString() ?? '',
 
-              // ✅ Try multiple field names for product name
-              'Product Name':
-                  c['Inventory Product Name']?.toString() ??
-                  c['Product Name']?.toString() ??
-                  c['productName']?.toString() ??
-                  '',
+          // ✅ Try multiple field names for product name
+          'Product Name':
+          c['Inventory Product Name']?.toString() ??
+              c['Product Name']?.toString() ??
+              c['productName']?.toString() ??
+              '',
 
-              // ✅ Try multiple field names for supplier
-              'Supplier':
-                  c['Supplier']?.toString() ?? c['supplier']?.toString() ?? '',
+          // ✅ Try multiple field names for supplier
+          'Supplier':
+          c['Supplier']?.toString() ?? c['supplier']?.toString() ?? '',
 
-              // ✅ Try multiple field names for cost - prioritize Cost Price
-              'Cost Price': c['Cost Price'] ?? c['cost'] ?? c['avgCost'] ?? 0.0,
-            },
-          )
+          // ✅ Try multiple field names for cost - prioritize Cost Price
+          'Cost Price': c['Cost Price'] ?? c['cost'] ?? c['avgCost'] ?? 0.0,
+        },
+      )
           .toList();
 
       // print('🔍 DEBUG: getMasterCosts found ${costs.length} cost entries');
@@ -2159,9 +2165,9 @@ class OfflineStorage with ChangeNotifier {
   /// Save multiple invoices (bulk operation)
   /// Save multiple invoices (bulk operation) - REPLACES existing data
   Future<void> saveInvoices(
-    List<Map<String, dynamic>> items, {
-    bool replace = true,
-  }) async {
+      List<Map<String, dynamic>> items, {
+        bool replace = true,
+      }) async {
     if (!_isReady || _invoiceDetails == null) {
       print('🔍 DEBUG: saveInvoices - Storage not ready');
       return;
@@ -2400,7 +2406,10 @@ class OfflineStorage with ChangeNotifier {
   }
 
   /// Soft delete invoice (mark as deleted, will sync deletion)
-  Future<void> softDeleteInvoice(String invoiceId) async {
+  Future<void> softDeleteInvoice(
+      String invoiceId, {
+        String deletionReason = 'user_deleted_invoice',
+      }) async {
     print('🔍 ===== SOFT DELETE INVOICE =====');
     print('📋 Invoice ID: $invoiceId');
     print('📊 _isReady: $_isReady');
@@ -2423,6 +2432,7 @@ class OfflineStorage with ChangeNotifier {
 
     invoice['syncStatus'] = 'deleted';
     invoice['deletedAt'] = DateTime.now().toIso8601String();
+    invoice['deletionReason'] = deletionReason;
 
     await _invoiceDetails!.put(invoiceId, invoice);
     print('✅ Invoice marked as deleted');
@@ -2595,9 +2605,9 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<String> _nextCanonicalPurchaseId(
-    String invoiceId,
-    Map<String, dynamic> purchase,
-  ) async {
+      String invoiceId,
+      Map<String, dynamic> purchase,
+      ) async {
     final existingPurchases = await getPurchasesByInvoiceId(invoiceId);
     var maxLineIndex = -1;
     for (final existing in existingPurchases) {
@@ -2735,8 +2745,8 @@ class OfflineStorage with ChangeNotifier {
         final String productKey = newItem['plu']?.toString().isNotEmpty == true
             ? newItem['plu']!
             : (newItem['Barcode']?.toString().isNotEmpty == true
-                  ? newItem['Barcode']!
-                  : 'unknown');
+            ? newItem['Barcode']!
+            : 'unknown');
 
         // 🔥 Include GRV in the purchase ID
         final grvToUse = grvRef.isNotEmpty ? grvRef : 'NOGRV';
@@ -2807,8 +2817,8 @@ class OfflineStorage with ChangeNotifier {
 
   /// Get purchases by invoice ID (uses index for O(1) lookup)
   Future<List<Map<String, dynamic>>> getPurchasesByInvoiceId(
-    String invoiceId,
-  ) async {
+      String invoiceId,
+      ) async {
     if (!_isReady || _purchases == null) {
       print('🔍 DEBUG: getPurchasesByInvoiceId - Storage not ready');
       return [];
@@ -2846,12 +2856,12 @@ class OfflineStorage with ChangeNotifier {
   ///
   /// Performance: With proper index, queries ~10,000 purchases in <50ms
   Future<List<Map<String, dynamic>>> getPurchasesByInvoiceIdPaginated(
-    String invoiceId, {
-    int limit = 50,
-    int offset = 0,
-    String sortBy = 'Purchased Product Name',
-    bool sortAscending = true,
-  }) async {
+      String invoiceId, {
+        int limit = 50,
+        int offset = 0,
+        String sortBy = 'Purchased Product Name',
+        bool sortAscending = true,
+      }) async {
     if (!_isReady || _purchases == null) {
       print('❌ getPurchasesByInvoiceIdPaginated: Storage not ready');
       return [];
@@ -2976,9 +2986,9 @@ class OfflineStorage with ChangeNotifier {
           .map((e) => _safeCast(e))
           .where(
             (item) =>
-                item['syncStatus'] == 'pending' &&
-                item['syncStatus'] != 'deleted',
-          ) // ✅ EXCLUDE DELETED
+        item['syncStatus'] == 'pending' &&
+            item['syncStatus'] != 'deleted',
+      ) // ✅ EXCLUDE DELETED
           .toList();
 
       // print('🔍 DEBUG: getPendingPurchases found ${pending.length} pending items');
@@ -3027,9 +3037,9 @@ class OfflineStorage with ChangeNotifier {
 
   /// Update an existing purchase
   Future<void> updatePurchaseItem(
-    String purchaseId,
-    Map<String, dynamic> updates,
-  ) async {
+      String purchaseId,
+      Map<String, dynamic> updates,
+      ) async {
     if (!_isReady || _purchases == null) return;
 
     final existing = _purchases!.get(purchaseId);
@@ -3049,8 +3059,8 @@ class OfflineStorage with ChangeNotifier {
   /// Uses Hive batch operations for O(1) writes instead of O(n) sequential writes
   /// Reduces save time from O(n * write_cost) to O(write_cost)
   Future<void> batchUpdatePurchases(
-    Map<String, Map<String, dynamic>> updates,
-  ) async {
+      Map<String, Map<String, dynamic>> updates,
+      ) async {
     if (!_isReady || _purchases == null) {
       print('❌ batchUpdatePurchases: Storage not ready');
       return;
@@ -3141,8 +3151,8 @@ class OfflineStorage with ChangeNotifier {
           .map(_safeCast)
           .firstWhere(
             (item) => item['Inventory Product Name']?.toString() == productName,
-            orElse: () => <String, dynamic>{},
-          );
+        orElse: () => <String, dynamic>{},
+      );
     } catch (e) {
       print('Error finding product by name: $e');
       return null;
@@ -3158,7 +3168,7 @@ class OfflineStorage with ChangeNotifier {
           .map(_safeCast)
           .where(
             (item) => item['Inventory Product Name']?.toString() == productName,
-          )
+      )
           .map((item) => item['Barcode']?.toString() ?? '')
           .where((barcode) => barcode.isNotEmpty)
           .toList();
@@ -3208,15 +3218,21 @@ class OfflineStorage with ChangeNotifier {
 
   Future<void> saveNewLocalProduct(Map<String, dynamic> product) async {
     if (!_isReady) return;
-    final barcode = product['Barcode']?.toString() ?? '';
-    if (barcode.isEmpty) return;
+    final barcode = product['Barcode']?.toString().trim() ?? '';
+    if (barcode.isEmpty) {
+      throw StateError('Inventory product barcode is required');
+    }
 
-    product['isLocal'] = true;
-    product['syncStatus'] = 'pending';
+    final now = DateTime.now().toIso8601String();
+    final row = Map<String, dynamic>.from(product);
+    row['Barcode'] = barcode;
+    row['isLocal'] = true;
+    row['syncStatus'] = 'pending';
+    row['createdAt'] ??= now;
 
-    await _inventory!.put(barcode, product);
+    await _inventory!.put(barcode, row);
     _productNameByBarcode[barcode] =
-        product['Inventory Product Name']?.toString() ?? '';
+        row['Inventory Product Name']?.toString() ?? '';
     notifyListeners();
   }
 
@@ -3226,7 +3242,7 @@ class OfflineStorage with ChangeNotifier {
         .map((e) => _safeCast(e))
         .where(
           (item) => item['isLocal'] == true && item['syncStatus'] == 'pending',
-        )
+    )
         .toList();
   }
 
@@ -3281,36 +3297,36 @@ class OfflineStorage with ChangeNotifier {
           // Use supplierBottleID + supplierID if available, otherwise use product name
           final key =
               item['supplierBottleID']?.toString() ??
-              item['bottleID']?.toString() ??
-              'cost_${item['productName']?.toString() ?? ''}_$validItems';
+                  item['bottleID']?.toString() ??
+                  'cost_${item['productName']?.toString() ?? ''}_$validItems';
 
           // Ensure we have all the fields we need for lookups
           final enrichedItem = {
             ...item,
             'supplierBottleID':
-                item['supplierBottleID']?.toString() ??
+            item['supplierBottleID']?.toString() ??
                 item['bottleID']?.toString() ??
                 '',
             'bottleID':
-                item['bottleID']?.toString() ??
+            item['bottleID']?.toString() ??
                 item['supplierBottleID']?.toString() ??
                 '',
             'supplierID': item['supplierID']?.toString() ?? '',
             'Product Name':
-                item['Product Name']?.toString() ??
+            item['Product Name']?.toString() ??
                 item['productName']?.toString() ??
                 '',
             'Inventory Product Name':
-                item['Inventory Product Name']?.toString() ??
+            item['Inventory Product Name']?.toString() ??
                 item['Product Name']?.toString() ??
                 item['productName']?.toString() ??
                 '',
             'Supplier':
-                item['Supplier']?.toString() ??
+            item['Supplier']?.toString() ??
                 item['supplier']?.toString() ??
                 '',
             'Cost Price':
-                item['Cost Price'] ?? item['cost'] ?? item['avgCost'] ?? 0.0,
+            item['Cost Price'] ?? item['cost'] ?? item['avgCost'] ?? 0.0,
           };
 
           batch[key] = enrichedItem;
@@ -3356,8 +3372,8 @@ class OfflineStorage with ChangeNotifier {
     if (!_isReady) return;
     final locationId =
         location['locationID']?.toString() ??
-        location['id']?.toString() ??
-        DateTime.now().millisecondsSinceEpoch.toString();
+            location['id']?.toString() ??
+            DateTime.now().millisecondsSinceEpoch.toString();
 
     location['locationID'] = locationId;
     location['syncStatus'] = 'pending';
@@ -3505,13 +3521,13 @@ class OfflineStorage with ChangeNotifier {
       // 🔥 Generate unique ID with sanitized values
       final id =
           count['id'] ??
-          _generateStockId(
-            date: date,
-            time: time,
-            barcode: count['barcode']?.toString() ?? '',
-            productName: count['productName']?.toString() ?? '',
-            location: count['location']?.toString() ?? '',
-          );
+              _generateStockId(
+                date: date,
+                time: time,
+                barcode: count['barcode']?.toString() ?? '',
+                productName: count['productName']?.toString() ?? '',
+                location: count['location']?.toString() ?? '',
+              );
 
       // 🔥 Ensure the ID is consistent
       count['id'] = id;
@@ -3614,16 +3630,16 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<List<String>> markStockSnapshotsAsSyncedV2(
-    List<String> confirmedIds,
-    List<Map<String, dynamic>> submitted,
-    String? expectedStoreId,
-  ) async {
+      List<String> confirmedIds,
+      List<Map<String, dynamic>> submitted,
+      String? expectedStoreId,
+      ) async {
     if (!_isReady ||
         expectedStoreId == null ||
         currentStoreId != expectedStoreId)
       return [];
     final box =
-        _counts!; // Never dereference a newly switched store's box after await.
+    _counts!; // Never dereference a newly switched store's box after await.
     final snapshots = <String, Map<String, dynamic>>{
       for (final row in submitted)
         (row['id'] ?? row['stock_id'] ?? row['stockId']).toString(): row,
@@ -3662,19 +3678,19 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<void> saveRemoteStockCounts(
-    List<Map<String, dynamic>> remoteCounts, {
-    bool Function()? isCurrent,
-  }) async {
+      List<Map<String, dynamic>> remoteCounts, {
+        bool Function()? isCurrent,
+      }) async {
     if (!_isReady || _counts == null) return;
     final countsBox = _counts!;
     final generation = _refreshStoreGeneration;
     bool current() =>
         !_isDisposed &&
-        _isReady &&
-        generation == _refreshStoreGeneration &&
-        identical(countsBox, _counts) &&
-        countsBox.isOpen &&
-        (isCurrent?.call() ?? true);
+            _isReady &&
+            generation == _refreshStoreGeneration &&
+            identical(countsBox, _counts) &&
+            countsBox.isOpen &&
+            (isCurrent?.call() ?? true);
     if (!current()) return;
 
     print(
@@ -3685,8 +3701,8 @@ class OfflineStorage with ChangeNotifier {
     final filteredCounts = remoteCounts.where((row) {
       final isDeleted =
           row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
+              row['deleted'] == 'true' ||
+              row['deleted']?.toString().toLowerCase() == 'true';
       return !isDeleted;
     }).toList();
 
@@ -3703,7 +3719,7 @@ class OfflineStorage with ChangeNotifier {
       // Try multiple possible ID fields
       final id =
           (row['id'] ?? row['stock_id'] ?? row['stockTake_ID'])?.toString() ??
-          '';
+              '';
       if (id.isEmpty) {
         print('⚠️ Skipping remote count with empty ID');
         continue;
@@ -3770,9 +3786,95 @@ class OfflineStorage with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Replaces the local StockCounts working copy from an authoritative
+  /// one-shot Firestore download. This is intentionally separate from normal
+  /// sync/listener behaviour and refuses to run while local StockCount work is
+  /// pending, so bootstrap can never overwrite unsent edits or tombstones.
+  Future<Map<String, int>> applyInitialStockCountsDownload(
+      List<Map<String, dynamic>> remoteCounts,
+      ) async {
+    if (!_isReady || _counts == null || currentStoreId == null) {
+      throw StateError('Local storage is not ready for the active store.');
+    }
+    if (_pendingCounts.isNotEmpty) {
+      throw StateError(
+        'Initial download blocked: ${_pendingCounts.length} local StockCount change(s) are still pending.',
+      );
+    }
+
+    final box = _counts!;
+    final active = <String, Map<String, dynamic>>{};
+    var deleted = 0;
+    var skipped = 0;
+    final syncedAt = DateTime.now().toIso8601String();
+
+    for (final raw in remoteCounts) {
+      final row = Map<String, dynamic>.from(raw);
+      final id = _extractStockCountId(row);
+      if (id.isEmpty) {
+        skipped++;
+        continue;
+      }
+      final isDeleted = row['deleted'] == true ||
+          row['deleted']?.toString().toLowerCase() == 'true';
+      if (isDeleted) {
+        deleted++;
+        continue;
+      }
+      active[id] = <String, dynamic>{
+        ...mergeStockRecord(<String, dynamic>{}, row),
+        'id': id,
+        'stock_id': id,
+        'syncStatus': 'synced',
+        'syncedAt': syncedAt,
+        'deleted': false,
+      };
+    }
+
+    // A full initial download is an authoritative snapshot. Because pending
+    // local work was rejected above, replacing the box is safe and also
+    // applies Firestore tombstones/removes stale local-only synced rows.
+    await box.clear();
+    if (active.isNotEmpty) await box.putAll(active);
+    _updatePendingCounts();
+    notifyListeners();
+
+    return <String, int>{
+      'remote': remoteCounts.length,
+      'active': active.length,
+      'deleted': deleted,
+      'skipped': skipped,
+      'local': box.length,
+    };
+  }
+
+  Future<void> setStockCountsDownloadCursor(DateTime cursor) async {
+    final storeId = currentStoreId;
+    if (storeId == null || storeId.isEmpty) return;
+    final box = await Hive.openBox('store_${storeId}_stock_count_cursor_v1');
+    try {
+      await box.put('updatedAt', cursor.toUtc().toIso8601String());
+      await box.put('initialDownloadComplete', true);
+    } finally {
+      await box.close();
+    }
+  }
+
+  Future<DateTime?> getStockCountsDownloadCursor() async {
+    final storeId = currentStoreId;
+    if (storeId == null || storeId.isEmpty) return null;
+    final box = await Hive.openBox('store_${storeId}_stock_count_cursor_v1');
+    try {
+      final raw = box.get('updatedAt')?.toString();
+      return raw == null ? null : DateTime.tryParse(raw)?.toUtc();
+    } finally {
+      await box.close();
+    }
+  }
+
   Future<void> overwriteLocalCounts(
-    List<Map<String, dynamic>> remoteCounts,
-  ) async {
+      List<Map<String, dynamic>> remoteCounts,
+      ) async {
     print('🔍 ===== OVERWRITE LOCAL COUNTS =====');
     print('  - remoteCounts.length: ${remoteCounts.length}');
     print('  - _isReady: $_isReady');
@@ -3787,8 +3889,8 @@ class OfflineStorage with ChangeNotifier {
     final filteredCounts = remoteCounts.where((row) {
       final isDeleted =
           row['deleted'] == true ||
-          row['deleted'] == 'true' ||
-          row['deleted']?.toString().toLowerCase() == 'true';
+              row['deleted'] == 'true' ||
+              row['deleted']?.toString().toLowerCase() == 'true';
       return !isDeleted;
     }).toList();
 
@@ -3815,7 +3917,7 @@ class OfflineStorage with ChangeNotifier {
         .map((e) => _safeCast(e))
         .where(
           (c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted',
-        )
+    )
         .toList();
 
     final beforeById = <String, Map<String, dynamic>>{
@@ -3944,7 +4046,7 @@ class OfflineStorage with ChangeNotifier {
     if (!_isReady) return null;
     final audits = _audits!.values.map((e) => _safeCast(e)).toList();
     return audits.firstWhere(
-      (a) => a['Current Audit'] == true || a['currentAudit'] == true,
+          (a) => a['Current Audit'] == true || a['currentAudit'] == true,
       orElse: () => audits.isNotEmpty ? audits.first : {},
     );
   }
@@ -4259,7 +4361,7 @@ class OfflineStorage with ChangeNotifier {
 
     // 2. Find exact PLU match
     final match = itemsIssued.firstWhere(
-      (row) => row['PLU']?.toString().trim() == plu,
+          (row) => row['PLU']?.toString().trim() == plu,
       orElse: () => <String, dynamic>{},
     );
 
@@ -4268,15 +4370,15 @@ class OfflineStorage with ChangeNotifier {
     // 3. Get Product Name
     final productName =
         match['Product']?.toString().trim() ??
-        match['Menu Item']?.toString().trim() ??
-        '';
+            match['Menu Item']?.toString().trim() ??
+            '';
 
     if (productName.isEmpty) return null;
 
     // 4. Find in inventory by Product Name (fuzzy match)
     final allInventory = await getAllInventory();
     return allInventory.firstWhere(
-      (item) => _fuzzyMatch(
+          (item) => _fuzzyMatch(
         item['Inventory Product Name']?.toString() ?? '',
         productName,
       ),
@@ -4799,7 +4901,7 @@ class OfflineStorage with ChangeNotifier {
           .map((e) => _safeCast(e))
           .where(
             (c) => c['syncStatus'] == 'pending' || c['syncStatus'] == 'deleted',
-          ) // 👈 Keep only this
+      ) // 👈 Keep only this
           .toList();
     } catch (e) {
       _pendingCounts = [];
@@ -4874,10 +4976,10 @@ class OfflineStorage with ChangeNotifier {
   double? _extractCost(Map<String, dynamic> costEntry) {
     final dynamic costValue =
         costEntry['Cost Price'] ??
-        costEntry['cost'] ??
-        costEntry['avgCost'] ??
-        costEntry['Unit Cost'] ??
-        costEntry['Cost'];
+            costEntry['cost'] ??
+            costEntry['avgCost'] ??
+            costEntry['Unit Cost'] ??
+            costEntry['Cost'];
 
     if (costValue == null) return null;
     if (costValue is num) return costValue.toDouble();
@@ -4899,8 +5001,8 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<String?> _getProductNameBySupplierBottleId(
-    String supplierBottleID,
-  ) async {
+      String supplierBottleID,
+      ) async {
     if (!_isReady || _masterCatalog == null) {
       print('🔍 _getProductNameBySupplierBottleId: Storage not ready');
       return null;
@@ -4915,8 +5017,8 @@ class OfflineStorage with ChangeNotifier {
       if (match.isNotEmpty) {
         final productName =
             match['Inventory Product Name']?.toString() ??
-            match['Product Name']?.toString() ??
-            match['productName']?.toString();
+                match['Product Name']?.toString() ??
+                match['productName']?.toString();
 
         if (productName != null && productName.isNotEmpty) {
           print(
@@ -5004,9 +5106,9 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<void> saveStoredBlockHashes(
-    String table,
-    Map<int, String> hashes,
-  ) async {
+      String table,
+      Map<int, String> hashes,
+      ) async {
     if (!_isReady || hashes.isEmpty) return;
     try {
       final box = await Hive.openBox(
@@ -5083,11 +5185,11 @@ class OfflineStorage with ChangeNotifier {
   /// Applies an incremental Firestore Purchase delta without treating the
   /// incoming rows as a complete collection snapshot.
   Future<int> applyInvoiceChanges(
-    List<Map<String, dynamic>> upserts,
-    List<String> deletedIds, {
-    required String storeId,
-    required int generation,
-  }) {
+      List<Map<String, dynamic>> upserts,
+      List<String> deletedIds, {
+        required String storeId,
+        required int generation,
+      }) {
     final task = _refreshSaveTail.then((_) async {
       checkRefreshStore(storeId, generation);
       final box = _invoiceDetails;
@@ -5113,7 +5215,7 @@ class OfflineStorage with ChangeNotifier {
           if (local is Map && local['syncStatus'] != 'deleted') {
             final kept = _safeCast(local);
             kept['postRecoveryConflict'] =
-                'Remote Invoice $id was deleted while local changes were pending.';
+            'Remote Invoice $id was deleted while local changes were pending.';
             await box.put(id, kept);
           }
           continue;
@@ -5127,15 +5229,15 @@ class OfflineStorage with ChangeNotifier {
       return applied;
     });
     _refreshSaveTail = task.then<void>(
-      (_) {},
+          (_) {},
       onError: (Object _, StackTrace __) {},
     );
     return task;
   }
 
   Future<Map<String, DateTime?>> getInvoiceRefreshCursors(
-    String storeId,
-  ) async {
+      String storeId,
+      ) async {
     if (!_isReady || _currentStoreId != storeId)
       return {'upserts': null, 'deletes': null};
     try {
@@ -5154,10 +5256,10 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<void> saveInvoiceRefreshCursors(
-    String storeId, {
-    DateTime? upserts,
-    DateTime? deletes,
-  }) async {
+      String storeId, {
+        DateTime? upserts,
+        DateTime? deletes,
+      }) async {
     if (!_isReady || _currentStoreId != storeId) return;
     final box = await Hive.openBox('store_${storeId}_invoice_delta_cursor_v1');
     if (!_isReady || _currentStoreId != storeId) return;
@@ -5169,11 +5271,11 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<int> applyPurchaseChanges(
-    List<Map<String, dynamic>> upserts,
-    List<String> deletedIds, {
-    required String storeId,
-    required int generation,
-  }) {
+      List<Map<String, dynamic>> upserts,
+      List<String> deletedIds, {
+        required String storeId,
+        required int generation,
+      }) {
     final task = _refreshSaveTail.then((_) async {
       checkRefreshStore(storeId, generation);
       final box = _purchases;
@@ -5204,7 +5306,7 @@ class OfflineStorage with ChangeNotifier {
           if (local is Map && local['syncStatus'] != 'deleted') {
             final kept = _safeCast(local);
             kept['postRecoveryConflict'] =
-                'Remote Purchase $id was deleted while local changes were pending.';
+            'Remote Purchase $id was deleted while local changes were pending.';
             await box.put(id, kept);
           }
           continue;
@@ -5220,15 +5322,15 @@ class OfflineStorage with ChangeNotifier {
       return applied;
     });
     _refreshSaveTail = task.then<void>(
-      (_) {},
+          (_) {},
       onError: (Object _, StackTrace __) {},
     );
     return task;
   }
 
   Future<Map<String, DateTime?>> getPurchaseRefreshCursors(
-    String storeId,
-  ) async {
+      String storeId,
+      ) async {
     if (!_isReady || _currentStoreId != storeId) {
       return {'upserts': null, 'deletes': null};
     }
@@ -5248,10 +5350,10 @@ class OfflineStorage with ChangeNotifier {
   }
 
   Future<void> savePurchaseRefreshCursors(
-    String storeId, {
-    DateTime? upserts,
-    DateTime? deletes,
-  }) async {
+      String storeId, {
+        DateTime? upserts,
+        DateTime? deletes,
+      }) async {
     if (!_isReady || _currentStoreId != storeId) return;
     final box = await Hive.openBox('store_${storeId}_purchase_delta_cursor_v1');
     if (!_isReady || _currentStoreId != storeId) return;
@@ -5303,13 +5405,13 @@ class PostWriteSnapshot {
   final Map<String, Map<String, dynamic>> children;
   final bool deleting;
   PostWriteSnapshot._(
-    this.table,
-    this.storeId,
-    this.generation,
-    this._box,
-    this._childrenBox,
-    this.rows,
-    this.children,
-    this.deleting,
-  );
+      this.table,
+      this.storeId,
+      this.generation,
+      this._box,
+      this._childrenBox,
+      this.rows,
+      this.children,
+      this.deleting,
+      );
 }

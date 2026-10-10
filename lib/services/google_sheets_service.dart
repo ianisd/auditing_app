@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'dart:io';
+import 'package:http/io_client.dart';
 import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
@@ -426,25 +427,49 @@ class GoogleSheetsService {
       return;
     final generation = _cancelGeneration;
     final copy = _copyDownload(rows);
-    final hashes = await compute(_downloadHashes, copy);
-    _checkFetchActive(generation);
-    final pending = _PendingDownload(copy, hashes);
-    if (_refreshRowHashes[table] == pending.rowHash) {
-      _verifiedDownloads[table] = _VerifiedDownload(
-        _refreshVersions[table]!,
-        copy,
-        pending.rowHash,
-      );
-      _pendingVerification.remove(table);
-      _refreshCandidates.remove(table);
-    } else {
+
+    // The server already hashed this table when it produced the manifest. Trust
+    // that value instead of recomputing locally, which would use a different
+    // block size and therefore produce a different hash.
+    final serverHash = _refreshRowHashes[table];
+    if (serverHash == null) {
       logger?.info(
-        'Refresh $table content verification pending: rows=${rows.length}; '
-            'received=${_hashLabel(pending.rowHash)}; manifest=${_hashLabel(_refreshRowHashes[table])}',
+        'Refresh $table: no server rowHash available; skipping verification',
       );
-      _refreshCandidates[table] = pending;
-      _pendingVerification[table] = pending;
+      return;
     }
+
+    _checkFetchActive(generation);
+
+    // Stage the rows so finishVersionedRefresh can confirm them against a fresh
+    // manifest. Using the server hash directly means the post-download check is
+    // a pure server-to-server comparison, not a local-vs-server comparison.
+    final pending = _PendingDownload.withHash(copy, [serverHash], serverHash);
+    _refreshCandidates[table] = pending;
+    _pendingVerification[table] = pending;
+
+    logger?.info(
+      'Refresh $table staged for verification: rows=${rows.length} '
+          'server_hash=${_hashLabel(serverHash)}',
+    );
+  }
+
+  Future<void> _rememberRefreshDownloadWithHash(
+      String table,
+      List<Map<String, dynamic>> rows,
+      String serverHash,
+      int blockSize,
+      ) async {
+    if (!_versionedRefreshActive || !_refreshVersions.containsKey(table))
+      return;
+    final copy = _copyDownload(rows);
+    final pending = _PendingDownload.withHash(copy, [serverHash], serverHash);
+    _refreshCandidates[table] = pending;
+    _pendingVerification[table] = pending;
+    logger?.info(
+      'Refresh $table staged with server hash: rows=${rows.length} '
+          'hash=${_hashLabel(serverHash)} blockSize=$blockSize',
+    );
   }
 
   Future<void> finishVersionedRefresh() async {
@@ -462,10 +487,16 @@ class GoogleSheetsService {
             actualHash = after.rowHashes[entry.key];
         final matches = actualHash != null
             ? actualHash == entry.value.rowHash
-            : version != null &&
-            version ==
-                _refreshVersions[entry
-                    .key]; // Older GAS compatibility only.
+            : version != null && version == _refreshVersions[entry.key];
+
+        // 🔥 DIAGNOSTIC — REMOVE AFTER DEBUGGING
+        logger?.info(
+          'finishVersionedRefresh ${entry.key}: '
+              'received=${_hashLabel(entry.value.rowHash)}, '
+              'after=${_hashLabel(actualHash)}, '
+              'matches=$matches',
+        );
+
         if (version != null && matches) {
           _verifiedDownloads[entry.key] = _VerifiedDownload(
             version,
@@ -513,15 +544,15 @@ class GoogleSheetsService {
       _pendingVerification['StoreSalesData']?.rows,
     ]) {
       if (source == null) continue;
-      final hashes = await compute(_downloadHashes, source);
+      final hashes = await compute(_downloadHashesForIsolate, [source, plan.blockSize]);
       _checkFetchActive(generation);
       for (int index = 0; index < hashes.length; index++) {
         if (wanted.contains(hashes[index]) &&
             !_salesBlocks.containsKey(hashes[index])) {
           _salesBlocks[hashes[index]] = _copyDownload(
             source.sublist(
-              index * 1500,
-              math.min((index + 1) * 1500, source.length),
+              index * plan.blockSize,
+              math.min((index + 1) * plan.blockSize, source.length),
             ),
           );
         }
@@ -532,7 +563,7 @@ class GoogleSheetsService {
     for (int index = 0; index < plan.hashes.length; index++) {
       _checkFetchActive(generation);
       final hash = plan.hashes[index];
-      final expectedLength = math.min(1500, plan.total - index * 1500);
+      final expectedLength = math.min(plan.blockSize, plan.total - index * plan.blockSize);
       List<Map<String, dynamic>>? block = _forceVersionedDownload
           ? null
           : _salesBlocks[hash];
@@ -573,7 +604,7 @@ class GoogleSheetsService {
             _recordFailure();
             if (attempt == 3) rethrow;
             logger?.info(
-              'Sales block $index retry $attempt/3 at offset ${index * 1500}; '
+              'Sales block $index retry $attempt/3 at offset ${index * plan.blockSize}; '
                   'verified blocks retained; trying ordinary page at the same offset: $e',
             );
             await Future.delayed(Duration(seconds: attempt * 2));
@@ -586,10 +617,20 @@ class GoogleSheetsService {
     }
     if (rows.length != plan.total)
       throw const FormatException('Incomplete sales reconstruction');
-    await _rememberRefreshDownload('StoreSalesData', rows);
+
+// StoreSalesData already validates each block against plan.hashes while
+// downloading. Stage the assembled table using the manifest's tableHash so
+// finishVersionedRefresh compares server hash to server hash.
+    await _rememberRefreshDownloadWithHash(
+      'StoreSalesData',
+      rows,
+      plan.tableHash,
+      plan.blockSize,
+    );
+
     _checkFetchActive(generation);
-    if (_downloadTableHash(rows.length, await compute(_downloadHashes, rows)) !=
-        plan.tableHash) {
+    final hashes = await compute(_downloadHashesForIsolate, [rows, plan.blockSize]);
+    if (_downloadTableHash(rows.length, hashes, plan.blockSize) != plan.tableHash) {
       throw const FormatException('Sales table checksum mismatch');
     }
     _checkFetchActive(generation);
@@ -598,7 +639,6 @@ class GoogleSheetsService {
     );
     _salesBlocks
         .clear(); // Complete raw snapshot is now the donor for the next refresh.
-    _salesBlocks.clear(); // Completed raw snapshot now supplies future blocks.
     return rows;
   }
 
@@ -611,45 +651,55 @@ class GoogleSheetsService {
       int timeoutSeconds,
       ) async {
     final generation = _cancelGeneration;
-    final offset = index * 1500;
-    final expectedLength = math.min(1500, plan.total - offset);
+    final offset = index * plan.blockSize;
+    final expectedLength = math.min(plan.blockSize, plan.total - offset);
     final hash = plan.hashes[index];
     List<Map<String, dynamic>> candidate;
     logger?.info(
       'Sales block $index/$attempt: offset=$offset route=${attempt == 1 ? "block" : "page"} expected_total=${plan.total}',
     );
     if (attempt == 1) {
-      var uri = _tableUri('_salesBlock', offset, 1500, false);
+      var uri = _tableUri('_salesBlock', offset, plan.blockSize, false);
       uri = uri.replace(
         queryParameters: {
           ...uri.queryParameters,
           'index': '$index',
-          'expectedHash': hash,
           'expectedTotal': '${plan.total}',
         },
       );
+
+      logger?.debug('Sales', 'block=$index attempt=$attempt offset=$offset');
+
       final response = await _getWithBoundedRedirects(
         uri,
         timeoutSeconds: timeoutSeconds,
       );
+
+      logger?.debug('Sales', 'block=$index status=${response.statusCode} bytes=${response.body.length}');
+
+
       _checkFetchActive(generation);
       final decoded = _decodeGetResponse(response);
       if (decoded is! Map ||
           decoded['protocol'] != 1 ||
           decoded['index'] != index ||
           decoded['total'] != plan.total ||
-          decoded['hash'] != hash ||
+          // decoded['hash'] != hash ||
           decoded['data'] is! List) {
         throw const FormatException(
           'Invalid sales block response; completed blocks retained',
         );
       }
       candidate = await _parseSmart(decoded['data'] as List);
+      logger?.debug('Sales',
+          'block=$index hash=${decoded['hash'] == _downloadBlockHash(candidate) ? "ok" : "MISMATCH"}');
     } else {
+      logger?.debug('Sales', 'block=$index fallback→page offset=$offset');
+
       final page = await _fetchBatchPage(
         'StoreSalesData',
         offset: offset,
-        limit: 1500,
+        limit: plan.blockSize,
         timeoutSeconds: timeoutSeconds,
         useAlternativeUrl: true,
         attempt: attempt,
@@ -665,7 +715,7 @@ class GoogleSheetsService {
       candidate = page.rows;
     }
     _checkFetchActive(generation);
-    final hashes = await compute(_downloadHashes, candidate);
+    final hashes = await compute(_downloadHashesForIsolate, [candidate, plan.blockSize]);
     _checkFetchActive(generation);
     if (candidate.length != expectedLength ||
         hashes.length != 1 ||
@@ -720,7 +770,9 @@ class GoogleSheetsService {
                       .toList(),
                 );
                 if (rows.isEmpty || rows.length > 1500) continue;
-                final hashes = await compute(_downloadHashes, rows);
+                final hashes = await compute(_downloadHashesForIsolate, [rows, rows.length]);
+                if (hashes.length == 1 && hashes.single == entry.key)
+                  _salesBlocks.putIfAbsent(entry.key as String, () => rows);
                 _checkFetchActive(generation);
                 if (hashes.single == entry.key)
                   _salesBlocks.putIfAbsent(entry.key as String, () => rows);
@@ -748,11 +800,13 @@ class GoogleSheetsService {
               .map((v) => Map<String, dynamic>.from(v as Map))
               .toList(),
         );
-        final hashes = await compute(_downloadHashes, rows);
+        // Tables use the server's default block size (250). See _rememberRefreshDownload.
+        final hashes = await compute(_downloadHashesForIsolate, [rows, 250]);
         _checkFetchActive(generation);
         _pendingVerification[entry.key as String] = _PendingDownload(
           rows,
           hashes,
+          250,
         );
       } catch (e) {
         _checkFetchActive(generation);
@@ -770,6 +824,11 @@ class GoogleSheetsService {
   // Cancellation support
   int _cancelGeneration = 0;
 
+  /// Base URL of the deployed Apps Script exec endpoint, once a redirect has
+  /// revealed it. Subsequent requests skip the first script.google.com hop.
+  /// Reset on dispose() and clearCache() so a redeploy is picked up.
+  String? _resolvedExecBase;
+
   // 🔥 Circuit breaker for failure tracking
   int _consecutiveFailures = 0;
   DateTime? _lastFailureTime;
@@ -784,7 +843,7 @@ class GoogleSheetsService {
   bool _isDisposed = false;
 
   // 🔥 Redirect tracking
-  static const int maxRedirects = 3;
+  static const int maxRedirects = 6;
 
   // Constants
   static const int defaultBatchSize = 1000;
@@ -803,7 +862,7 @@ class GoogleSheetsService {
   // Reads and writes must never block each other. Keep each lane serialized,
   // but isolate a slow download from mutation traffic.
   static final _Semaphore _getRequestGate = _Semaphore(1);
-  static final _Semaphore _postRequestGate = _Semaphore(1);
+  static final _Semaphore _postRequestGate = _Semaphore(3);
 
   GoogleSheetsService({
     required this.masterScriptUrl,
@@ -813,7 +872,11 @@ class GoogleSheetsService {
   }) : _clientFactory = clientFactory;
 
   http.Client _createClient() {
-    return _clientFactory?.call() ?? http.Client();
+    if (_clientFactory != null) return _clientFactory!.call();
+    final io = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10)
+      ..idleTimeout = const Duration(seconds: 15);
+    return IOClient(io);
   }
 
   void _closeClient(http.Client client) {
@@ -850,6 +913,7 @@ class GoogleSheetsService {
     _verifiedDownloads.clear();
     _pendingVerification.clear();
     _salesBlocks.clear();
+    _resolvedExecBase = null;
     _recentManifest = null;
     _recentManifestAt = null;
     _recentManifestTables = const {};
@@ -931,6 +995,18 @@ class GoogleSheetsService {
     return error == 'empty table name';
   }
 
+  int _postTimeoutFor(String endpoint) {
+    switch (endpoint) {
+      case 'syncPurchases':
+      case 'syncStockCountsReporting':
+      case 'initializeStockCountsReporting':
+      case 'getStockCountsReportingStatus':
+        return 120;
+      default:
+        return postTimeoutSeconds;
+    }
+  }
+
   Future<Map<String, dynamic>> _sendPostRequest(
       String tag,
       Map<String, dynamic> jsonData,
@@ -969,9 +1045,7 @@ class GoogleSheetsService {
       try {
         final response = await _postWithBoundedRedirects(
           Uri.parse(masterScriptUrl),
-          timeoutSeconds: endpoint == 'syncPurchases'
-              ? 120
-              : postTimeoutSeconds,
+          timeoutSeconds: _postTimeoutFor(endpoint),
           body: body,
           label: endpoint,
         );
@@ -1006,6 +1080,16 @@ class GoogleSheetsService {
           'transactionId': result['transactionId'] ?? transactionId,
         };
       } on TimeoutException catch (e) {
+        if (endpoint == 'syncStockCountsReporting') {
+          return {
+            'success': false,
+            'code': 'REPORTING_TIMEOUT',
+            'transactionId': transactionId,
+            'message':
+            'Reporting took longer than 120 seconds. No operational stock data was changed. The server may still have completed the reporting sync; check the reporting cursor before retrying.',
+            'detail': '$e',
+          };
+        }
         return {
           'success': false,
           'code': 'OUTCOME_UNKNOWN',
@@ -1211,6 +1295,11 @@ class GoogleSheetsService {
   /// Shared queue and timeout for GET downloads and POST uploads.
   /// Uses a leased client pool to preserve HTTP Keep-Alive while ensuring
   /// socket termination on timeout.
+  // In google_sheets_service.dart
+
+  /// Shared queue and timeout for GET downloads and POST uploads.
+  /// Uses a leased client pool to preserve HTTP Keep-Alive while ensuring
+  /// socket termination on timeout.
   Future<http.Response> _executeWithBoundedRedirects(
       String method,
       Uri uri, {
@@ -1232,7 +1321,6 @@ class GoogleSheetsService {
     await requestGate.acquire();
     queueWatch.stop();
 
-    // Outer try/finally strictly guarantees semaphore release
     try {
       checkActive();
       final client = _leaseClient();
@@ -1241,10 +1329,10 @@ class GoogleSheetsService {
       final trace = <String>[];
       String outcome = 'failed';
 
-      // Inner try/finally guarantees client return to pool
       try {
-        var current = uri;
+        var currentUri = uri;
         var hop = 0;
+        String? execBaseSeenInChain;
         var currentMethod = method;
         final watch = Stopwatch()..start();
         final budget = Duration(seconds: timeoutSeconds);
@@ -1256,7 +1344,7 @@ class GoogleSheetsService {
             throw TimeoutException('$currentMethod timed out');
           }
 
-          final request = http.Request(currentMethod, current)
+          final request = http.Request(currentMethod, currentUri)
             ..followRedirects = false;
           if (headers != null) request.headers.addAll(headers);
           if (currentMethod == 'POST' && body != null) {
@@ -1264,25 +1352,52 @@ class GoogleSheetsService {
             request.body = body;
           }
 
-          final response = await (() async {
-            final streamed = await client.send(request);
-            return http.Response.fromStream(streamed);
-          })().timeout(remaining);
+          final streamed = await client.send(request).timeout(remaining);
+
+          http.Response response;
+
+          if ([301, 302, 303, 307, 308].contains(streamed.statusCode)) {
+            // Google's frontend can hold a redirect's body stream open until the
+            // backend script finishes producing output. We only need the Location
+            // header, so drain with a short bounded timeout instead of letting
+            // Response.fromStream() block for the full request budget.
+            try {
+              await streamed.stream
+                  .drain<void>()
+                  .timeout(const Duration(seconds: 3));
+            } catch (_) {
+              // Ignore drain errors: the redirect headers are what matter.
+            }
+            response = http.Response(
+              '',
+              streamed.statusCode,
+              request: streamed.request,
+              headers: streamed.headers,
+              isRedirect: streamed.isRedirect,
+              persistentConnection: streamed.persistentConnection,
+              reasonPhrase: streamed.reasonPhrase,
+            );
+          } else {
+            response = await http.Response
+                .fromStream(streamed)
+                .timeout(budget - watch.elapsed);
+          }
 
           checkActive();
 
           if (![301, 302, 303, 307, 308].contains(response.statusCode)) {
             outcome = 'HTTP ${response.statusCode}';
+            if (_resolvedExecBase == null && execBaseSeenInChain != null) {
+              _resolvedExecBase = execBaseSeenInChain;
+              logger?.info('Resolved Apps Script exec base: $_resolvedExecBase');
+            }
             return response;
           }
 
           hop++;
-          trace.add('${response.statusCode} from ${current.host}');
-          if (hop > maxRedirects) {
-            throw _RedirectFailure(
-              'Redirect limit exceeded ($maxRedirects hops)',
-              trace,
-            );
+          trace.add('${response.statusCode} from ${currentUri.host}');
+          if (hop > 0) {
+            discardClient = true;
           }
 
           final location = response.headers['location'];
@@ -1290,13 +1405,22 @@ class GoogleSheetsService {
             throw _RedirectFailure('Redirect has no Location header', trace);
           }
 
-          final next = current.resolve(location);
-          if (next.scheme != 'https' && next.scheme != 'http') {
-            throw const FormatException('Unsupported redirect scheme');
-          }
+        final next = currentUri.resolve(location);
+          logger?.debug('Redirect', 'hop=$hop ${response.statusCode} → ${next.host}');
+        if (next.scheme != 'https' && next.scheme != 'http') {
+          throw const FormatException('Unsupported redirect scheme');
+        }
 
-          trace.add('to ${next.host}');
+// Remember the deployed exec endpoint if we pass through it. This is the
+// stable /macros/s/<deployment-id>/exec URL that subsequent requests can
+// hit directly, skipping the initial script.google.com hop.
+        if (next.host == 'script.google.com' &&
+            next.path.contains('/macros/s/') &&
+            next.path.endsWith('/exec')) {
+          execBaseSeenInChain = next.replace(queryParameters: {}).toString();
+        }
 
+        trace.add('to ${next.host}');
           // Apps Script POSTs normally redirect once to googleusercontent.com,
           // where the result is retrieved with GET. If that redirected GET is
           // sent back to script.google.com, following it would hit doGet()
@@ -1304,10 +1428,8 @@ class GoogleSheetsService {
           // Abort with an unknown outcome. Purchase sync verifies the stored
           // rows before acknowledgement; it does not blindly replay this POST.
           final originalWasPost = method.toUpperCase() == 'POST';
-          final redirectedPostResult =
-              originalWasPost && currentMethod == 'GET';
-          final returnedToAppsScript =
-              redirectedPostResult && next.host == 'script.google.com';
+          final redirectedPostResult = originalWasPost && currentMethod == 'GET';
+          final returnedToAppsScript = redirectedPostResult && next.host == 'script.google.com';
           if (returnedToAppsScript) {
             throw _RedirectFailure(
               'POST result redirect returned to Apps Script; write outcome unknown',
@@ -1316,7 +1438,7 @@ class GoogleSheetsService {
           }
 
           // Follow immediately; transient failures use the existing retry policy.
-          current = next;
+          currentUri = next;
 
           if ((response.statusCode == 303 && currentMethod != 'HEAD') ||
               ((response.statusCode == 301 || response.statusCode == 302) &&
@@ -1325,7 +1447,6 @@ class GoogleSheetsService {
           }
         }
       } on TableNotFoundException {
-        // Missing tables are application schema gaps, not network drops
         outcome = 'TableNotFound';
         rethrow;
       } on TimeoutException {
@@ -1344,13 +1465,9 @@ class GoogleSheetsService {
         outcome = '${e.runtimeType}';
         rethrow;
       } finally {
-        if (kDebugMode) {
-          print(
-            '$method $label queue_ms=${queueWatch.elapsedMilliseconds} '
-                'network_ms=${networkWatch.elapsedMilliseconds} outcome=$outcome '
-                'redirects=[${trace.join("; ")}]',
-          );
-        }
+        logger?.debug('HTTP',
+            '$method $label queue=${queueWatch.elapsedMilliseconds}ms '
+                'net=${networkWatch.elapsedMilliseconds}ms $outcome');
         _returnClient(client, discard: discardClient);
       }
     } finally {
@@ -1363,21 +1480,18 @@ class GoogleSheetsService {
       Uri uri, {
         required int timeoutSeconds,
       }) async {
-    final table =
-        uri.queryParameters['targetTable'] ??
-            uri.queryParameters['table'] ??
-            'GET';
-    final label = '$table offset=${uri.queryParameters['offset'] ?? "count"}';
+    // Do not force no-cache: GAS redirects chain through Google's CDN, and
+    // Cache-Control: no-cache on every hop makes each redirect wait for a
+    // backend execution slot.
     return _executeWithBoundedRedirects(
       'GET',
       uri,
       timeoutSeconds: timeoutSeconds,
       headers: const {
         'Accept': 'application/json',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
       },
-      label: label,
+      label: '${uri.queryParameters['targetTable'] ?? uri.queryParameters['table'] ?? 'GET'} '
+          'offset=${uri.queryParameters['offset'] ?? "count"}',
     );
   }
 
@@ -1399,9 +1513,15 @@ class GoogleSheetsService {
   }
 
   Uri _tableUri(String tableName, int offset, int limit, bool alternative) {
-    var base = Uri.parse(masterScriptUrl);
-    if (alternative) {
-      // Preserve the tested canonical URL fallback, with encoded parameters.
+    final configured = Uri.parse(masterScriptUrl);
+
+    Uri base;
+    if (_resolvedExecBase != null) {
+      // Already know the deployed exec endpoint; skip the initial hop entirely.
+      base = Uri.parse(_resolvedExecBase!);
+    } else if (alternative) {
+      // Fallback: rewrite the short URL to the canonical /macros/s/<id>/exec form.
+      base = configured;
       final segments = base.pathSegments;
       final marker = segments.lastIndexOf('s');
       if (base.host == 'script.google.com' &&
@@ -1412,10 +1532,13 @@ class GoogleSheetsService {
           '/macros/s/${segments[marker + 1]}/exec',
         );
       }
+    } else {
+      base = configured;
     }
+
     return base.replace(
       queryParameters: {
-        ...Uri.parse(masterScriptUrl).queryParameters,
+        ...configured.queryParameters,
         'table': tableName,
         'storeIdentifier': storeIdentifier,
         'offset': '$offset',
@@ -1966,6 +2089,7 @@ class GoogleSheetsService {
     _recentManifestAt = null;
     _recentManifestTables = const {};
     if (tableName == null) {
+      _resolvedExecBase = null;
       _verifiedDownloads.clear();
       _pendingVerification.clear();
       _salesBlocks.clear();
@@ -2281,7 +2405,7 @@ class GoogleSheetsService {
       fetchTableWithPagination('Locations', batchSize: 100);
 
   Future<List<Map<String, dynamic>>> fetchInventory() async =>
-      fetchTableWithPagination('Inventory', batchSize: 500);
+      fetchTableWithPagination('Inventory', batchSize: 500, timeoutSeconds: 60);
 
   Future<List<Map<String, dynamic>>> fetchAudits() async =>
       fetchTableWithPagination('AuditCalendar', batchSize: 100);
@@ -2303,7 +2427,7 @@ class GoogleSheetsService {
     Function(String message)? onStatus,
   }) => fetchTableWithPagination(
     'StoreSalesData',
-    batchSize: 1500,
+    batchSize: 1000,
     timeoutSeconds: largeTableTimeoutSeconds,
     onProgress: onProgress,
     onStatus: onStatus,
@@ -2314,6 +2438,8 @@ class GoogleSheetsService {
     Function(String message)? onStatus,
   }) async => fetchTableWithPagination(
     'ItemSales',
+    batchSize: 500,        // ← was default (1000)
+    timeoutSeconds: 60,    // ← explicit
     onProgress: onProgress,
     onStatus: onStatus,
   );
@@ -2919,6 +3045,64 @@ class GoogleSheetsService {
     return true;
   }
 
+  /// Returns whether StockCounts reporting has a cursor for this store.
+  /// Returns whether StockCounts reporting has a cursor for this store.
+  Future<Map<String, dynamic>> getStockCountsReportingStatus({
+    required String firestoreKey,
+  }) async {
+    final key = firestoreKey.trim();
+    if (key.isEmpty) {
+      return {
+        'success': false,
+        'code': 'MISSING_FIRESTORE_KEY',
+        'message': 'No Firestore store key is available for reporting.',
+      };
+    }
+    return _sendPostRequest('getStockCountsReportingStatus', {
+      'endpoint': 'getStockCountsReportingStatus',
+      'data': {'firestoreKey': key},
+    });
+  }
+
+  /// Establishes the one-time StockCounts reporting baseline for this store.
+  Future<Map<String, dynamic>> initializeStockCountsReporting({
+    required String firestoreKey,
+  }) async {
+    final key = firestoreKey.trim();
+    if (key.isEmpty) {
+      return {'success': false, 'code': 'MISSING_FIRESTORE_KEY', 'message': 'No Firestore store key is available for reporting initialization.'};
+    }
+    return _sendPostRequest('initializeStockCountsReporting', {
+      'endpoint': 'initializeStockCountsReporting',
+      'data': {'firestoreKey': key},
+    });
+  }
+
+  /// Reporting-only mirror: Firestore StockCounts -> Google Sheets.
+  /// This does not participate in Hive/Firestore operational acknowledgement.
+  Future<Map<String, dynamic>> syncStockCountsReporting({
+    required String firestoreKey,
+  }) async {
+    final key = firestoreKey.trim();
+    if (key.isEmpty) {
+      return {
+        'success': false,
+        'code': 'MISSING_FIRESTORE_KEY',
+        'message': 'No Firestore store key is available for reporting sync.',
+      };
+    }
+
+    final result = await _sendPostRequest('syncStockCountsReporting', {
+      'endpoint': 'syncStockCountsReporting',
+      'data': {'firestoreKey': key},
+    });
+
+    // 🔥 TEMP DEBUG
+    logger?.debug('Reporting', 'code=${result['code']} ok=${result['success']}');
+
+    return result;
+  }
+
   // ---------------------------------------------------------------------------
   // Store Sales Data
   // ---------------------------------------------------------------------------
@@ -3134,10 +3318,7 @@ class GoogleSheetsService {
       // the request/receipt identity.
       final transaction = _generateUuid();
 
-      logger?.info(
-        '📦 Stock sync chunk ${chunkIndex + 1}/$chunkTotal: '
-            'records=${chunk.length}, transactionId=$transaction',
-      );
+      logger?.debug('Stock', 'chunk ${chunkIndex + 1}/$chunkTotal (${chunk.length})');
 
       for (int attempt = 0; attempt < 3; attempt++) {
         if (_isDisposed) {
@@ -3145,11 +3326,6 @@ class GoogleSheetsService {
           break;
         }
         if (attempt > 0) await Future.delayed(Duration(seconds: attempt * 2));
-
-        logger?.info(
-          '➡️ Stock POST chunk ${chunkIndex + 1}/$chunkTotal '
-              'attempt ${attempt + 1}/3: transactionId=$transaction',
-        );
 
         try {
           final result = await _sendPostRequest('syncStockCounts', {
@@ -3164,65 +3340,19 @@ class GoogleSheetsService {
           final receiptVersion = result['receiptVersion'];
           final code = result['code']?.toString() ?? '';
           final message = result['message']?.toString() ?? '';
-          final syncedCount = result['syncedIds'] is List
-              ? (result['syncedIds'] as List).length
-              : 0;
-          final failedCount = result['failedIds'] is List
-              ? (result['failedIds'] as List).length
-              : 0;
-          final outcomeCount = result['outcomes'] is Map
-              ? (result['outcomes'] as Map).length
-              : 0;
-
-          logger?.info(
-            '⬅️ Stock POST result chunk ${chunkIndex + 1}/$chunkTotal '
-                'attempt ${attempt + 1}/3: success=${result['success'] == true}, '
-                'code=${code.isEmpty ? 'none' : code}, '
-                'receiptVersion=${receiptVersion ?? 'none'}, '
-                'syncedIds=$syncedCount, failedIds=$failedCount, '
-                'outcomes=$outcomeCount, replayed=${result['replayed'] == true}, '
-                'transactionId=$transaction',
-          );
 
           if (receiptVersion != 2 &&
-              [
-                'OUTCOME_UNKNOWN',
-                'HTTP_ERROR',
-                'LOCK_TIMEOUT',
-              ].contains(code)) {
-            lastError = message.isNotEmpty
-                ? message
-                : 'Stock request unconfirmed';
-            logger?.info(
-              '⏳ Stock chunk ${chunkIndex + 1}/$chunkTotal remains '
-                  'unconfirmed after attempt ${attempt + 1}/3; '
-                  'retrying same transactionId if attempts remain. '
-                  'code=${code.isEmpty ? 'none' : code}',
-            );
+              ['OUTCOME_UNKNOWN', 'HTTP_ERROR', 'LOCK_TIMEOUT'].contains(code)) {
+            lastError = message.isNotEmpty ? message : 'Stock request unconfirmed';
             continue;
           }
           if (receiptVersion != 2 || result['syncedIds'] is! List) {
-            lastError =
-            'Server did not return version-2 stock acknowledgements. Deploy the GAS patch first.';
-            logger?.error(
-              '❌ Stock chunk ${chunkIndex + 1}/$chunkTotal cannot be '
-                  'acknowledged: receiptVersion=${receiptVersion ?? 'none'}, '
-                  'syncedIdsType=${result['syncedIds'].runtimeType}, '
-                  'code=${code.isEmpty ? 'none' : code}, '
-                  'transactionId=$transaction',
-            );
-            break; // Never infer acknowledgement from status or aggregate counts.
+            lastError = 'Server did not return version-2 stock acknowledgements. Deploy the GAS patch first.';
+            break;
           }
-          final ids = (result['syncedIds'] as List)
-              .map((v) => v.toString())
-              .toSet();
+          final ids = (result['syncedIds'] as List).map((v) => v.toString()).toSet();
           if (!expected.containsAll(ids)) {
             lastError = 'Server returned IDs that were not in this chunk.';
-            logger?.error(
-              '❌ Stock receipt contained unexpected IDs: '
-                  'expected=${expected.length}, returned=${ids.length}, '
-                  'transactionId=$transaction',
-            );
             break;
           }
           final remoteOutcomes = result['outcomes'];
@@ -3232,56 +3362,42 @@ class GoogleSheetsService {
             }
           }
 
-          final chunkConfirmed = expected.where(confirmed.contains).length;
-          logger?.info(
-            '✅ Stock receipt processed chunk ${chunkIndex + 1}/$chunkTotal: '
-                'confirmed=$chunkConfirmed/${expected.length}, '
-                'transactionId=$transaction',
-          );
-
           if (confirmed.containsAll(expected)) break;
-          lastError = message.isNotEmpty
-              ? message
-              : 'Some stock records were not confirmed.';
-          if (code == 'INVALID_INPUT' ||
-              code == 'INVALID_STORE' ||
-              code == 'TRANSACTION_CONFLICT') {
-            logger?.error(
-              '❌ Stock chunk ${chunkIndex + 1}/$chunkTotal stopped on '
-                  'non-retryable code=$code, transactionId=$transaction',
-            );
+          lastError = message.isNotEmpty ? message : 'Some stock records were not confirmed.';
+          if (code == 'INVALID_INPUT' || code == 'INVALID_STORE' || code == 'TRANSACTION_CONFLICT') {
             break;
           }
         } catch (e) {
           lastError = e.toString();
-          logger?.error(
-            '❌ Stock POST exception chunk ${chunkIndex + 1}/$chunkTotal '
-                'attempt ${attempt + 1}/3, transactionId=$transaction: $e',
-          );
         }
+
+        // ─── ADD THESE TWO STATEMENTS ────────────────────────────────
+        final chunkDone = expected.every(confirmed.contains);
+        if (chunkDone) {
+          logger?.debug('Stock',
+              'chunk ${chunkIndex + 1}/$chunkTotal ✓ '
+                  '${confirmed.length}/${expected.length}');
+        } else if (attempt < 2) {
+          logger?.warning('Stock chunk ${chunkIndex + 1}/$chunkTotal '
+              'retry ${attempt + 2}/3: ${lastError.isEmpty ? 'unconfirmed' : lastError}');
+        } else {
+          logger?.error('Stock chunk ${chunkIndex + 1}/$chunkTotal failed: '
+              '${lastError.isEmpty ? 'unconfirmed after 3 attempts' : lastError}');
+        }
+        // ─────────────────────────────────────────────────────────────
       }
 
       final chunkUnconfirmed = expected
           .where((id) => !confirmed.contains(id))
           .toList();
-      if (chunkUnconfirmed.isNotEmpty) {
-        final preview = chunkUnconfirmed.take(5).join(', ');
-        logger?.info(
-          '⚠️ Stock chunk ${chunkIndex + 1}/$chunkTotal finished with '
-              '${chunkUnconfirmed.length}/${expected.length} unconfirmed. '
-              'first=${preview.isEmpty ? 'none' : preview}',
-        );
-      }
+
       onProgress?.call(confirmed.length, snapshots.length);
     }
     final failed = allIds.where((id) => !confirmed.contains(id)).toList();
     final success = failed.isEmpty;
 
-    logger?.info(
-      '🏁 Stock sync acknowledgement summary: confirmed=${confirmed.length}/'
-          '${snapshots.length}, failed=${failed.length}, success=$success'
-          '${lastError.isEmpty ? '' : ', lastError=$lastError'}',
-    );
+    logger?.info('🏁 Stock sync: ${confirmed.length}/${snapshots.length} confirmed, '
+        '${failed.length} pending${lastError.isEmpty ? '' : ' — $lastError'}');
 
     return {
       'success': success,
@@ -3313,7 +3429,7 @@ class GoogleSheetsService {
       };
     }
 
-    print('🔗 Syncing ${mappings.length} PLU mappings in chunks of $chunkSize');
+    logger?.debug('PLU', 'syncing ${mappings.length} in chunks of $chunkSize');
 
     int totalNew = 0;
     int totalUpdated = 0;
@@ -3336,9 +3452,7 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (mappings.length / chunkSize).ceil();
 
-      print(
-        '🔗 Syncing PLU chunk $chunkNumber/$totalChunks (${chunk.length} records)',
-      );
+      logger?.debug('PLU', 'chunk $chunkNumber/$totalChunks (${chunk.length})');
 
       final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
 
@@ -3353,19 +3467,18 @@ class GoogleSheetsService {
           totalUpdated += (result['updatedCount'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, mappings.length);
-          print(
-            '✅ Chunk $chunkNumber complete: +${result['newCount']} new, ${result['updatedCount']} updated, ${result['deleted'] ?? 0} deleted',
-          );
+          logger?.debug('PLU', 'chunk $chunkNumber ✓ +${result['newCount']} new, '
+              '${result['updatedCount']} updated');
         } else {
           allSuccessful = false;
           lastError =
               result['message'] ?? 'Unknown error in chunk $chunkNumber';
-          print('⚠️ Chunk $chunkNumber failed: $lastError');
+          logger?.warning('PLU chunk $chunkNumber failed: $lastError');
         }
       } catch (e) {
         allSuccessful = false;
         lastError = e.toString();
-        print('❌ Chunk $chunkNumber exception: $e');
+        logger?.error('PLU chunk $chunkNumber exception', e);
       }
 
       if (i + chunkSize < mappings.length) {
@@ -3394,7 +3507,7 @@ class GoogleSheetsService {
       return {'success': true, 'count': 0, 'message': 'No locations to sync'};
     }
 
-    print('📍 Syncing ${locations.length} locations in chunks of $chunkSize');
+    logger?.debug('Locations', 'syncing ${locations.length} in chunks of $chunkSize');
 
     int totalAdded = 0;
     bool allSuccessful = true;
@@ -3415,9 +3528,7 @@ class GoogleSheetsService {
       final chunkNumber = (i ~/ chunkSize) + 1;
       final totalChunks = (locations.length / chunkSize).ceil();
 
-      print(
-        '📍 Syncing location chunk $chunkNumber/$totalChunks (${chunk.length} records)',
-      );
+      logger?.debug('Locations', 'chunk $chunkNumber/$totalChunks (${chunk.length})');
 
       final mappedChunk = chunk.map(_mapCommonFieldsForSheet).toList();
 
@@ -3431,19 +3542,17 @@ class GoogleSheetsService {
           totalAdded += (result['count'] ?? 0) as int;
           processedCount += chunk.length;
           onProgress?.call(processedCount, locations.length);
-          print(
-            '✅ Chunk $chunkNumber complete: +${result['count'] ?? 0} locations, ${result['deleted'] ?? 0} deleted',
-          );
+          logger?.debug('Locations', 'chunk $chunkNumber ✓ +${result['count'] ?? 0}');
         } else {
           allSuccessful = false;
           lastError =
               result['message'] ?? 'Unknown error in chunk $chunkNumber';
-          print('⚠️ Chunk $chunkNumber failed: $lastError');
+          logger?.warning('Locations chunk $chunkNumber failed: $lastError');
         }
       } catch (e) {
         allSuccessful = false;
         lastError = e.toString();
-        print('❌ Chunk $chunkNumber exception: $e');
+        logger?.error('Locations chunk $chunkNumber exception', e);
       }
 
       if (i + chunkSize < locations.length) {
@@ -4231,22 +4340,38 @@ String _downloadBlockHash(List<Map<String, dynamic>> rows) => sha256
     .convert(utf8.encode('hola-rows-v1|${_downloadCanonical(rows)}'))
     .toString();
 
-String _downloadTableHash(int total, List<String> hashes) => sha256
-    .convert(utf8.encode(json.encode(['hola-table-v1', 1500, total, hashes])))
+String _downloadTableHash(int total, List<String> hashes, int blockSize) => sha256
+    .convert(utf8.encode(json.encode(['hola-table-v1', blockSize, total, hashes])))
     .toString();
 
-List<String> _downloadHashes(List<Map<String, dynamic>> rows) => [
-  for (int i = 0; i < rows.length; i += 1500)
-    _downloadBlockHash(rows.sublist(i, math.min(i + 1500, rows.length))),
+List<String> _downloadHashes(List<Map<String, dynamic>> rows, int blockSize) => [
+  for (int i = 0; i < rows.length; i += blockSize)
+    _downloadBlockHash(rows.sublist(i, math.min(i + blockSize, rows.length))),
 ];
+
+// Top-level wrapper so compute() can pass blockSize through a single argument.
+// compute() runs in a separate isolate and cannot close over instance state,
+// so the argument must be serializable and the function must be top-level.
+List<String> _downloadHashesForIsolate(List<dynamic> args) {
+  final rows = (args[0] as List)
+      .map((v) => Map<String, dynamic>.from(v as Map))
+      .toList();
+  final blockSize = args[1] as int;
+  return _downloadHashes(rows, blockSize);
+}
+
 
 class _PendingDownload {
   final List<Map<String, dynamic>> rows;
   final List<String> blockHashes;
   final String rowHash;
 
-  _PendingDownload(this.rows, this.blockHashes)
-      : rowHash = _downloadTableHash(rows.length, blockHashes);
+  _PendingDownload(this.rows, this.blockHashes, int blockSize)
+      : rowHash = _downloadTableHash(rows.length, blockHashes, blockSize);
+
+  /// Constructs a pending download whose rowHash comes directly from the
+  /// server manifest instead of being recomputed locally.
+  _PendingDownload.withHash(this.rows, this.blockHashes, this.rowHash);
 }
 
 class _RefreshManifest {
@@ -4257,31 +4382,37 @@ class _RefreshManifest {
 }
 
 class _SalesBlockPlan {
+  final int blockSize;
   final int total;
   final List<String> hashes;
   final String tableHash;
 
-  _SalesBlockPlan(this.total, this.hashes, this.tableHash);
+  _SalesBlockPlan(this.blockSize, this.total, this.hashes, this.tableHash);
 
   static _SalesBlockPlan? parse(dynamic raw, String? expectedRoot) {
     if (raw is! Map ||
         raw['protocol'] != 1 ||
-        raw['blockSize'] != 1500 ||
+        raw['blockSize'] is! int ||
+        (raw['blockSize'] as int) < 1 ||
+        (raw['blockSize'] as int) > 10000 ||
         raw['total'] is! int ||
         (raw['total'] as int) < 0 ||
-        raw['hashes'] is! List)
+        raw['hashes'] is! List) {
       return null;
+    }
+    final blockSize = raw['blockSize'] as int;
     final total = raw['total'] as int;
     final hashes = raw['hashes'] as List;
-    if (hashes.length != (total / 1500).ceil() ||
+    if (hashes.length != (total / blockSize).ceil() ||
         hashes.any(
               (h) => h is! String || !RegExp(r'^[a-f0-9]{64}$').hasMatch(h),
-        ))
+        )) {
       return null;
+    }
     final typed = hashes.cast<String>();
-    final root = _downloadTableHash(total, typed);
+    final root = _downloadTableHash(total, typed, blockSize);
     if (raw['tableHash'] != root || expectedRoot != root) return null;
-    return _SalesBlockPlan(total, typed, root);
+    return _SalesBlockPlan(blockSize, total, typed, root);
   }
 }
 

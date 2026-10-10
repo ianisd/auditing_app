@@ -103,6 +103,311 @@ class SyncService with ChangeNotifier {
     offlineStorage.checkRefreshStore(_postStoreId!, _postStoreGeneration!);
   }
 
+  /// Explicit one-time historical StockCounts upsert.
+  ///
+  /// This is intentionally NOT called by normal refresh/sync. After this seed
+  /// is verified, Firestore is authoritative and Google Sheets becomes a
+  /// reporting/export target only.
+  Future<Map<String, dynamic>> migrateStockCountsToFirestore({
+    bool force = false,
+    Function(int processed, int? total)? onProgress,
+  }) async {
+    _beginAuthenticatedOperation();
+    _checkPostSession();
+
+    final stockFirestore = firestore;
+    final storeId = offlineStorage.firestoreKey;
+    if (stockFirestore == null || storeId == null || storeId.isEmpty) {
+      throw StateError(
+        'Firestore StockCounts migration is unavailable for the active store.',
+      );
+    }
+
+    final alreadyComplete = await stockFirestore.isStockCountsMigrationComplete(
+      storeId,
+    );
+    _checkPostSession();
+    if (alreadyComplete && !force) {
+      return {
+        'success': true,
+        'alreadyComplete': true,
+        'source': 0,
+        'preservedIds': 0,
+        'generatedMissingIds': 0,
+        'remappedDuplicateIds': 0,
+        'alreadyInFirestore': 0,
+        'writtenThisRun': 0,
+        'migratedRows': 0,
+        'upserted': 0,
+        'verified': 0,
+        'message':
+            'StockCounts migration is already marked complete for this store.',
+      };
+    }
+
+    logger?.info(
+      'StockCounts migration: reading historical Google Sheet for store=$storeId',
+    );
+    final legacyRows = await googleSheets.fetchStockCounts(
+      onProgress: onProgress,
+    );
+    _checkPostSession();
+
+    if (legacyRows.isEmpty) {
+      throw StateError(
+        'StockCounts migration aborted: Google Sheet returned no rows.',
+      );
+    }
+
+    // LOSSLESS ID NORMALISATION.
+    // Existing unique IDs are preserved. Missing IDs and duplicate occurrences
+    // receive deterministic migration IDs so retries address the same documents.
+    final migrationRows = <Map<String, dynamic>>[];
+    final usedIds = <String>{};
+    var preservedIds = 0;
+    var generatedMissingIds = 0;
+    var remappedDuplicateIds = 0;
+
+    String generatedId({
+      required int sourceRow,
+      required String reason,
+      String? legacyId,
+    }) {
+      final legacyPart = (legacyId == null || legacyId.isEmpty)
+          ? ''
+          : '_${legacyId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_')}';
+      var candidate =
+          'migrated_stock_${reason}_${sourceRow.toString().padLeft(8, '0')}$legacyPart';
+      var suffix = 1;
+      while (usedIds.contains(candidate)) {
+        candidate =
+            'migrated_stock_${reason}_${sourceRow.toString().padLeft(8, '0')}${legacyPart}_$suffix';
+        suffix++;
+      }
+      return candidate;
+    }
+
+    for (var index = 0; index < legacyRows.length; index++) {
+      final row = Map<String, dynamic>.from(legacyRows[index]);
+      final sourceRow = index + 2;
+      final legacyId =
+          (row['id'] ??
+                  row['stock_id'] ??
+                  row['stockTake_ID'] ??
+                  row['stockId'])
+              ?.toString()
+              .trim();
+
+      late final String firestoreId;
+      if (legacyId == null || legacyId.isEmpty) {
+        firestoreId = generatedId(sourceRow: sourceRow, reason: 'missing');
+        generatedMissingIds++;
+        row['migration_id_reason'] = 'missing_legacy_id';
+      } else if (usedIds.contains(legacyId)) {
+        firestoreId = generatedId(
+          sourceRow: sourceRow,
+          reason: 'duplicate',
+          legacyId: legacyId,
+        );
+        remappedDuplicateIds++;
+        row['legacy_stock_id'] = legacyId;
+        row['migration_id_reason'] = 'duplicate_legacy_id';
+      } else {
+        firestoreId = legacyId;
+        preservedIds++;
+      }
+
+      usedIds.add(firestoreId);
+      row['id'] = firestoreId;
+      row['stock_id'] = firestoreId;
+      row['migration_source_row'] = sourceRow;
+      row['deleted'] = false;
+      migrationRows.add(row);
+    }
+
+    if (migrationRows.length != legacyRows.length ||
+        usedIds.length != legacyRows.length) {
+      throw StateError(
+        'StockCounts migration aborted before upload: '
+        'source=${legacyRows.length}, migrationRows=${migrationRows.length}, '
+        'uniqueIds=${usedIds.length}. Every source row must have one unique ID.',
+      );
+    }
+
+    logger?.info(
+      'StockCounts lossless migration prepared: source=${legacyRows.length} '
+      'preservedIds=$preservedIds generatedMissingIds=$generatedMissingIds '
+      'remappedDuplicateIds=$remappedDuplicateIds '
+      'migratedRows=${migrationRows.length}',
+    );
+
+    // A bulk migration must not keep a live full-collection listener active.
+    // Otherwise every 200 writes can trigger another 6k/8k/12k-document Hive
+    // refresh. Cancel it for the migration and restore it in finally.
+    _stockListenerPausedForMigration = true;
+    _queueStockListener(null);
+    await _listenerWork;
+
+    // StockCounts follows the same historical seed pattern as Purchases.
+    // The only StockCounts-specific difference is that its live full-collection
+    // listener stays paused while the seed runs, otherwise each committed batch
+    // can trigger another multi-thousand-row Hive refresh.
+    try {
+      _checkPostSession();
+
+      // IDs were normalised above. Stable document IDs make retries idempotent:
+      // an interrupted retry overwrites the same Firestore documents.
+      const batchSize = 250;
+      var writtenThisRun = 0;
+
+      for (var offset = 0; offset < migrationRows.length; offset += batchSize) {
+        _checkPostSession();
+        final end = offset + batchSize < migrationRows.length
+            ? offset + batchSize
+            : migrationRows.length;
+
+        final confirmed = await stockFirestore.saveStockCountsBatch(
+          storeId,
+          migrationRows.sublist(offset, end),
+        );
+        writtenThisRun += confirmed.length;
+
+        onProgress?.call(writtenThisRun, migrationRows.length);
+      }
+
+      _checkPostSession();
+
+      // Same pattern as Purchases: verify the complete seed before making
+      // Firestore authoritative for this store.
+      final seeded = await stockFirestore.getStockCounts(storeId);
+      _checkPostSession();
+
+      final seededIds = seeded
+          .map((r) => (r['id'] ?? r['stock_id'])?.toString().trim())
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toSet();
+
+      final missingIds = usedIds
+          .where((id) => !seededIds.contains(id))
+          .toList();
+
+      if (missingIds.isNotEmpty) {
+        throw StateError(
+          'StockCounts migration verification failed: '
+          'expected=${migrationRows.length}, '
+          'foundExpected=${migrationRows.length - missingIds.length}, '
+          'missingInFirestore=${missingIds.length}.',
+        );
+      }
+
+      await stockFirestore.markStockCountsMigrationComplete(storeId);
+      _checkPostSession();
+
+      final result = {
+        'success': true,
+        'alreadyComplete': false,
+        'source': legacyRows.length,
+        'preservedIds': preservedIds,
+        'generatedMissingIds': generatedMissingIds,
+        'remappedDuplicateIds': remappedDuplicateIds,
+        'alreadyInFirestore': 0,
+        'writtenThisRun': writtenThisRun,
+        'migratedRows': migrationRows.length,
+        'upserted': migrationRows.length,
+        'verified': migrationRows.length,
+        'message':
+            'StockCounts lossless migration verified. Firestore is authoritative for this store.',
+      };
+
+      logger?.info(
+        'StockCounts lossless migration complete: source=${legacyRows.length} '
+        'preservedIds=$preservedIds generatedMissingIds=$generatedMissingIds '
+        'remappedDuplicateIds=$remappedDuplicateIds '
+        'writtenThisRun=$writtenThisRun verified=${migrationRows.length}',
+      );
+      return result;
+    } finally {
+      // Always restore normal StockCounts real-time behaviour when the explicit
+      // migration attempt ends, matching the rest of the service lifecycle.
+      _stockListenerPausedForMigration = false;
+      if (!_isDisposed && !_authStreamFailed) {
+        _queueStockListener(stockFirestore.currentUserId);
+      }
+    }
+  }
+
+  Future<void> _ensureInventoryMigratedToFirestore() async {
+    _checkPostSession();
+    final storeId = offlineStorage.firestoreKey;
+    final inventoryFirestore = firestore;
+    if (storeId == null || inventoryFirestore == null) {
+      throw StateError(
+        'Firestore Inventory migration is unavailable for the active store.',
+      );
+    }
+    if (await inventoryFirestore.isInventoryMigrationComplete(storeId)) return;
+
+    logger?.info(
+      'Inventory migration: seeding Firestore from Google Sheets for store=$storeId',
+    );
+    final legacyRows = await googleSheets.fetchInventory();
+    _checkPostSession();
+
+    // Match the existing Hive Inventory semantics: Barcode is the stable key,
+    // blank barcodes are invalid, and later duplicate rows replace earlier ones.
+    final byBarcode = <String, Map<String, dynamic>>{};
+    var invalid = 0;
+    var duplicates = 0;
+    for (final raw in legacyRows) {
+      final row = Map<String, dynamic>.from(raw);
+      final barcode = row['Barcode']?.toString().trim() ?? '';
+      if (barcode.isEmpty) {
+        invalid++;
+        continue;
+      }
+      if (byBarcode.containsKey(barcode)) duplicates++;
+      row['Barcode'] = barcode;
+      byBarcode[barcode] = row;
+    }
+    final rows = byBarcode.values.toList(growable: false);
+
+    const batchSize = 400;
+    for (var offset = 0; offset < rows.length; offset += batchSize) {
+      final end = (offset + batchSize < rows.length)
+          ? offset + batchSize
+          : rows.length;
+      await inventoryFirestore.seedInventoryBatch(
+        storeId,
+        rows.sublist(offset, end),
+      );
+      _checkPostSession();
+    }
+
+    final remote = await inventoryFirestore.getInventory(storeId);
+    _checkPostSession();
+    final remoteIds = remote
+        .map((e) => e['Barcode']?.toString().trim() ?? '')
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    final missing = byBarcode.keys
+        .where((id) => !remoteIds.contains(id))
+        .toList();
+    if (missing.isNotEmpty) {
+      throw StateError(
+        'Inventory migration verification failed: expected=${rows.length}, '
+        'missing=${missing.length}, firstMissing=${missing.take(5).join(', ')}',
+      );
+    }
+
+    await inventoryFirestore.markInventoryMigrationComplete(storeId);
+    _checkPostSession();
+    logger?.info(
+      'Inventory migration complete: source=${legacyRows.length} '
+      'unique=${rows.length} invalid=$invalid duplicateExcess=$duplicates',
+    );
+  }
+
   Future<void> _ensureInvoicesMigratedToFirestore() async {
     _checkPostSession();
     final invoiceFirestore = firestore;
@@ -112,6 +417,7 @@ class SyncService with ChangeNotifier {
         'Firestore InvoiceDetails migration is unavailable for the active store.',
       );
     }
+
     if (await invoiceFirestore.isInvoicesMigrationComplete(storeId)) return;
     _checkPostSession();
 
@@ -135,8 +441,11 @@ class SyncService with ChangeNotifier {
       byId[id] = row;
     }
     final validRows = byId.values.toList();
+
     logger?.info(
-      'InvoiceDetails migration: source=${legacyRows.length} validUnique=${validRows.length} invalid=$invalid duplicateExcess=$duplicates',
+      'InvoiceDetails migration: source=${legacyRows.length} '
+      'validUnique=${validRows.length} invalid=$invalid '
+      'duplicateExcess=$duplicates',
     );
 
     const batchSize = 250;
@@ -150,10 +459,8 @@ class SyncService with ChangeNotifier {
         validRows.sublist(offset, end),
       );
     }
-    _checkPostSession();
 
-    // Verify the seed before making Firestore authoritative. This is a one-time
-    // migration read; routine refreshes remain incremental.
+    _checkPostSession();
     final seeded = await invoiceFirestore.getInvoices(storeId);
     _checkPostSession();
     final seededIds = seeded
@@ -161,17 +468,20 @@ class SyncService with ChangeNotifier {
         .whereType<String>()
         .where((id) => id.isNotEmpty)
         .toSet();
-    if (seededIds.length != validRows.length ||
-        !seededIds.containsAll(byId.keys)) {
+    final missing = byId.keys.where((id) => !seededIds.contains(id)).toList();
+    if (missing.isNotEmpty) {
       throw StateError(
-        'InvoiceDetails migration verification failed: expected ${validRows.length} unique IDs, found ${seededIds.length}.',
+        'InvoiceDetails migration verification failed: expected '
+        '${validRows.length} legacy IDs; missing ${missing.length} in Firestore.',
       );
     }
 
     await invoiceFirestore.markInvoicesMigrationComplete(storeId);
     _checkPostSession();
     logger?.info(
-      'InvoiceDetails migration: Firestore is authoritative for store=$storeId; imported=${validRows.length}; skippedInvalid=$invalid; duplicateExcess=$duplicates',
+      'InvoiceDetails migration: Firestore is authoritative for store=$storeId; '
+      'imported=${validRows.length}; skippedInvalid=$invalid; '
+      'duplicateExcess=$duplicates',
     );
   }
 
@@ -194,24 +504,66 @@ class SyncService with ChangeNotifier {
     final legacyRows = await googleSheets.fetchPurchases();
     _checkPostSession();
 
-    // Keep comfortably below Firestore's 500-write batch limit.
+    // Validate and de-duplicate the legacy Sheet before seeding Firestore.
+    // A malformed historical row must not abort the whole store migration.
+    // Last row wins for duplicate canonical IDs, matching the existing
+    // recovery behaviour used elsewhere in the app.
+    final byId = <String, Map<String, dynamic>>{};
+    var invalid = 0;
+    var duplicates = 0;
+    for (final raw in legacyRows) {
+      final row = Map<String, dynamic>.from(raw);
+      final id = row['purchases_ID']?.toString().trim();
+      if (id == null || id.isEmpty) {
+        invalid++;
+        continue;
+      }
+      if (byId.containsKey(id)) duplicates++;
+      byId[id] = row;
+    }
+    final validRows = byId.values.toList();
+
+    logger?.info(
+      'Purchases migration: source=${legacyRows.length} validUnique=${validRows.length} invalid=$invalid duplicateExcess=$duplicates',
+    );
+
+    // Each Purchase batch uses two Firestore writes per row (document write +
+    // change-log cleanup), so 250 rows is the maximum safe batch size.
     const batchSize = 250;
-    for (var offset = 0; offset < legacyRows.length; offset += batchSize) {
+    for (var offset = 0; offset < validRows.length; offset += batchSize) {
       _checkPostSession();
-      final end = offset + batchSize < legacyRows.length
+      final end = offset + batchSize < validRows.length
           ? offset + batchSize
-          : legacyRows.length;
+          : validRows.length;
       await purchaseFirestore.savePurchasesBatch(
         storeId,
-        legacyRows.sublist(offset, end),
+        validRows.sublist(offset, end),
       );
     }
 
     _checkPostSession();
+
+    // Verify the seed before making Firestore authoritative. This also makes a
+    // retry safe after a partially completed migration: stable purchases_ID
+    // document IDs overwrite the same documents instead of creating duplicates.
+    final seeded = await purchaseFirestore.getPurchases(storeId);
+    _checkPostSession();
+    final seededIds = seeded
+        .map((r) => r['purchases_ID']?.toString().trim())
+        .whereType<String>()
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (seededIds.length != validRows.length ||
+        !seededIds.containsAll(byId.keys)) {
+      throw StateError(
+        'Purchases migration verification failed: expected ${validRows.length} unique IDs, found ${seededIds.length}.',
+      );
+    }
+
     await purchaseFirestore.markPurchasesMigrationComplete(storeId);
     _checkPostSession();
     logger?.info(
-      'Purchases migration: Firestore is authoritative for store=$storeId; imported=${legacyRows.length}',
+      'Purchases migration: Firestore is authoritative for store=$storeId; imported=${validRows.length}; skippedInvalid=$invalid; duplicateExcess=$duplicates',
     );
   }
 
@@ -222,13 +574,16 @@ class SyncService with ChangeNotifier {
     Function(int processed, int total)? onProgress,
   }) async {
     _checkPostSession();
-    if (table == 'InvoiceDetails') {
-      await _ensureInvoicesMigratedToFirestore();
-      _checkPostSession();
-    } else if (table == 'Purchases') {
-      await _ensurePurchasesMigratedToFirestore();
-      _checkPostSession();
+    if (records.isEmpty) {
+      return {
+        'success': true,
+        'processed': 0,
+        'duplicates': <Map<String, dynamic>>[],
+        'message': 'No items to sync',
+      };
     }
+    // Migration runs during master refresh only.
+    // Operational sync must never block on a historical Sheet read.
     final problems = offlineStorage.getPostRecoveryIssues();
     if (problems.isNotEmpty) throw StateError(problems.join('\n'));
     final size = deleting
@@ -254,107 +609,49 @@ class SyncService with ChangeNotifier {
         deleting: deleting,
       );
       Map<String, dynamic> result;
-      if (table == 'Purchases') {
-        final purchaseFirestore = firestore;
+      if (table == 'Purchases' || table == 'InvoiceDetails') {
+        final operationalFirestore = firestore;
         final storeId = offlineStorage.firestoreKey;
-        if (purchaseFirestore == null || storeId == null || storeId.isEmpty) {
+        if (operationalFirestore == null ||
+            storeId == null ||
+            storeId.isEmpty) {
           throw StateError(
-            'Firestore Purchases sync is unavailable for the active store.',
+            'Firestore $table sync is unavailable for the active store.',
           );
         }
 
-        // Purchases are authoritative in Firestore, but Google Sheets remains
-        // a reporting mirror while variance/pivot reporting still runs there.
-        // Do not acknowledge the local snapshot until BOTH destinations confirm.
-        if (deleting) {
-          await purchaseFirestore.deletePurchasesBatch(
-            storeId,
-            snapshot.rows.keys.toList(),
-          );
-          _checkPostSession();
-
-          final sheetConfirmed = await googleSheets.deletePurchases(
-            snapshot.rows.keys.toList(),
-          );
-          result = {
-            'success': sheetConfirmed,
-            'message': sheetConfirmed
-                ? 'Purchase deletes confirmed in Firestore and Sheets.'
-                : 'Firestore delete succeeded but the Purchases reporting mirror is unconfirmed.',
-          };
+        if (table == 'Purchases') {
+          if (deleting) {
+            await operationalFirestore.deletePurchasesBatch(
+              storeId,
+              snapshot.rows.keys.toList(),
+              activityRows: snapshot.rows.values
+                  .map((row) => Map<String, dynamic>.from(row))
+                  .toList(),
+            );
+          } else {
+            final outgoing = batch
+                .map((r) => Map<String, dynamic>.from(r))
+                .toList();
+            await operationalFirestore.savePurchasesBatch(storeId, outgoing);
+          }
         } else {
-          // FirestoreService copies/sanitizes these rows and never mutates the
-          // immutable acknowledgement snapshot held by OfflineStorage.
-          final firestoreOutgoing = batch
-              .map((r) => Map<String, dynamic>.from(r))
-              .toList();
-          await purchaseFirestore.savePurchasesBatch(
-            storeId,
-            firestoreOutgoing,
-          );
-          _checkPostSession();
-
-          // Reuse the existing idempotent Purchases Sheet upsert. It keys rows
-          // by purchases_ID, so retrying after Firestore already succeeded is safe.
-          final sheetsOutgoing = batch
-              .map((r) => Map<String, dynamic>.from(r))
-              .toList();
-          result = await googleSheets.syncPurchasesWithResult(sheetsOutgoing);
-          if (result['success'] != true) {
-            result = {
-              ...result,
-              'message':
-                  'Firestore write succeeded but the Purchases reporting mirror is unconfirmed: ${result['message'] ?? 'unknown Sheets error'}',
-            };
+          if (deleting) {
+            await operationalFirestore.deleteInvoicesBatch(
+              storeId,
+              snapshot.rows.keys.toList(),
+              activityRows: snapshot.rows.values
+                  .map((row) => Map<String, dynamic>.from(row))
+                  .toList(),
+            );
+          } else {
+            final outgoing = batch
+                .map((r) => Map<String, dynamic>.from(r))
+                .toList();
+            await operationalFirestore.saveInvoicesBatch(storeId, outgoing);
           }
         }
-      } else if (table == 'InvoiceDetails') {
-        final invoiceFirestore = firestore;
-        final storeId = offlineStorage.firestoreKey;
-        if (invoiceFirestore == null || storeId == null || storeId.isEmpty) {
-          throw StateError(
-            'Firestore InvoiceDetails sync is unavailable for the active store.',
-          );
-        }
-        if (deleting) {
-          final ids = snapshot.rows.keys.toList();
-          await invoiceFirestore.deleteInvoicesBatch(storeId, ids);
-          _checkPostSession();
-          // Keep InvoiceDetails in Sheets as the reporting/export mirror.
-          // deleteInvoice is idempotent and may also remove linked Sheet
-          // Purchases; the dedicated Purchase delete remains safe to retry.
-          var sheetsConfirmed = true;
-          for (final id in ids) {
-            if (!await googleSheets.deleteInvoice(id)) sheetsConfirmed = false;
-          }
-          result = {
-            'success': sheetsConfirmed,
-            'message': sheetsConfirmed
-                ? 'Invoice deletes confirmed in Firestore and Sheets.'
-                : 'Firestore delete succeeded but the InvoiceDetails reporting mirror is unconfirmed.',
-          };
-        } else {
-          final firestoreOutgoing = batch
-              .map((r) => Map<String, dynamic>.from(r))
-              .toList();
-          await invoiceFirestore.saveInvoicesBatch(storeId, firestoreOutgoing);
-          _checkPostSession();
-          final sheetsOutgoing = batch
-              .map((r) => Map<String, dynamic>.from(r))
-              .toList();
-          result = await googleSheets.syncInvoiceDetailsWithResult(
-            sheetsOutgoing,
-          );
-          if (result['success'] != true) {
-            result = {
-              ...result,
-              'message':
-                  'Firestore write succeeded but the InvoiceDetails reporting mirror is unconfirmed: ${result['message'] ?? 'unknown Sheets error'}',
-            };
-          }
-        }
-      } else if (deleting) {
-        throw StateError('Unsupported delete table: $table');
+        result = {'success': true};
       } else {
         throw StateError('Unsupported versioned sync table: $table');
       }
@@ -413,6 +710,8 @@ class SyncService with ChangeNotifier {
   int _listenerEpoch = 0;
   Future<void> _listenerWork = Future<void>.value();
   Future<void> _remoteWork = Future<void>.value();
+  bool _stockListenerPausedForMigration = false;
+  bool _inventoryBulkWriteActive = false;
 
   List<Map<String, dynamic>>? _cachedSuppliers;
   DateTime? _suppliersCacheTime;
@@ -430,10 +729,15 @@ class SyncService with ChangeNotifier {
 
   // ==================== GETTERS ====================
   bool get isDisposed => _isDisposed;
+
   bool get isSyncing => _isSyncing && !_isDisposed;
+
   String get lastSyncTime => _lastSyncTime;
+
   int get lastSyncCount => _lastSyncCount;
+
   bool get inventoryLoaded => _inventoryLoaded;
+
   String? get lastError => _lastError;
 
   // ==================== CONSTRUCTOR & INIT ====================
@@ -496,74 +800,26 @@ class SyncService with ChangeNotifier {
   }
 
   void _queueStockListener(String? userId) {
-    // Invalidate queued callbacks immediately, before asynchronous cancellation.
-    final epoch = ++_listenerEpoch;
-    _listenerWork = _listenerWork
-        .then((_) async {
-          final previous = _stockSubscription;
-          // A failed cancellation must not create a second native listener. Keep
-          // the reference so a later auth event/disposal can attempt cleanup again.
-          await previous?.cancel();
-          _stockSubscription = null;
-          if (_isDisposed ||
-              epoch != _listenerEpoch ||
-              userId == null ||
-              firestore!.currentUserId != userId ||
-              !offlineStorage.isReady)
-            return;
-          final storeId = offlineStorage.firestoreKey;
-          if (storeId == null) return;
-          final generation = offlineStorage.refreshStoreGeneration;
-          bool valid() =>
-              !_isDisposed &&
-              !_authStreamFailed &&
-              epoch == _listenerEpoch &&
-              firestore!.currentUserId == userId &&
-              offlineStorage.isReady &&
-              offlineStorage.firestoreKey == storeId &&
-              offlineStorage.refreshStoreGeneration == generation;
-          _stockSubscription = firestore!
-              .watchStockCounts(storeId)
-              .listen(
-                (remoteCounts) {
-                  _remoteWork = _remoteWork
-                      .then((_) async {
-                        if (!valid() || _isSyncing) return;
-                        await offlineStorage.saveRemoteStockCounts(
-                          remoteCounts,
-                          isCurrent: valid,
-                        );
-                      })
-                      .catchError((Object error, StackTrace stack) {
-                        if (valid())
-                          _reportListenerError(
-                            'Remote stock storage failed',
-                            error,
-                            stack,
-                          );
-                      });
-                },
-                onError: (Object error, StackTrace stack) {
-                  if (valid()) {
-                    _reportListenerError(
-                      'Firestore stock listener failed',
-                      error,
-                      stack,
-                    );
-                    // Do not retry permission/index errors in a loop. The next token
-                    // event or store activation can establish a new listener.
-                    _queueStockListener(null);
-                  }
-                },
-              );
-        })
-        .catchError((Object error, StackTrace stack) {
-          _reportListenerError(
-            'Firestore listener lifecycle failed',
-            error,
-            stack,
-          );
-        });
+    if (_inventoryBulkWriteActive) {
+      return;
+    }
+    // StockCounts normal operation is Hive-first with direct Firestore writes.
+    // Do NOT attach a full-collection Firestore listener here: established
+    // stores can contain 10k+ documents and the initial native snapshot can
+    // monopolise the Windows Firestore client and delay unrelated writes.
+    //
+    // Fresh-device/recovery bootstrap must be an explicit one-shot operation,
+    // not an always-on listener.
+    ++_listenerEpoch;
+    final previous = _stockSubscription;
+    _stockSubscription = null;
+    if (previous != null) {
+      unawaited(
+        previous.cancel().catchError((Object error, StackTrace stack) {
+          logger?.error('Stock listener cancellation failed', '$error\n$stack');
+        }),
+      );
+    }
   }
 
   void _initConnectivity() {
@@ -721,6 +977,14 @@ class SyncService with ChangeNotifier {
     _checkPostSession();
     final rows = await offlineStorage.getPendingInvoiceDetails();
     _checkPostSession();
+    if (rows.isEmpty) {
+      return {
+        'success': true,
+        'processed': 0,
+        'duplicates': <Map<String, dynamic>>[],
+        'message': 'No pending invoices.',
+      };
+    }
     return _syncVersionedRows('InvoiceDetails', rows, onProgress: onProgress);
   }
 
@@ -730,6 +994,14 @@ class SyncService with ChangeNotifier {
     _checkPostSession();
     final rows = await offlineStorage.getPendingPurchases();
     _checkPostSession();
+    if (rows.isEmpty) {
+      return {
+        'success': true,
+        'processed': 0,
+        'duplicates': <Map<String, dynamic>>[],
+        'message': 'No pending purchases.',
+      };
+    }
     return _syncVersionedRows('Purchases', rows, onProgress: onProgress);
   }
 
@@ -810,50 +1082,86 @@ class SyncService with ChangeNotifier {
     return (result['processed'] as num? ?? 0).toInt();
   }
 
-  Future<void> _syncNewProducts() async {
-    try {
-      _checkPostSession();
-      final newProducts = await offlineStorage.getPendingNewProducts();
-      if (newProducts.isEmpty) return;
+  Future<int> _syncNewProducts() async {
+    _checkPostSession();
+    final products = await offlineStorage.getPendingNewProducts();
+    if (products.isEmpty) return 0;
+    _checkPostSession();
 
-      logger?.info(
-        '🆕 Uploading ${newProducts.length} new products in batches...',
-      );
-
-      const batchSize = 10;
-      int totalProcessed = 0;
-
-      for (int i = 0; i < newProducts.length; i += batchSize) {
-        final end = (i + batchSize < newProducts.length)
-            ? i + batchSize
-            : newProducts.length;
-        final batch = newProducts.sublist(i, end);
-
+    var confirmed = 0;
+    for (final product in products) {
+      final barcode = product['Barcode']?.toString().trim() ?? '';
+      if (barcode.isEmpty) continue;
+      final snapshot = offlineStorage.capturePostSnapshot('Inventory', [
+        product,
+      ]);
+      try {
+        await firestore!
+            .saveInventoryItem(offlineStorage.firestoreKey!, product)
+            .timeout(const Duration(seconds: 20));
+        _checkPostSession();
+        final marked = await offlineStorage.acknowledgePostSnapshot(snapshot, [
+          barcode,
+        ]);
+        confirmed += marked.length;
+      } on TimeoutException {
         logger?.info(
-          '🆕 Processing new products batch ${i ~/ batchSize + 1} (${batch.length} items)',
+          'Inventory Firestore acknowledgement timed out for $barcode; '
+          'Hive remains pending.',
         );
-
-        _checkPostSession();
-        final success = await googleSheets.syncNewProducts(batch);
-        _checkPostSession();
-
-        if (success) {
-          final barcodes = batch.map((e) => e['Barcode'].toString()).toList();
-          await offlineStorage.markNewProductsAsSynced(barcodes);
-          totalProcessed += batch.length;
-          logger?.info(
-            '✅ Batch complete: ${barcodes.length} products marked as synced',
-          );
-        } else {
-          logger?.error('❌ Failed to sync new products batch');
-        }
-
-        await Future.delayed(const Duration(milliseconds: 500));
+      } catch (e) {
+        logger?.error(
+          'Inventory Firestore write failed for $barcode; Hive remains pending.',
+          e,
+        );
       }
+    }
+    logger?.info(
+      'Inventory Firestore recovery complete: confirmed=$confirmed '
+      'pending=${products.length - confirmed}',
+    );
+    return confirmed;
+  }
 
-      logger?.info('✅ All $totalProcessed new products synced successfully');
+  Future<void> syncInventoryProductInBackground(String barcode) async {
+    try {
+      _beginAuthenticatedOperation();
+      final normalized = barcode.trim();
+      if (normalized.isEmpty) return;
+
+      final pending = await offlineStorage.getPendingNewProducts();
+      Map<String, dynamic>? product;
+      for (final row in pending) {
+        if (row['Barcode']?.toString().trim() == normalized) {
+          product = row;
+          break;
+        }
+      }
+      if (product == null) return;
+
+      _checkPostSession();
+
+      final snapshot = offlineStorage.capturePostSnapshot('Inventory', [
+        product,
+      ]);
+      await firestore!
+          .saveInventoryItem(offlineStorage.firestoreKey!, product)
+          .timeout(const Duration(seconds: 20));
+      _checkPostSession();
+      await offlineStorage.acknowledgePostSnapshot(snapshot, [normalized]);
+      logger?.info(
+        'Background Firestore Inventory write completed: barcode=$normalized',
+      );
+    } on TimeoutException {
+      logger?.info(
+        'Background Firestore Inventory acknowledgement timed out; '
+        'product remains pending.',
+      );
     } catch (e) {
-      logger?.error('Error syncing new products', e.toString());
+      logger?.error(
+        'Background Firestore Inventory write failed; product remains pending.',
+        e,
+      );
     }
   }
 
@@ -890,6 +1198,345 @@ class SyncService with ChangeNotifier {
     }).toList();
   }
 
+  /// Push one locally-pending StockCount to Firestore without blocking the UI.
+  ///
+  /// The Hive row is snapshotted before the network await. A successful
+  /// Firestore acknowledgement only marks that exact snapshot as synced; if the
+  /// same ID was edited/deleted in the meantime, the newer local version stays
+  /// pending.
+  /// Pushes the current pending invoice header and its pending purchase lines
+  /// to Firestore without blocking the GRV UI.
+  ///
+  /// For normal GRVs (<=248 pending lines), the cloud write is one atomic
+  /// Firestore batch. Hive acknowledgement remains version-safe per document.
+  Future<void> syncInvoiceWithPurchasesInBackground(String invoiceId) async {
+    if (_isDisposed || invoiceId.isEmpty) return;
+
+    try {
+      _beginAuthenticatedOperation();
+      final operationalFirestore = firestore;
+      final storeId = offlineStorage.firestoreKey;
+      if (operationalFirestore == null || storeId == null || storeId.isEmpty) {
+        return;
+      }
+
+      final pendingInvoices = await offlineStorage.getPendingInvoiceDetails();
+      final invoiceRows = pendingInvoices
+          .where((row) => row['invoiceDetailsID']?.toString() == invoiceId)
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+      if (invoiceRows.isEmpty) return;
+
+      final pendingPurchases = await offlineStorage.getPendingPurchases();
+      final purchaseRows = pendingPurchases
+          .where(
+            (row) =>
+                row['invoiceDetailsID']?.toString() == invoiceId &&
+                row['syncStatus'] != 'deleted',
+          )
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+      final deletedPurchases = await offlineStorage.getDeletedPurchases();
+      final deletedPurchaseRows = deletedPurchases
+          .where((row) => row['invoiceDetailsID']?.toString() == invoiceId)
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+      // Only enter Purchases migration/network work when this GRV actually has
+      // a purchase upsert or tombstone to process.
+
+      final remainingPurchases = await offlineStorage.getPurchasesByInvoiceId(
+        invoiceId,
+      );
+
+      late final PostWriteSnapshot invoiceSnapshot;
+      late final PostWriteSnapshot? purchaseSnapshot;
+      late final PostWriteSnapshot? deletedPurchaseSnapshot;
+      try {
+        invoiceSnapshot = offlineStorage.capturePostSnapshot(
+          'InvoiceDetails',
+          invoiceRows,
+        );
+        purchaseSnapshot = purchaseRows.isEmpty
+            ? null
+            : offlineStorage.capturePostSnapshot('Purchases', purchaseRows);
+        deletedPurchaseSnapshot = deletedPurchaseRows.isEmpty
+            ? null
+            : offlineStorage.capturePostSnapshot(
+                'Purchases',
+                deletedPurchaseRows,
+                deleting: true,
+              );
+      } on StateError catch (e) {
+        logger?.info(
+          'Background Firestore GRV sync skipped for $invoiceId: '
+          'local Hive state changed since read. ($e)',
+        );
+        return;
+      }
+
+      final submittedInvoice = Map<String, dynamic>.from(
+        invoiceSnapshot.rows.values.single,
+      );
+      final submittedPurchases = purchaseSnapshot == null
+          ? <Map<String, dynamic>>[]
+          : purchaseSnapshot.rows.values
+                .map((row) => Map<String, dynamic>.from(row))
+                .toList();
+      final submittedDeletedPurchases = deletedPurchaseSnapshot == null
+          ? <Map<String, dynamic>>[]
+          : deletedPurchaseSnapshot.rows.values
+                .map((row) => Map<String, dynamic>.from(row))
+                .toList();
+
+      if (submittedPurchases.length + submittedDeletedPurchases.length <= 248) {
+        await operationalFirestore
+            .saveInvoiceWithPurchasesBatch(
+              storeId,
+              submittedInvoice,
+              submittedPurchases,
+              deletedPurchases: submittedDeletedPurchases,
+              remainingPurchaseCount: remainingPurchases.length,
+            )
+            .timeout(const Duration(seconds: 20));
+
+        await offlineStorage.acknowledgePostSnapshot(
+          invoiceSnapshot,
+          invoiceSnapshot.rows.keys,
+        );
+        if (purchaseSnapshot != null) {
+          await offlineStorage.acknowledgePostSnapshot(
+            purchaseSnapshot,
+            purchaseSnapshot.rows.keys,
+          );
+        }
+        if (deletedPurchaseSnapshot != null) {
+          await offlineStorage.acknowledgePostSnapshot(
+            deletedPurchaseSnapshot,
+            deletedPurchaseSnapshot.rows.keys,
+          );
+        }
+      } else {
+        // Oversized GRVs cannot fit one Firestore batch. Keep stable IDs and
+        // exact snapshots, but upload safely in bounded idempotent batches.
+        await operationalFirestore
+            .saveInvoicesBatch(storeId, <Map<String, dynamic>>[
+              submittedInvoice,
+            ])
+            .timeout(const Duration(seconds: 20));
+        await offlineStorage.acknowledgePostSnapshot(
+          invoiceSnapshot,
+          invoiceSnapshot.rows.keys,
+        );
+
+        for (
+          var offset = 0;
+          offset < submittedPurchases.length;
+          offset += 250
+        ) {
+          final end = offset + 250 < submittedPurchases.length
+              ? offset + 250
+              : submittedPurchases.length;
+          final chunk = submittedPurchases.sublist(offset, end);
+          await operationalFirestore
+              .savePurchasesBatch(storeId, chunk)
+              .timeout(const Duration(seconds: 20));
+          final ids = chunk
+              .map((row) => row['purchases_ID']?.toString())
+              .whereType<String>();
+          await offlineStorage.acknowledgePostSnapshot(purchaseSnapshot!, ids);
+        }
+
+        for (
+          var offset = 0;
+          offset < submittedDeletedPurchases.length;
+          offset += 250
+        ) {
+          final end = offset + 250 < submittedDeletedPurchases.length
+              ? offset + 250
+              : submittedDeletedPurchases.length;
+          final chunk = submittedDeletedPurchases.sublist(offset, end);
+          final ids = chunk
+              .map((row) => row['purchases_ID']?.toString())
+              .whereType<String>()
+              .toList();
+          await operationalFirestore
+              .deletePurchasesBatch(storeId, ids, activityRows: chunk)
+              .timeout(const Duration(seconds: 20));
+          await offlineStorage.acknowledgePostSnapshot(
+            deletedPurchaseSnapshot!,
+            ids,
+          );
+        }
+      }
+
+      logger?.info(
+        'Background Firestore GRV write completed: invoice=$invoiceId '
+        'upserts=${submittedPurchases.length} '
+        'deletes=${submittedDeletedPurchases.length} '
+        'remaining=${remainingPurchases.length}',
+      );
+    } on TimeoutException catch (e, st) {
+      logger?.error(
+        'Background Firestore GRV write not acknowledged; kept pending',
+        '$e\n$st',
+      );
+    } catch (e, st) {
+      logger?.error(
+        'Background Firestore GRV write failed; kept pending',
+        '$e\n$st',
+      );
+    }
+  }
+
+  /// Recovers a locally tombstoned invoice and its purchase tombstones in the
+  /// same parent-then-children order used by manual Sync.
+  Future<void> syncInvoiceDeletionInBackground(String invoiceId) async {
+    if (_isDisposed || invoiceId.isEmpty) return;
+    try {
+      _beginAuthenticatedOperation();
+      final deletedInvoices = await offlineStorage.getDeletedInvoices();
+      final invoiceRows = deletedInvoices
+          .where((row) => row['invoiceDetailsID']?.toString() == invoiceId)
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+      if (invoiceRows.isEmpty) return;
+
+      final invoiceResult = await _syncVersionedRows(
+        'InvoiceDetails',
+        invoiceRows,
+        deleting: true,
+      );
+      if (invoiceResult['success'] != true) return;
+
+      final deletedPurchases = await offlineStorage.getDeletedPurchases();
+      final purchaseRows = deletedPurchases
+          .where((row) => row['invoiceDetailsID']?.toString() == invoiceId)
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+      if (purchaseRows.isNotEmpty) {
+        // The parent GRV deletion has already written the human-readable
+        // grv_delete activity event. Delete/acknowledge its child Purchase
+        // tombstones without creating duplicate line_delete audit events.
+        final operationalFirestore = firestore;
+        final storeId = offlineStorage.firestoreKey;
+        if (operationalFirestore == null ||
+            storeId == null ||
+            storeId.isEmpty) {
+          throw StateError(
+            'Firestore Purchases sync is unavailable for the active store.',
+          );
+        }
+
+        final purchaseSnapshot = offlineStorage.capturePostSnapshot(
+          'Purchases',
+          purchaseRows,
+          deleting: true,
+        );
+        final submittedRows = purchaseSnapshot.rows.values.toList();
+
+        for (var offset = 0; offset < submittedRows.length; offset += 250) {
+          final end = offset + 250 < submittedRows.length
+              ? offset + 250
+              : submittedRows.length;
+          final chunk = submittedRows.sublist(offset, end);
+          final ids = chunk
+              .map((row) => row['purchases_ID']?.toString())
+              .whereType<String>()
+              .where((id) => id.isNotEmpty)
+              .toList();
+
+          if (ids.isEmpty) continue;
+
+          // Intentionally omit activityRows: the parent grv_delete event is the
+          // audit event for this cascade.
+          await operationalFirestore
+              .deletePurchasesBatch(storeId, ids)
+              .timeout(const Duration(seconds: 20));
+
+          await offlineStorage.acknowledgePostSnapshot(purchaseSnapshot, ids);
+        }
+      }
+    } catch (e, st) {
+      logger?.error(
+        'Background Firestore GRV deletion failed; tombstones kept pending',
+        '$e\n$st',
+      );
+    }
+  }
+
+  Future<void> syncStockCountInBackground(String id) async {
+    if (_isDisposed || id.isEmpty) return;
+
+    try {
+      final firestoreAtStart = firestore;
+      final firestoreKeyAtStart = offlineStorage.firestoreKey;
+      if (firestoreAtStart == null ||
+          firestoreKeyAtStart == null ||
+          firestoreKeyAtStart.isEmpty) {
+        return;
+      }
+
+      Map<String, dynamic>? pendingRow;
+      for (final row in offlineStorage.pendingCounts) {
+        final rowId = (row['id'] ?? row['stock_id'] ?? row['stockId'])
+            ?.toString();
+        if (rowId == id) {
+          pendingRow = Map<String, dynamic>.from(row);
+          break;
+        }
+      }
+      if (pendingRow == null) return;
+
+      // capturePostSnapshot verifies that pendingRow is still byte-for-byte the
+      // version currently stored in Hive before any network work begins.
+      final snapshot = offlineStorage.capturePostSnapshot(
+        'StockCounts',
+        <Map<String, dynamic>>[pendingRow],
+      );
+      final submitted = snapshot.rows[id];
+      if (submitted == null) return;
+      final firestoreData = _mapForFirestore(<Map<String, dynamic>>[
+        Map<String, dynamic>.from(submitted),
+      ]).single;
+
+      await firestoreAtStart
+          .saveStockCount(firestoreKeyAtStart, firestoreData)
+          .timeout(const Duration(seconds: 20));
+
+      final marked = await offlineStorage.acknowledgePostSnapshot(
+        snapshot,
+        <String>[id],
+      );
+      if (marked.contains(id)) {
+        logger?.info(
+          'Background Firestore stock write acknowledged exact Hive snapshot: $id',
+        );
+      } else {
+        logger?.info(
+          'Background Firestore stock write completed for $id, but Hive now has '
+          'a newer version; newer work remains pending.',
+        );
+      }
+    } on TimeoutException catch (e, st) {
+      // Future.timeout does not cancel the native Firestore operation. Never
+      // acknowledge Hive on an ambiguous timeout; recovery may safely retry the
+      // stable document ID later.
+      logger?.error(
+        'Background Firestore stock write not acknowledged; kept pending',
+        '$e\n$st',
+      );
+    } catch (e, st) {
+      // Store switches, newer local edits, auth/network failures and other
+      // acknowledgement races all leave Hive pending rather than falsely synced.
+      logger?.error(
+        'Background Firestore stock write not acknowledged; kept pending',
+        '$e\n$st',
+      );
+    }
+  }
+
   Future<Map<String, dynamic>> _syncStockSnapshotV2({
     Function(int processed, int total)? onProgress,
   }) async {
@@ -902,6 +1549,7 @@ class SyncService with ChangeNotifier {
         )
         .map((c) => Map<String, dynamic>.from(c))
         .toList();
+
     if (_isDisposed || storeAtStart == null) {
       return {
         'success': false,
@@ -909,6 +1557,7 @@ class SyncService with ChangeNotifier {
         'message': 'No active stock sync session.',
       };
     }
+
     if (pending.isEmpty) {
       return {
         'success': true,
@@ -920,6 +1569,22 @@ class SyncService with ChangeNotifier {
         'message': 'No pending stock counts.',
       };
     }
+
+    final stockFirestore = firestore;
+    if (stockFirestore == null ||
+        firestoreAtStart == null ||
+        firestoreAtStart.isEmpty) {
+      return {
+        'success': false,
+        'syncedIds': <String>[],
+        'failedIds': pending
+            .map((c) => (c['id'] ?? c['stock_id'] ?? c['stockId']).toString())
+            .toList(),
+        'message':
+            'Firestore StockCounts sync is unavailable for the active store.',
+      };
+    }
+
     final localSnapshot = offlineStorage.capturePostSnapshot(
       'StockCounts',
       pending,
@@ -927,84 +1592,108 @@ class SyncService with ChangeNotifier {
     pending = localSnapshot.rows.values
         .map((r) => Map<String, dynamic>.from(r))
         .toList();
-    // Both destinations are required when Firestore is configured. A Firestore
-    // failure must not be hidden by a later successful Sheets response.
-    if (firestore != null) {
-      try {
-        if (firestoreAtStart == null || firestoreAtStart.isEmpty) {
-          throw StateError('Firestore store key is missing.');
+
+    final confirmed = <String>[];
+    try {
+      // Firestore is the operational source of truth for StockCounts.
+      // Google Sheets is deliberately NOT part of acknowledgement. Sheets will
+      // be refreshed separately from Firestore for reporting/export.
+      for (int offset = 0; offset < pending.length; offset += 100) {
+        _checkPostSession();
+        if (_isDisposed || offlineStorage.currentStoreId != storeAtStart) {
+          throw StateError('Store changed during stock upload.');
         }
-        // Chunk here because the existing Firestore service creates one write batch.
-        for (int offset = 0; offset < pending.length; offset += 200) {
-          _checkPostSession();
-          if (_isDisposed || offlineStorage.currentStoreId != storeAtStart) {
-            throw StateError('Store changed during stock upload.');
-          }
-          final end = offset + 200 < pending.length
-              ? offset + 200
-              : pending.length;
-          await firestore!.saveStockCountsBatch(
-            firestoreAtStart,
-            _mapForFirestore(pending.sublist(offset, end)),
-          );
-        }
-      } catch (e) {
-        logger?.error(
-          'Stock Firestore upload failed; records remain pending.',
-          e,
+
+        final end = offset + 100 < pending.length
+            ? offset + 100
+            : pending.length;
+        final batch = pending.sublist(offset, end);
+        final batchConfirmed = await stockFirestore.saveStockCountsBatch(
+          firestoreAtStart,
+          _mapForFirestore(batch),
         );
-        return {
-          'success': false,
-          'syncedIds': <String>[],
-          'failedIds': pending
-              .map((c) => (c['id'] ?? c['stock_id']).toString())
-              .toList(),
-          'message': 'Firestore upload failed: $e',
-        };
+        confirmed.addAll(batchConfirmed);
+        if (stockFirestore.isStockWriteCircuitOpen) {
+          logger?.info(
+            'Firestore stock recovery stopped because the write circuit is open. '
+            'Remaining records stay pending.',
+          );
+          break;
+        }
+
+        onProgress?.call(end, pending.length);
       }
-    }
-    if (_isDisposed || offlineStorage.currentStoreId != storeAtStart) {
+    } catch (e) {
+      logger?.error(
+        'Stock Firestore upload failed; unacknowledged records remain pending.',
+        e,
+      );
+
+      // Some earlier chunks may already be safely in Firestore. Acknowledge
+      // only those exact submitted versions; the remainder stays pending.
+      if (!_isDisposed && offlineStorage.currentStoreId == storeAtStart) {
+        _checkPostSession();
+        await offlineStorage.acknowledgePostSnapshot(localSnapshot, confirmed);
+      }
+
+      final confirmedSet = confirmed.toSet();
+      final failed = pending
+          .map((c) => (c['id'] ?? c['stock_id'] ?? c['stockId']).toString())
+          .where((id) => !confirmedSet.contains(id))
+          .toList();
+
       return {
         'success': false,
-        'syncedIds': <String>[],
-        'message': 'Store changed during stock upload.',
-      };
-    }
-    _checkPostSession();
-    final result = await googleSheets.syncStockCountsWithChunking(
-      pending,
-      onProgress: onProgress,
-    );
-    final confirmed = (result['syncedIds'] as List<dynamic>? ?? const [])
-        .map((id) => id.toString())
-        .toList();
-    if (_isDisposed || offlineStorage.currentStoreId != storeAtStart) {
-      return {
-        ...result,
-        'success': false,
-        'syncedIds': <String>[],
+        'syncedIds': confirmed,
+        'serverConfirmedIds': confirmed,
+        'failedIds': failed,
+        'count': confirmed.length,
+        'updated': confirmed.length,
+        'deleted': 0,
         'message':
-            'Upload completed for previous store; local acknowledgement deferred.',
+            '${confirmed.length}/${pending.length} stock counts confirmed by Firestore. ${failed.length} remain pending.',
       };
     }
+
+    if (_isDisposed || offlineStorage.currentStoreId != storeAtStart) {
+      return {
+        'success': false,
+        'syncedIds': <String>[],
+        'serverConfirmedIds': confirmed,
+        'failedIds': <String>[],
+        'message':
+            'Firestore upload completed for previous store; local acknowledgement deferred.',
+      };
+    }
+
     _checkPostSession();
     final marked = await offlineStorage.acknowledgePostSnapshot(
       localSnapshot,
       confirmed,
     );
+
+    final markedSet = marked.toSet();
     final needsRetry = pending
         .map((c) => (c['id'] ?? c['stock_id'] ?? c['stockId']).toString())
-        .where((id) => !marked.contains(id))
+        .where((id) => !markedSet.contains(id))
         .toList();
+
+    final deletedConfirmed = pending.where((c) {
+      final id = (c['id'] ?? c['stock_id'] ?? c['stockId']).toString();
+      return c['syncStatus'] == 'deleted' && markedSet.contains(id);
+    }).length;
+
     return {
-      ...result,
-      'success': result['success'] == true && needsRetry.isEmpty,
+      'success': needsRetry.isEmpty,
       'syncedIds': marked,
       'serverConfirmedIds': confirmed,
       'failedIds': needsRetry,
+      'count': marked.length,
+      'updated': marked.length - deletedConfirmed,
+      'deleted': deletedConfirmed,
       'message': needsRetry.isEmpty
-          ? result['message']
-          : '${marked.length}/${pending.length} local records confirmed. Newer edits or unconfirmed records remain pending.',
+          ? '${marked.length} stock counts confirmed by Firestore.'
+          : '${marked.length}/${pending.length} local stock records confirmed. Newer edits or unconfirmed records remain pending.',
     };
   }
 
@@ -1021,6 +1710,7 @@ class SyncService with ChangeNotifier {
     }
     _safeNotify();
   }
+
   // ============================================================================
   // 🔥 ENHANCED SYNC WITH CHUNKING AND PROGRESS
   // ============================================================================
@@ -1090,7 +1780,37 @@ class SyncService with ChangeNotifier {
       final recoveryIssues = offlineStorage.getPostRecoveryIssues();
       if (recoveryIssues.isNotEmpty)
         throw StateError(recoveryIssues.join("\n"));
-      // 1. Sync locations
+      // 1. PRIORITY: Recover pending StockCounts first.
+      // Normal count saves already write Hive + Firestore directly; this is
+      // only the retry/recovery path and must not wait behind GAS/Sheets work.
+      _checkPostSession();
+      onStatus?.call('Syncing stock counts...');
+      try {
+        final stockResult = await _syncStockSnapshotV2(onProgress: onProgress);
+        final stockIds =
+            (stockResult['syncedIds'] as List<dynamic>? ?? const []);
+        stockCountsSynced = stockIds.length;
+        totalSynced += stockCountsSynced;
+        totalDeleted += (stockResult['deleted'] as num? ?? 0).toInt();
+
+        if (stockResult['success'] != true) {
+          allSuccessful = false;
+          _recordError(
+            stockResult['message']?.toString() ?? 'Stock sync incomplete.',
+          );
+          logger?.error(
+            '❌ Stock count sync incomplete: ${stockResult['message'] ?? 'Unknown error'}',
+          );
+        } else {
+          logger?.info('📊 Synced $stockCountsSynced stock counts');
+        }
+      } catch (e) {
+        allSuccessful = false;
+        _recordError('Stock count sync failed: $e');
+        logger?.error('❌ Stock count sync failed; records remain pending.', e);
+      }
+
+      // 2. Sync locations
       final locations = await offlineStorage.getPendingLocations();
       _checkPostSession();
       if (locations.isNotEmpty) {
@@ -1119,60 +1839,51 @@ class SyncService with ChangeNotifier {
         }
       }
 
-      // Invoice and purchase acknowledgements are tied to submitted versions.
+      // Invoice and purchase sync is queue-driven. Never enter a remote sync
+      // path (or Purchases migration check) when Hive has no work for it.
       _checkPostSession();
-      onStatus?.call('Syncing invoices...');
-      final invoiceResult = await _syncInvoiceHeaders(onProgress: onProgress);
-      invoicesSynced = (invoiceResult['processed'] as num? ?? 0).toInt();
-      totalSynced += invoicesSynced;
-      allDuplicates.addAll(
-        List<Map<String, dynamic>>.from(
-          invoiceResult['duplicates'] ?? const [],
-        ),
-      );
-      if (invoiceResult['success'] != true) {
-        allSuccessful = false;
-        _recordError(invoiceResult['message'].toString());
+      final pendingInvoices = await offlineStorage.getPendingInvoiceDetails();
+      final pendingPurchases = await offlineStorage.getPendingPurchases();
+      _checkPostSession();
+
+      var invoicesReadyForPurchases = true;
+      if (pendingInvoices.isNotEmpty) {
+        onStatus?.call('Syncing ${pendingInvoices.length} invoices...');
+        final invoiceResult = await _syncVersionedRows(
+          'InvoiceDetails',
+          pendingInvoices,
+          onProgress: onProgress,
+        );
+        invoicesSynced = (invoiceResult['processed'] as num? ?? 0).toInt();
+        totalSynced += invoicesSynced;
+        allDuplicates.addAll(
+          List<Map<String, dynamic>>.from(
+            invoiceResult['duplicates'] ?? const [],
+          ),
+        );
+        if (invoiceResult['success'] != true) {
+          invoicesReadyForPurchases = false;
+          allSuccessful = false;
+          _recordError(invoiceResult['message'].toString());
+        }
       }
-      // Do not submit dependent purchases if invoice writes were unconfirmed.
-      if (invoiceResult['success'] == true) {
-        onStatus?.call('Syncing purchases...');
-        final purchaseResult = await _syncPurchases(onProgress: onProgress);
+
+      // Purchases depend on invoice acknowledgement only when invoices were
+      // actually pending in this run. Zero queued purchases means zero remote
+      // Purchases work and no migration/network call.
+      if (pendingPurchases.isNotEmpty && invoicesReadyForPurchases) {
+        onStatus?.call('Syncing ${pendingPurchases.length} purchases...');
+        final purchaseResult = await _syncVersionedRows(
+          'Purchases',
+          pendingPurchases,
+          onProgress: onProgress,
+        );
         purchasesSynced = (purchaseResult['processed'] as num? ?? 0).toInt();
         totalSynced += purchasesSynced;
         if (purchaseResult['success'] != true) {
           allSuccessful = false;
           _recordError(purchaseResult['message'].toString());
         }
-      }
-
-      // 4. PRIORITY: Sync stock counts before non-critical auxiliary work.
-      // A PLU mapping or cleanup failure must not starve the core count upload.
-      _checkPostSession();
-      onStatus?.call('Syncing stock counts...');
-      try {
-        final stockResult = await _syncStockSnapshotV2(onProgress: onProgress);
-        final stockIds =
-            (stockResult['syncedIds'] as List<dynamic>? ?? const []);
-        stockCountsSynced = stockIds.length;
-        totalSynced += stockCountsSynced;
-        totalDeleted += (stockResult['deleted'] as num? ?? 0).toInt();
-
-        if (stockResult['success'] != true) {
-          allSuccessful = false;
-          _recordError(
-            stockResult['message']?.toString() ?? 'Stock sync incomplete.',
-          );
-          logger?.error(
-            '❌ Stock count sync incomplete: ${stockResult['message'] ?? 'Unknown error'}',
-          );
-        } else {
-          logger?.info('📊 Synced $stockCountsSynced stock counts');
-        }
-      } catch (e) {
-        allSuccessful = false;
-        _recordError('Stock count sync failed: $e');
-        logger?.error('❌ Stock count sync failed; records remain pending.', e);
       }
 
       // 5. Sync PLU mappings with chunking
@@ -1233,8 +1944,13 @@ class SyncService with ChangeNotifier {
       // 7. Sync new products
       final newProducts = await offlineStorage.getPendingNewProducts();
       if (newProducts.isNotEmpty) {
-        productsSynced = newProducts.length;
-        await _syncNewProducts();
+        productsSynced = await _syncNewProducts();
+        if (productsSynced < newProducts.length) {
+          allSuccessful = false;
+          _recordError(
+            '${newProducts.length - productsSynced} Inventory product(s) remain pending.',
+          );
+        }
       }
 
       _checkPostSession();
@@ -1286,7 +2002,9 @@ class SyncService with ChangeNotifier {
           : '';
       final detailMsg = parts.isNotEmpty
           ? 'Synced: ${parts.join(", ")}$dupMsg$healthMsg'
-          : 'No items to sync';
+          : allSuccessful
+          ? 'All up to date'
+          : 'Sync incomplete — some changes remain pending';
 
       final result = SyncResult(
         hasInternet: true,
@@ -1570,11 +2288,82 @@ class SyncService with ChangeNotifier {
   }
 
   final Map<String, String> _refreshTableStates = {};
+
   Map<String, String> get refreshTableStates =>
       Map.unmodifiable(_refreshTableStates);
 
   final Map<String, String> _refreshWarnings = {};
+
   Map<String, String> get refreshWarnings => Map.unmodifiable(_refreshWarnings);
+
+  Future<int> _upsertRefreshedInventoryToFirestore(
+    List<Map<String, dynamic>> rows,
+  ) async {
+    final inventoryFirestore = firestore;
+    final storeId = offlineStorage.firestoreKey;
+    if (inventoryFirestore == null || storeId == null) {
+      throw StateError(
+        'Firestore Inventory upsert is unavailable for the active store.',
+      );
+    }
+
+    final byBarcode = <String, Map<String, dynamic>>{};
+    var skippedWithoutBarcode = 0;
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw);
+      final barcode = row['Barcode']?.toString().trim() ?? '';
+      if (barcode.isEmpty) {
+        skippedWithoutBarcode++;
+        continue;
+      }
+      row['Barcode'] = barcode;
+      byBarcode[barcode] = row;
+    }
+
+    final canonicalRows = byBarcode.values.toList(growable: false);
+    const batchSize = 200; // reduced from 400 to lower native write pressure
+    var upserted = 0;
+    final totalBatches = (canonicalRows.length / batchSize).ceil();
+    for (var offset = 0; offset < canonicalRows.length; offset += batchSize) {
+      _checkPostSession();
+      final batchIndex = (offset ~/ batchSize) + 1;
+      final end = (offset + batchSize < canonicalRows.length)
+          ? offset + batchSize
+          : canonicalRows.length;
+
+      logger?.info(
+        'Inventory Firestore upsert: batch $batchIndex/$totalBatches '
+        '(${end - offset} rows, offset $offset)',
+      );
+
+      final confirmed = await inventoryFirestore.seedInventoryBatch(
+        storeId,
+        canonicalRows.sublist(offset, end),
+      );
+      _checkPostSession();
+      upserted += confirmed.length;
+
+      // Yield to the event loop between batches so the Dart VM heartbeat
+      // survives bulk writes on Windows.
+      if (offset + batchSize < canonicalRows.length) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+    }
+
+    // A successful full refresh/upsert establishes the same migration invariant:
+    // every valid Sheet Inventory barcode has been seeded into Firestore.
+    if (upserted == canonicalRows.length) {
+      await inventoryFirestore.markInventoryMigrationComplete(storeId);
+      _checkPostSession();
+    }
+
+    logger?.info(
+      'Master Refresh Inventory Firestore upsert complete: '
+      'source=${rows.length} unique=${canonicalRows.length} '
+      'upserted=$upserted skippedWithoutBarcode=$skippedWithoutBarcode',
+    );
+    return upserted;
+  }
 
   Future<SyncResult> refreshMasterData({
     bool forceFullDownload = false,
@@ -1637,30 +2426,10 @@ class SyncService with ChangeNotifier {
       }
     }
 
-    Future<void> save(
-      String table,
-      List<Map<String, dynamic>>? rows, {
-      bool unchanged = false,
-    }) async {
+    Future<void> save(String table, List<Map<String, dynamic>>? rows) async {
       if (rows == null) return; // Never substitute a failed download with [].
       try {
         checkActive();
-
-        // The caller captures verified-reuse state immediately after the fetch
-        // that produced these rows. Do not re-read mutable GoogleSheetsService
-        // refresh state here: bundled/concurrent fetches may advance that state
-        // before local persistence runs.
-        if (useVersionChecks && unchanged) {
-          saved[table] = 0;
-          _refreshTableStates[table] = 'Unchanged; local data retained';
-          if (table == 'Inventory') _inventoryLoaded = true;
-          logger?.info(
-            'Refresh $table unchanged: local data retained; 0 remote changes applied',
-          );
-          _safeNotify();
-          return;
-        }
-
         _refreshTableStates[table] = 'Saving ${rows.length} rows';
         final count = await offlineStorage.applyDownloadedTable(
           table,
@@ -1688,164 +2457,6 @@ class SyncService with ChangeNotifier {
       }
     }
 
-    Future<void> refreshFirestoreOperationalData() async {
-      final firestoreWatch = Stopwatch()..start();
-      logger?.info(
-        'Firestore operational refresh started in parallel with Google Sheets refresh',
-      );
-      try {
-        // 3. InvoiceDetails is authoritative in Firestore. Normal refreshes
-        // consume only the delta; an empty local cache or explicit recovery uses
-        // the complete Firestore collection.
-        final invoiceFirestore = firestore;
-        final invoiceStoreId = offlineStorage.firestoreKey;
-        if (invoiceFirestore == null ||
-            invoiceStoreId == null ||
-            invoiceStoreId.isEmpty) {
-          reportFailure(
-            'InvoiceDetails',
-            StateError(
-              'Firestore InvoiceDetails download is unavailable for the active store.',
-            ),
-          );
-        } else {
-          try {
-            await _ensureInvoicesMigratedToFirestore();
-            checkActive();
-            final localInvoices =
-                offlineStorage.getStoredTableRows()['InvoiceDetails'] ??
-                const <Map<String, dynamic>>[];
-            final needsBootstrap = forceFullDownload || localInvoices.isEmpty;
-            if (needsBootstrap) {
-              final rows = await invoiceFirestore.getInvoices(invoiceStoreId);
-              checkActive();
-              await save('InvoiceDetails', rows);
-            } else {
-              final cursors = await offlineStorage.getInvoiceRefreshCursors(
-                storeId,
-              );
-              checkActive();
-              _refreshTableStates['InvoiceDetails'] =
-                  'Checking Firestore changes';
-              _safeNotify();
-              final delta = await invoiceFirestore.getInvoiceChanges(
-                invoiceStoreId,
-                upsertsSince: cursors['upserts'],
-                deletesSince: cursors['deletes'],
-              );
-              checkActive();
-              final applied = await offlineStorage.applyInvoiceChanges(
-                delta.upserts,
-                delta.deletedIds,
-                storeId: storeId,
-                generation: generation,
-              );
-              checkActive();
-              await offlineStorage.saveInvoiceRefreshCursors(
-                storeId,
-                upserts: delta.upsertCursor,
-                deletes: delta.deleteCursor,
-              );
-              checkActive();
-              saved['InvoiceDetails'] = applied;
-              _refreshTableStates['InvoiceDetails'] =
-                  'Applied $applied changes (${delta.upserts.length} upserts, ${delta.deletedIds.length} deletes)';
-              logger?.info(
-                'Refresh InvoiceDetails incremental: $applied local changes applied from ${delta.upserts.length} upserts and ${delta.deletedIds.length} deletes',
-              );
-              _safeNotify();
-            }
-          } catch (e) {
-            reportFailure('InvoiceDetails', e);
-          }
-        }
-
-        // 4. Purchases are authoritative in Firestore.
-        // Routine refreshes are incremental so an 8k+ Purchase collection does not
-        // consume thousands of reads every time the user refreshes.
-        final purchaseFirestore = firestore;
-        final purchaseStoreId = offlineStorage.firestoreKey;
-        if (purchaseFirestore == null ||
-            purchaseStoreId == null ||
-            purchaseStoreId.isEmpty) {
-          reportFailure(
-            'Purchases',
-            StateError(
-              'Firestore Purchases download is unavailable for the active store.',
-            ),
-          );
-        } else {
-          try {
-            await _ensurePurchasesMigratedToFirestore();
-            checkActive();
-
-            if (forceFullDownload) {
-              // Explicit recovery/bootstrap only. This intentionally reads the
-              // complete collection and should not be the normal refresh path.
-              final rows = await purchaseFirestore.getPurchases(
-                purchaseStoreId,
-              );
-              checkActive();
-              await save('Purchases', rows);
-            } else {
-              final cursors = await offlineStorage.getPurchaseRefreshCursors(
-                storeId,
-              );
-              checkActive();
-              // Use the persisted Firestore cursors exactly. The queries use a
-              // strict `>` comparison, so subtracting an overlap here would replay
-              // already-consumed batch timestamps on every refresh.
-              final upsertsSince = cursors['upserts'];
-              final deletesSince = cursors['deletes'];
-
-              _refreshTableStates['Purchases'] = 'Checking Firestore changes';
-              _safeNotify();
-              final delta = await purchaseFirestore.getPurchaseChanges(
-                purchaseStoreId,
-                upsertsSince: upsertsSince,
-                deletesSince: deletesSince,
-              );
-              checkActive();
-
-              final applied = await offlineStorage.applyPurchaseChanges(
-                delta.upserts,
-                delta.deletedIds,
-                storeId: storeId,
-                generation: generation,
-              );
-              checkActive();
-
-              // Advance cursors only after Hive successfully applied the delta.
-              await offlineStorage.savePurchaseRefreshCursors(
-                storeId,
-                upserts: delta.upsertCursor,
-                deletes: delta.deleteCursor,
-              );
-              checkActive();
-
-              saved['Purchases'] = applied;
-              _refreshTableStates['Purchases'] =
-                  'Applied $applied changes '
-                  '(${delta.upserts.length} upserts, ${delta.deletedIds.length} deletes)';
-              logger?.info(
-                'Refresh Purchases incremental: $applied local changes applied '
-                'from ${delta.upserts.length} upserts and ${delta.deletedIds.length} deletes',
-              );
-              _safeNotify();
-            }
-          } catch (e) {
-            reportFailure('Purchases', e);
-          }
-        }
-      } finally {
-        logger?.info(
-          'Firestore operational refresh finished: elapsed_ms=${firestoreWatch.elapsedMilliseconds}',
-        );
-      }
-    }
-
-    Future<void>? firestoreRefreshFuture;
-
     _isSyncing = true;
     _lastError = null;
     _lastSyncCount = 0;
@@ -1864,7 +2475,6 @@ class SyncService with ChangeNotifier {
         );
       }
       checkActive();
-
       if (useVersionChecks) {
         final snapshot = await offlineStorage.getDownloadSnapshot(storeId);
         checkActive();
@@ -1873,12 +2483,6 @@ class SyncService with ChangeNotifier {
           legacyRows: offlineStorage.getStoredTableRows(),
         );
         checkActive();
-
-        // Firestore-backed InvoiceDetails/Purchases are independent of the GAS
-        // version manifest. Start them after the local snapshot has been read so
-        // Hive is not being mutated while restoreDownloadSnapshot inspects it.
-        firestoreRefreshFuture = refreshFirestoreOperationalData();
-
         await googleSheets.beginVersionedRefresh(const [
           'Inventory',
           'Locations',
@@ -1887,7 +2491,7 @@ class SyncService with ChangeNotifier {
           'StockIssues',
           'ItemsIssuedMap',
           'PluMappings',
-          // InvoiceDetails is authoritative in Firestore.
+          'InvoiceDetails',
           'ItemsIssued',
           'ItemSales',
           // Purchases are authoritative in Firestore and no longer participate
@@ -1896,7 +2500,6 @@ class SyncService with ChangeNotifier {
         ], forceFullDownload: forceFullDownload);
       } else {
         googleSheets.clearCache();
-        firestoreRefreshFuture = refreshFirestoreOperationalData();
       }
       checkActive();
       // Complete the small core group before enqueueing the large sales tables.
@@ -1906,24 +2509,30 @@ class SyncService with ChangeNotifier {
         fetch('MasterCostsComputed', () => googleSheets.fetchComputedCosts()),
       ]);
       checkActive();
-      final coreReused = googleSheets.reusedRefreshTables;
-      final costsUnchanged = coreReused.contains('MasterCostsComputed');
-      final inventoryUnchanged =
-          coreReused.contains('Inventory') && costsUnchanged;
-      final locationsUnchanged = coreReused.contains('Locations');
-      await save('MasterCostsComputed', core[2], unchanged: costsUnchanged);
-      // Inventory can be skipped only when both its raw rows and the computed
-      // costs are unchanged. A cost change must still be merged into Inventory.
-      await save(
-        'Inventory',
-        core[0] == null
-            ? null
-            : inventoryUnchanged || core[2] == null
-            ? core[0]
-            : _mergeCostsIntoInventory(core[0]!, _buildCostMap(core[2]!)),
-        unchanged: inventoryUnchanged,
-      );
-      await save('Locations', core[1], unchanged: locationsUnchanged);
+      await save('MasterCostsComputed', core[2]);
+      // If costs failed, retain the prices supplied by Inventory itself.
+      final refreshedInventory = core[0] == null
+          ? null
+          : core[2] == null
+          ? core[0]
+          : _mergeCostsIntoInventory(core[0]!, _buildCostMap(core[2]!));
+      await save('Inventory', refreshedInventory);
+
+      // 🔥 TEMPORARY: Client-side Inventory Firestore upsert is disabled.
+      // The Windows native Firestore SDK disconnects mid-batch on this dataset.
+      // Inventory migration is now performed via the Apps Script migration
+      // endpoint. Master refresh reads Inventory from Firestore afterwards.
+      //
+      // Do not re-enable this block. If the migration flag needs to be set,
+      // call the Apps Script `migrateInventoryToFirestore` function.
+      if (refreshedInventory != null) {
+        logger?.info(
+          'Inventory Firestore upsert skipped (client-side path disabled). '
+          'Run the Apps Script migration endpoint to seed Firestore.',
+        );
+      }
+
+      await save('Locations', core[1]);
       checkActive();
       // 1. Bundle 4 small auxiliary tables into 1 single round-trip
       const smallTables = [
@@ -1943,7 +2552,6 @@ class SyncService with ChangeNotifier {
 
           final bundle = await googleSheets.fetchBundledTables(smallTables);
           checkActive();
-          final bundleReused = googleSheets.reusedRefreshTables;
 
           for (final t in smallTables) {
             final rows = bundle[t];
@@ -1958,7 +2566,7 @@ class SyncService with ChangeNotifier {
             }
             _refreshTableStates[t] =
                 'Received ${rows.length} rows (bundled or verified cache)';
-            await save(t, rows, unchanged: bundleReused.contains(t));
+            await save(t, rows);
           }
         } catch (e) {
           logger?.error('Bundled fetch failed, reporting errors', e);
@@ -1968,44 +2576,61 @@ class SyncService with ChangeNotifier {
         }
       }
 
-      // 2. Remaining Google Sheets tables (ItemSales, ItemsIssued + _bundle)
+      // 2. Invoices & Small Tables (InvoiceDetails, ItemSales, ItemsIssued + _bundle)
       final prePurchaseJobs =
           <String, Future<List<Map<String, dynamic>>> Function()>{
+            'InvoiceDetails': () => googleSheets.fetchInvoices(),
             'ItemsIssued': () => googleSheets.fetchItemsIssued(),
             'ItemSales': () => googleSheets.fetchItemSales(),
           };
 
-      // Download and save the remaining small tables first
+      // Download and save Invoices and small tables first
       await Future.wait([
         fetchAndSaveBundle(),
         ...prePurchaseJobs.entries.map((job) async {
           final rows = await fetch(job.key, job.value);
-          final unchanged = googleSheets.reusedRefreshTables.contains(job.key);
-          await save(job.key, rows, unchanged: unchanged);
+          await save(job.key, rows);
         }),
       ]);
 
       checkActive();
 
-      // InvoiceDetails and Purchases were refreshed concurrently with the
-      // Google Sheets manifest/download work. Wait for that branch before the
-      // final StoreSalesData step and completion accounting.
-      final activeFirestoreRefresh = firestoreRefreshFuture;
-      if (activeFirestoreRefresh != null) {
-        await activeFirestoreRefresh;
+      // 3. Purchases are authoritative in Firestore and run after InvoiceDetails
+      // are fully committed locally so invoice/purchase relationships remain intact.
+      final purchaseFirestore = firestore;
+      final purchaseStoreId = offlineStorage.firestoreKey;
+      List<Map<String, dynamic>>? purchaseRows;
+      if (purchaseFirestore == null ||
+          purchaseStoreId == null ||
+          purchaseStoreId.isEmpty) {
+        reportFailure(
+          'Purchases',
+          StateError(
+            'Firestore Purchases download is unavailable for the active store.',
+          ),
+        );
+      } else {
+        try {
+          await _ensurePurchasesMigratedToFirestore();
+          checkActive();
+          purchaseRows = await fetch(
+            'Purchases',
+            () => purchaseFirestore.getPurchases(purchaseStoreId),
+          );
+        } catch (e) {
+          reportFailure('Purchases', e);
+        }
       }
+      await save('Purchases', purchaseRows);
 
       checkActive();
 
-      // 5. Heavyweight: StoreSalesData runs ALONE without Google sheet lock contention
+      // 4. Heavyweight: StoreSalesData runs ALONE without Google sheet lock contention
       final salesRows = await fetch(
         'StoreSalesData',
         () => googleSheets.fetchStoreSalesData(),
       );
-      final salesUnchanged = googleSheets.reusedRefreshTables.contains(
-        'StoreSalesData',
-      );
-      await save('StoreSalesData', salesRows, unchanged: salesUnchanged);
+      await save('StoreSalesData', salesRows);
 
       checkActive();
       if (useVersionChecks) {
@@ -2055,16 +2680,6 @@ class SyncService with ChangeNotifier {
         message: 'Refresh stopped: $e',
       );
     } finally {
-      // Do not leave the parallel Firestore branch running after the master
-      // refresh has returned (for example if the GAS manifest fails).
-      final pendingFirestoreRefresh = firestoreRefreshFuture;
-      if (pendingFirestoreRefresh != null) {
-        try {
-          await pendingFirestoreRefresh;
-        } catch (e) {
-          logger?.error('Parallel Firestore refresh did not finish cleanly', e);
-        }
-      }
       googleSheets.abortVersionedRefresh();
       logger?.info(
         'Master refresh finished: elapsed_ms=${refreshWatch.elapsedMilliseconds}',

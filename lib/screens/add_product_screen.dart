@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
+import '../services/store_manager.dart';
 import '../widgets/barcode_scanner.dart';
 import '../services/food_stock_fields.dart';
 
@@ -150,7 +151,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
       'Main Category': mainCategory, // AUTOMATED
       'Category': _selectedCategory ?? 'Other',
       'Single Unit Volume':
-          FoodStockFields.number(_volumeController.text) *
+      FoodStockFields.number(_volumeController.text) *
           (_isFood && _uom == 'kg' ? 1000 : 1),
       'UoM': _isFood ? 'g' : _uom,
       'Cost Price': FoodStockFields.number(_costController.text),
@@ -161,6 +162,18 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     try {
       await context.read<OfflineStorage>().saveNewLocalProduct(newItem);
+
+      // Hive is the immediate working copy. Firestore acknowledgement happens
+      // in the background; failure/timeout intentionally leaves the product
+      // pending for manual recovery sync.
+      final barcode = newItem['Barcode']?.toString().trim() ?? '';
+      if (barcode.isNotEmpty && mounted) {
+        context
+            .read<StoreManager>()
+            .syncService
+            .syncInventoryProductInBackground(barcode);
+      }
+
       if (mounted) Navigator.pop(context, newItem);
     } catch (error) {
       if (mounted)
@@ -282,23 +295,23 @@ class _AddProductScreenState extends State<AddProductScreen> {
                       initialValue: _uom,
                       // Updated UoM List
                       items:
-                          (_isFood
-                                  ? ['g', 'kg']
-                                  : [
-                                      'ml',
-                                      'Ltr',
-                                      'cl',
-                                      'kg',
-                                      'g',
-                                      'lb',
-                                      'oz',
-                                      'each',
-                                    ])
-                              .map(
-                                (e) =>
-                                    DropdownMenuItem(value: e, child: Text(e)),
-                              )
-                              .toList(),
+                      (_isFood
+                          ? ['g', 'kg']
+                          : [
+                        'ml',
+                        'Ltr',
+                        'cl',
+                        'kg',
+                        'g',
+                        'lb',
+                        'oz',
+                        'each',
+                      ])
+                          .map(
+                            (e) =>
+                            DropdownMenuItem(value: e, child: Text(e)),
+                      )
+                          .toList(),
                       onChanged: (v) => setState(() {
                         if (v == null) return;
                         if (_isFood &&

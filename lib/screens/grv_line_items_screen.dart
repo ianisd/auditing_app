@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:data_table_2/data_table_2.dart';
 import '../models/plu_mapping.dart';
 import '../services/offline_storage.dart';
+import '../services/store_manager.dart';
 import '../services/grv_import_service.dart';
 import '../services/grv_parser.dart' as grv_parser;
 import 'add_product_screen.dart';
@@ -1904,33 +1905,59 @@ class _GrvLineItemsScreenState extends State<GrvLineItemsScreen> {
         purchasesToSave.add(purchase);
       }
 
-      // UPDATE INVOICE TOTAL
-      final updatedInvoiceData = {...invoice, 'Total Cost Ex Vat': _totalValue};
-      await storage.saveInvoiceDetails(updatedInvoiceData);
-      print('DEBUG: Invoice total updated to: $_totalValue');
+      // Keep a draft invoice out of the sync queue until its
+      // purchase records have been successfully saved.
+      final updatedInvoiceData = {
+        ...invoice,
+        'Total Cost Ex Vat': _totalValue,
+      };
 
-      // SAVE PURCHASES
+      // Save purchases first, then commit the invoice.
       if (purchasesToSave.isNotEmpty) {
         print(
-          'DEBUG: Using merge strategy to save ${purchasesToSave.length} purchases',
+          'DEBUG: Using merge strategy to save '
+              '${purchasesToSave.length} purchases',
         );
+
         await storage.savePurchasesWithMerge(
           invoiceId: effectiveInvoiceId,
           newPurchases: purchasesToSave,
         );
       }
 
+      // Commit the invoice only AFTER purchases are saved.
+      updatedInvoiceData['syncStatus'] = 'pending';
+      await storage.saveInvoiceDetails(updatedInvoiceData);
+
+      // Fire the background sync AFTER both Hive writes are complete.
+      // It snapshots the exact current Hive state, so it must run after all
+      // local writes have settled.
+      if (_isMounted()) {
+        unawaited(
+          context
+              .read<StoreManager>()
+              .syncService
+              .syncInvoiceWithPurchasesInBackground(effectiveInvoiceId),
+        );
+      }
+
+      print('✅ GRV committed: $effectiveInvoiceId');
+
       if (_isMounted()) {
         print(
-          'DEBUG: Save completed successfully - ${purchasesToSave.length} items merged',
+          'DEBUG: Save completed successfully - '
+              '${purchasesToSave.length} items merged',
         );
-        if (Navigator.canPop(context)) {
-          Navigator.pop(context, true);
-        }
+
         _safeShowSnackBar(
           '✓ Saved ${purchasesToSave.length} items to Purchases',
         );
+
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context, true);
+        }
       }
+
     } catch (e) {
       print('ERROR: Save operation failed: $e');
       _safeShowSnackBar(

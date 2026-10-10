@@ -16,10 +16,13 @@ import 'plu_mapping_screen.dart';
 import 'setup_store_screen.dart';
 import '../services/store_manager.dart';
 import 'network_status_screen.dart';
+import 'master_data_refresh_screen.dart';
+import 'stock_reporting_sync_screen.dart';
 import 'sales_upload_screen.dart';
 import 'sales_report_screen.dart';
 
 import 'process_menu_screen.dart';
+import 'initial_count_download_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -30,10 +33,16 @@ class HomeScreen extends StatelessWidget {
         icon: Icons.sync, color: Colors.orange, actions: [
           ProcessAction(title: 'Sync Data', description: 'Review and sync pending changes',
               icon: Icons.cloud_upload, builder: (_) => const SyncScreen()),
+          ProcessAction(title: 'Initial Count Download', description: 'Download Firestore stock counts to this device',
+              icon: Icons.cloud_download_outlined, builder: (_) => const InitialCountDownloadScreen()),
           ProcessAction(title: 'Offline Data', description: 'Inspect locally stored data',
               icon: Icons.storage, builder: (_) => const OfflineScreen()),
           ProcessAction(title: 'Network Status', description: 'View connection and sync details',
               icon: Icons.wifi, builder: (_) => const NetworkStatusScreen()),
+          ProcessAction(title: 'Master Data Refresh', description: 'Download and refresh master/reference data',
+              icon: Icons.cloud_sync_outlined, builder: (_) => const MasterDataRefreshScreen()),
+          ProcessAction(title: 'Sync Reporting', description: 'Mirror recent Firestore stock count changes to Google Sheets',
+              icon: Icons.publish_outlined, builder: (_) => const StockReportingSyncScreen()),
         ]),
     ProcessMenu(title: 'Stock Counting', description: 'Start a count or review saved counts',
         icon: Icons.fact_check_outlined, color: Colors.blue, actions: [
@@ -278,3 +287,4 @@ class NetworkStatusBar extends StatelessWidget {
     );
   }
 }
+

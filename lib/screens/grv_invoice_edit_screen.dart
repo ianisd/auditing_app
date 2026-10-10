@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/offline_storage.dart';
+import '../services/store_manager.dart';
 import '../models/grv_models.dart';
 import 'grv_add_line_item_screen.dart';
 import '../utils/safe_date_utils.dart';
@@ -46,6 +48,9 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
   bool _isSaving = false;
   List<Map<String, dynamic>> _suppliers = [];
   bool _hasUnsavedChanges = false;
+  // Existing purchase rows removed in the editor are staged here only.
+  // Hive/Firestore are not changed until Save is pressed.
+  final List<Map<String, dynamic>> _stagedDeletedPurchases = [];
 
   // Enterprise: Pagination support for large datasets
   static const int _pageSize = 50;
@@ -438,12 +443,19 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
   Future<void> _deletePurchaseItem(int index) async {
     final purchase = _purchases[index];
+    final isLastRemainingLine = _purchases.length == 1;
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Item'),
-        content: Text('Delete ${purchase['Purchased Product Name']} from this invoice?'),
+        content: Text(
+          isLastRemainingLine
+              ? 'Remove the last item from this GRV? The GRV will stay open so '
+              'you can add another item. If you press Save while it is empty, '
+              'the GRV will be deleted.'
+              : 'Remove ${purchase['Purchased Product Name']} from this invoice?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -452,36 +464,39 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            child: const Text('Remove'),
           ),
         ],
       ),
     );
 
-    if (confirm == true) {
-      setState(() {
-        final storage = context.read<OfflineStorage>();
-        final purchaseId = purchase['purchases_ID']?.toString();
+    if (confirm != true || !mounted) return;
 
-        // 🔥 FIX: ALWAYS queue the server-side delete (including TEMP_ ids).
-        // TEMP_ rows DO exist on the sheet once synced — skipping them left
-        // orphan rows server-side while local was deleted (the 16-vs-14 drift).
-        // For never-synced TEMP_ rows the server simply returns notFound.
-        if (purchaseId != null && purchaseId.isNotEmpty) {
-          storage.softDeletePurchase(purchaseId);
-        }
+    // TEMP_ rows exist only in this editor, so removing them needs no tombstone.
+    // Existing rows are staged and become Hive tombstones only when Save is
+    // pressed. Back therefore discards the removal like any other unsaved edit.
+    final purchaseId = purchase['purchases_ID']?.toString() ?? '';
+    final isUnsavedNewRow =
+        purchase['_isNew'] == true || purchaseId.startsWith('TEMP_');
 
-        _purchases.removeAt(index);
-        _hasUnsavedChanges = true;
-      });
+    setState(() {
+      if (!isUnsavedNewRow) {
+        _stagedDeletedPurchases.add(Map<String, dynamic>.from(purchase));
+      }
+      _purchases.removeAt(index);
+      _hasUnsavedChanges = true;
+    });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Product removed'),
-          backgroundColor: Colors.orange,
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _purchases.isEmpty
+              ? 'Last item removed - add another item or Save to delete the GRV'
+              : 'Product removed - press Save to confirm',
         ),
-      );
-    }
+        backgroundColor: Colors.orange,
+      ),
+    );
   }
 
   Future<void> _saveChanges() async {
@@ -489,6 +504,46 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
 
     try {
       final storage = context.read<OfflineStorage>();
+      final invoiceId = widget.invoice['invoiceDetailsID']?.toString() ?? '';
+
+      // An empty existing GRV is deleted only when the user explicitly presses
+      // Save. Until then they may add a replacement line or press Back to
+      // discard the staged deletion.
+      if (_purchases.isEmpty) {
+        if (invoiceId.isEmpty) {
+          throw StateError('Cannot delete empty GRV: invoice ID is missing');
+        }
+        await storage.softDeleteInvoice(
+          invoiceId,
+          deletionReason: 'last_line_deleted_on_save',
+        );
+        if (mounted) {
+          unawaited(
+            context
+                .read<StoreManager>()
+                .syncService
+                .syncInvoiceDeletionInBackground(invoiceId),
+          );
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Empty GRV deleted'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          widget.onDeleted?.call();
+          Navigator.pop(context, true);
+        }
+        return;
+      }
+
+      // Commit staged line removals to Hive only now. This makes Back a true
+      // cancel for unsaved line deletions.
+      for (final deletedPurchase in _stagedDeletedPurchases) {
+        final purchaseId = deletedPurchase['purchases_ID']?.toString() ?? '';
+        if (purchaseId.isNotEmpty) {
+          await storage.softDeletePurchase(purchaseId);
+        }
+      }
 
       final newTotalCost = _calculateTotal();
       final grvRef = _grvController.text.trim().isNotEmpty
@@ -588,6 +643,15 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         await Future.wait(updateFutures);
       }
 
+      if (mounted && invoiceId.isNotEmpty) {
+        unawaited(
+          context
+              .read<StoreManager>()
+              .syncService
+              .syncInvoiceWithPurchasesInBackground(invoiceId),
+        );
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invoice updated'), backgroundColor: Colors.green),
@@ -633,7 +697,18 @@ class _GrvInvoiceEditScreenState extends State<GrvInvoiceEditScreen> {
         final storage = context.read<OfflineStorage>();
         final invoiceId = widget.invoice['invoiceDetailsID']?.toString() ?? '';
 
-        await storage.softDeleteInvoice(invoiceId);
+        await storage.softDeleteInvoice(
+          invoiceId,
+          deletionReason: 'user_deleted_invoice',
+        );
+        if (mounted && invoiceId.isNotEmpty) {
+          unawaited(
+            context
+                .read<StoreManager>()
+                .syncService
+                .syncInvoiceDeletionInBackground(invoiceId),
+          );
+        }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

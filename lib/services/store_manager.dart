@@ -15,7 +15,7 @@ class StoreManager with ChangeNotifier {
   static const String _storesKey = 'saved_stores';
 
   static const String _masterScriptUrl =
-      'https://script.google.com/macros/s/AKfycbyLRdH5ntxM1MXRcblanTV9HOhcj2HDu7jdWiwTRaIA4xihKDny77masO6qu5718n5M/exec';
+      'https://script.google.com/macros/s/AKfycbwiOim4QhON9QOef87-g2KnlKmXGBeppjVe1IeDt9zr_5R-eQpJYV98wqX0DlRmmkg/exec';
   late Box _box;
   bool _initialized = false;
   bool _disposed = false;
@@ -32,6 +32,10 @@ class StoreManager with ChangeNotifier {
   SyncService? _syncService;
   GoogleSheetsService? _storeGoogleSheets;
 
+// Reporting-status cache for the active store.
+  Map<String, dynamic>? _cachedReportingStatus;
+
+
   // Single debounce timer for the entire app
   Timer? _pendingCountDebounce;
 
@@ -42,6 +46,15 @@ class StoreManager with ChangeNotifier {
   Map<String, dynamic>? get activeStore => _activeStore;
   List<Map<String, dynamic>> get stores => _stores;
 
+  /// Firestore document key for the currently active store.
+  String? get activeFirestoreKey {
+    final store = _activeStore;
+    if (store == null) return null;
+    final id = (store['id'] ?? '').toString().trim();
+    if (id.isEmpty) return null;
+    return _buildFirestoreKey(store['name']?.toString(), id);
+  }
+
   GoogleSheetsService get googleSheetsService {
     if (_activeStore == null) {
       throw Exception(
@@ -49,17 +62,145 @@ class StoreManager with ChangeNotifier {
       );
     }
 
-    final storeIdentifier = _getStoreIdentifier();
+    // Reuse the store-scoped instance. Creating a fresh GoogleSheetsService
+    // here discarded its warm HTTP client pool and the resolved Apps Script
+    // exec base URL, forcing a cold 302 redirect + TLS handshake on every
+    // reporting-status / initialize / sync call.
+    final existing = _storeGoogleSheets;
+    if (existing != null) return existing;
 
+    final storeIdentifier = _getStoreIdentifier();
     if (storeIdentifier.isEmpty) {
       throw Exception('Active store has no valid spreadsheet identifier');
     }
 
-    return GoogleSheetsService(
+    final service = GoogleSheetsService(
       masterScriptUrl: _masterScriptUrl,
       storeIdentifier: storeIdentifier,
       logger: _logger,
     );
+    _storeGoogleSheets = service;
+    return service;
+  }
+
+  String _activeReportingFirestoreKey() {
+    final store = _activeStore;
+    if (store == null) {
+      throw Exception('No active store selected - cannot access reporting');
+    }
+
+    final storeId = (store['id'] ?? '').toString().trim();
+    if (storeId.isEmpty) {
+      throw Exception('Active store has no valid spreadsheet identifier');
+    }
+
+    return _buildFirestoreKey(store['name']?.toString(), storeId);
+  }
+
+  /// Reads the server-side StockCounts reporting cursor for the active store.
+  /// This is used for first discovery/recovery; the reporting screen may cache
+  /// a confirmed initialized state locally.
+  Future<Map<String, dynamic>> getStockCountsReportingStatus({
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh && _cachedReportingStatus != null) {
+      return _cachedReportingStatus!;
+    }
+
+    final firestoreKey = _activeReportingFirestoreKey();
+
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      final result = await googleSheetsService.getStockCountsReportingStatus(
+        firestoreKey: firestoreKey,
+      );
+
+      final ok =
+          result['success'] == true || result['status'] == 'success';
+
+      if (ok || result['code'] != 'REPORTING_TIMEOUT') {
+        if (ok) _cachedReportingStatus = result;
+        return result;
+      }
+
+      if (attempt < 2) {
+        _logger?.info(
+          'Reporting status check timed out; retrying after backoff '
+              '(attempt $attempt/2)',
+        );
+        await Future<void>.delayed(const Duration(seconds: 3));
+      } else {
+        return result;
+      }
+    }
+    return {'success': false, 'message': 'Reporting status unavailable.'};
+  }
+
+  /// Establishes the current StockCounts sheet as the historical reporting
+  /// baseline. Historical Firestore rows are intentionally not re-imported.
+  Future<Map<String, dynamic>> initializeStockCountsReporting() async {
+    final firestoreKey = _activeReportingFirestoreKey();
+
+    _logger?.info(
+      'Initializing StockCounts reporting for $firestoreKey',
+    );
+
+    final result = await googleSheetsService.initializeStockCountsReporting(
+      firestoreKey: firestoreKey,
+    );
+
+    if (result['success'] == true || result['status'] == 'success') {
+      _cachedReportingStatus = result;   // ← replace the log-only branch
+      _logger?.info(
+        'StockCounts reporting initialized for $firestoreKey',
+      );
+    } else {
+      _logger?.error(
+        'StockCounts reporting initialization failed for $firestoreKey',
+        (result['message'] ?? result).toString(),
+      );
+    }
+
+    return result;
+  }
+
+  /// Runs the reporting-only StockCounts mirror for the active store.
+  /// Operational Hive -> Firestore sync state is intentionally untouched.
+  Future<Map<String, dynamic>> syncStockCountsReporting() async {
+    final store = _activeStore;
+    if (store == null) {
+      throw Exception('No active store selected - cannot sync reporting');
+    }
+
+    final storeId = (store['id'] ?? '').toString().trim();
+    if (storeId.isEmpty) {
+      throw Exception('Active store has no valid spreadsheet identifier');
+    }
+
+    final firestoreKey = _buildFirestoreKey(
+      store['name']?.toString(),
+      storeId,
+    );
+
+    _logger?.info(
+      'Starting StockCounts reporting sync for $firestoreKey',
+    );
+
+    final result = await googleSheetsService.syncStockCountsReporting(
+      firestoreKey: firestoreKey,
+    );
+
+    if (result['success'] == true || result['status'] == 'success') {
+      _cachedReportingStatus = null;   // ← add: cursor may have advanced
+      _logger?.info(
+        'StockCounts reporting sync completed for $firestoreKey',
+      );
+    } else {
+      _logger?.error(
+        'StockCounts reporting sync failed for $firestoreKey',
+        (result['message'] ?? result).toString(),
+      );
+    }
+    return result;
   }
 
   // 🔥 FIX: Return the sync service (creates it if needed)
@@ -110,7 +251,7 @@ class StoreManager with ChangeNotifier {
     // Listen to OfflineStorage changes
     offlineStorage.addListener(_onStorageChanged);
     _authSubscription = firestoreService?.authStateChanges.listen(
-      (user) {
+          (user) {
         if (_disposed) return;
         _authReady = user != null;
         if (_authReady && !_disposed) _registerActiveStoreMetadata();
@@ -125,18 +266,19 @@ class StoreManager with ChangeNotifier {
   void _registerActiveStoreMetadata() {
     final store = _activeStore;
     if (firestoreService?.currentUserId == null) return;
-    if (_disposed || !_authReady || store == null || firestoreService == null)
+    if (_disposed || !_authReady || store == null || firestoreService == null) {
       return;
+    }
     final key = _buildFirestoreKey(store['name'], store['id']);
     unawaited(
       firestoreService!
           .registerStoreMetadata(key, store['name'] ?? 'Unknown Store')
           .catchError((Object error, StackTrace stack) {
-            _logger?.error(
-              'Store metadata registration failed',
-              '$error\n$stack',
-            );
-          }),
+        _logger?.error(
+          'Store metadata registration failed',
+          '$error\n$stack',
+        );
+      }),
     );
   }
 
@@ -201,6 +343,7 @@ class StoreManager with ChangeNotifier {
       _storeGoogleSheets?.dispose();
     }
     _storeGoogleSheets = null;
+    _cachedReportingStatus = null;   // ← add
   }
 
   void _loadStores() {
@@ -215,9 +358,9 @@ class StoreManager with ChangeNotifier {
     if (activeId != null && _stores.isNotEmpty) {
       try {
         _activeStore = _stores.firstWhere(
-          (s) => s['id'] == activeId,
+              (s) => s['id'] == activeId,
           orElse: () =>
-              _stores.isNotEmpty ? _stores.first : <String, dynamic>{},
+          _stores.isNotEmpty ? _stores.first : <String, dynamic>{},
         );
         if (_activeStore?.isEmpty ?? true) _activeStore = null;
       } catch (e) {
@@ -338,7 +481,7 @@ class StoreManager with ChangeNotifier {
 
     // Already saved locally under this sheet id? Just switch to it.
     final existing = _stores.firstWhere(
-      (s) => s['sheetId'] == extractedId || s['id'] == extractedId,
+          (s) => s['sheetId'] == extractedId || s['id'] == extractedId,
       orElse: () => <String, dynamic>{},
     );
     if (existing.isNotEmpty) {
@@ -531,7 +674,7 @@ class StoreManager with ChangeNotifier {
       'hasSheetId': (store['sheetId']?.toString() ?? '').isNotEmpty,
       'hasScriptId': (store['scriptId']?.toString() ?? '').isNotEmpty,
       'identifier':
-          store['sheetId']?.toString() ??
+      store['sheetId']?.toString() ??
           store['scriptId']?.toString() ??
           'none',
     };

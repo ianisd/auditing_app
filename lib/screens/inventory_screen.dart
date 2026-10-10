@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/offline_storage.dart';
-import '../services/store_manager.dart';
-import '../services/network_ping_service.dart'; // ✅ ADDED: Import for connection check
 import '../widgets/inventory_list.dart';
 import 'product_detail_screen.dart';
+import 'add_product_screen.dart';
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -17,7 +16,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
   List<Map<String, dynamic>> _inventory = [];
   List<Map<String, dynamic>> _filteredInventory = [];
   bool _isLoading = true;
-  bool _isSyncing = false;
   final TextEditingController _searchController = TextEditingController();
 
   @override
@@ -50,98 +48,32 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
-  // ✅ NEW: Helper method to warn users about weak connections
-  Future<bool> _checkWeakConnection() async {
-    final pingService = context.read<NetworkPingService>();
-
-    // If connection is Strong or Average, proceed immediately
-    if (pingService.connectionQuality != 'Weak') {
-      return true;
-    }
-
-    final proceed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: const Icon(
-          Icons.warning_amber_rounded,
-          color: Colors.orange,
-          size: 48,
-        ),
-        title: const Text('Poor Connection Detected'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Latency: ${pingService.latencyMs} ms'),
-            Text(
-              'Quality: ${pingService.connectionQuality}',
-              style: const TextStyle(
-                color: Colors.red,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Sync operations may fail or take several minutes. Consider:\n'
-              '• Switching to mobile data\n'
-              '• Moving closer to your Wi-Fi router\n'
-              '• Waiting for a better connection',
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-            child: const Text('Continue Anyway'),
-          ),
-        ],
+  Future<void> _addInventoryItem() async {
+    final newProduct = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const AddProductScreen(),
       ),
     );
 
-    return proceed ?? false;
-  }
+    if (!mounted || newProduct == null) return;
 
-  // --- SYNC ACTION ---
-  Future<void> _syncInventory() async {
-    // ✅ ADDED: Check connection quality before syncing
-    final shouldProceed = await _checkWeakConnection();
-    if (!shouldProceed) return; // User cancelled due to weak connection
+    // AddProductScreen already saves the product to Hive. Reload the local
+    // inventory so the newly created item appears immediately.
+    await _loadInventory();
 
-    setState(() => _isSyncing = true);
-
-    try {
-      final syncService = context.read<StoreManager>().syncService;
-      final result = await syncService
-          .refreshMasterData(); // This triggers the merge logic
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result.message),
-            backgroundColor: result.success ? Colors.green : Colors.red,
-          ),
-        );
-        if (result.success) {
-          await _loadInventory(); // Reload from Hive after sync
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Sync Error: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isSyncing = false);
-    }
+    if (!mounted) return;
+    final productName =
+        newProduct['Inventory Product Name']?.toString().trim() ?? '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          productName.isEmpty
+              ? 'Inventory item added'
+              : '$productName added to inventory',
+        ),
+      ),
+    );
   }
 
   void _filterInventory() {
@@ -170,20 +102,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventory'),
-        actions: [
-          // SYNC BUTTON
-          IconButton(
-            icon: _isSyncing
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.cloud_sync),
-            tooltip: 'Sync Master Data',
-            onPressed: _isSyncing ? null : _syncInventory,
-          ),
-        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60),
           child: Padding(
@@ -205,48 +123,53 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ),
         ),
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addInventoryItem,
+        icon: const Icon(Icons.add),
+        label: const Text('Add Item'),
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _syncInventory,
-              child: _filteredInventory.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(
-                            Icons.inventory_2_outlined,
-                            size: 64,
-                            color: Colors.grey,
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No inventory items found\n(${_inventory.length} loaded total)',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            icon: const Icon(Icons.cloud_download),
-                            label: const Text('Download Master Data'),
-                            onPressed: _syncInventory,
-                          ),
-                        ],
-                      ),
-                    )
-                  : InventoryList(
-                      items: _filteredInventory,
-                      onTap: (item) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) =>
-                                ProductDetailScreen(product: item),
-                          ),
-                        );
-                      },
-                    ),
-            ),
+        onRefresh: _loadInventory,
+        child: _filteredInventory.isEmpty
+            ? Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.inventory_2_outlined,
+                size: 64,
+                color: Colors.grey,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'No inventory items found\n(${_inventory.length} loaded total)',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Add Item'),
+                onPressed: _addInventoryItem,
+              ),
+            ],
+          ),
+        )
+            : InventoryList(
+          items: _filteredInventory,
+          onTap: (item) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) =>
+                    ProductDetailScreen(product: item),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }

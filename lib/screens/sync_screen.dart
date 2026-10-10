@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/sync_model.dart';
@@ -13,8 +14,14 @@ class SyncScreen extends StatefulWidget {
 
 class _SyncScreenState extends State<SyncScreen> {
   bool _isSyncing = false;
+  static const Duration _syncCooldownDuration = Duration(minutes: 2);
+  Timer? _syncCooldownTimer;
+  DateTime? _syncCooldownUntil;
+  int _syncCooldownSeconds = 0;
   String _syncMessage = '';
   int _syncedCount = 0;
+  bool _isMigratingStockCounts = false;
+  String _stockMigrationMessage = '';
 
   @override
   void initState() {
@@ -24,8 +31,52 @@ class _SyncScreenState extends State<SyncScreen> {
 
   @override
   void dispose() {
+    _syncCooldownTimer?.cancel();
     // 🔥 No need to remove listeners
     super.dispose();
+  }
+
+  bool get _isSyncCoolingDown => _syncCooldownSeconds > 0;
+
+  void _startSyncCooldown() {
+    _syncCooldownTimer?.cancel();
+    _syncCooldownUntil = DateTime.now().add(_syncCooldownDuration);
+
+    void updateRemaining() {
+      final until = _syncCooldownUntil;
+      if (until == null) return;
+
+      final remaining = until.difference(DateTime.now()).inSeconds;
+      if (remaining <= 0) {
+        _syncCooldownTimer?.cancel();
+        _syncCooldownTimer = null;
+        _syncCooldownUntil = null;
+        if (mounted) {
+          setState(() => _syncCooldownSeconds = 0);
+        }
+        return;
+      }
+
+      if (mounted) {
+        setState(() => _syncCooldownSeconds = remaining);
+      }
+    }
+
+    updateRemaining();
+    _syncCooldownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+          (_) => updateRemaining(),
+    );
+  }
+
+  String get _syncButtonLabel {
+    if (_isSyncing) return 'Syncing...';
+    if (_isSyncCoolingDown) {
+      final minutes = _syncCooldownSeconds ~/ 60;
+      final seconds = _syncCooldownSeconds % 60;
+      return 'Retry in $minutes:${seconds.toString().padLeft(2, '0')}';
+    }
+    return 'Sync Now';
   }
 
   Future<bool> _checkWeakConnection() async {
@@ -58,9 +109,9 @@ class _SyncScreenState extends State<SyncScreen> {
             const SizedBox(height: 12),
             const Text(
               'Sync operations may fail or take several minutes. Consider:\n'
-              '• Switching to mobile data\n'
-              '• Moving closer to your Wi-Fi router\n'
-              '• Waiting for a better connection',
+                  '• Switching to mobile data\n'
+                  '• Moving closer to your Wi-Fi router\n'
+                  '• Waiting for a better connection',
             ),
           ],
         ),
@@ -82,7 +133,7 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   Future<void> _syncNow() async {
-    if (!mounted) return;
+    if (!mounted || _isSyncing || _isSyncCoolingDown) return;
 
     final shouldProceed = await _checkWeakConnection();
     if (!shouldProceed) return;
@@ -111,9 +162,7 @@ class _SyncScreenState extends State<SyncScreen> {
 
         setState(() {
           _isSyncing = false;
-          _syncMessage = result.success
-              ? result.detailedMessage
-              : 'Error: ${result.message}';
+          _syncMessage = result.detailedMessage;
           _syncedCount = result.syncedCount;
         });
       }
@@ -122,6 +171,121 @@ class _SyncScreenState extends State<SyncScreen> {
         setState(() {
           _isSyncing = false;
           _syncMessage = 'Error: $e';
+        });
+      }
+    } finally {
+      if (mounted) {
+        _startSyncCooldown();
+      }
+    }
+  }
+
+  Future<void> _migrateStockCountsOnce() async {
+    if (_isMigratingStockCounts || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Migrate StockCounts to Firestore?'),
+        content: const Text(
+          'This is a one-time administrative migration for the active store.\n\n'
+              'Existing Google Sheet StockCounts will be de-duplicated by stable ID, '
+              'upserted to Firestore, and verified before the migration is marked complete.\n\n'
+              'It does not delete Firestore-only counts and does not change the Google Sheet.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Run Migration'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _isMigratingStockCounts = true;
+      _stockMigrationMessage = 'Preparing StockCounts migration...';
+    });
+
+    try {
+      final syncService = context.read<StoreManager>().syncService;
+      final result = await syncService.migrateStockCountsToFirestore(
+        onProgress: (processed, total) {
+          if (!mounted) return;
+          setState(() {
+            _stockMigrationMessage = total == null
+                ? 'Reading StockCounts: $processed rows...'
+                : 'Processing StockCounts: $processed / $total';
+          });
+        },
+      );
+
+      if (!mounted) return;
+
+      final alreadyComplete = result['alreadyComplete'] == true;
+      final receipt = alreadyComplete
+          ? result['message'].toString()
+          : 'Source: ${result['source']}\n'
+          'Valid unique: ${result['validUnique']}\n'
+          'Invalid: ${result['invalid']}\n'
+          'Duplicate excess: ${result['duplicateExcess']}\n'
+          'Upserted: ${result['upserted']}\n'
+          'Verified: ${result['verified']}';
+
+      setState(() {
+        _stockMigrationMessage = alreadyComplete
+            ? 'StockCounts migration was already complete.'
+            : 'StockCounts migration verified successfully.';
+      });
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(
+            alreadyComplete
+                ? 'Migration Already Complete'
+                : 'Migration Complete',
+          ),
+          content: SelectableText(receipt),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _stockMigrationMessage = 'Migration failed: $e';
+      });
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Migration Failed'),
+          content: SelectableText(
+            '$e\n\nThe completion marker was not written. '
+                'The migration can be safely retried.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isMigratingStockCounts = false;
         });
       }
     }
@@ -148,6 +312,56 @@ class _SyncScreenState extends State<SyncScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  // Temporary administrative action for the one-time
+                  // Google Sheets -> Firestore StockCounts migration.
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 24),
+                    child: SizedBox(
+                      width: 320,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              'StockCounts Firestore Migration',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'One-time admin action for the active store. '
+                                  'Safe to retry until verification succeeds.',
+                            ),
+                            if (_stockMigrationMessage.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(_stockMigrationMessage),
+                            ],
+                            const SizedBox(height: 12),
+                            FilledButton.icon(
+                              onPressed: _isMigratingStockCounts
+                                  ? null
+                                  : _migrateStockCountsOnce,
+                              icon: _isMigratingStockCounts
+                                  ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                                  : const Icon(Icons.cloud_upload_outlined),
+                              label: Text(
+                                _isMigratingStockCounts
+                                    ? 'Migrating...'
+                                    : 'Migrate StockCounts Once',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
                   // Stats Card - Shows ALL pending types
                   if (hasPending)
                     Container(
@@ -246,7 +460,7 @@ class _SyncScreenState extends State<SyncScreen> {
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
                                 mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
@@ -279,7 +493,7 @@ class _SyncScreenState extends State<SyncScreen> {
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
                                 mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
@@ -312,7 +526,7 @@ class _SyncScreenState extends State<SyncScreen> {
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
                                 mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
@@ -355,7 +569,7 @@ class _SyncScreenState extends State<SyncScreen> {
                               padding: const EdgeInsets.only(top: 8),
                               child: Row(
                                 mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                MainAxisAlignment.spaceBetween,
                                 children: [
                                   Row(
                                     children: [
@@ -435,8 +649,8 @@ class _SyncScreenState extends State<SyncScreen> {
                         Text(
                           _syncMessage.isEmpty
                               ? hasPending
-                                    ? 'Tap sync to process pending changes'
-                                    : 'No pending changes'
+                              ? 'Tap sync to process pending changes'
+                              : 'No pending changes'
                               : _syncMessage,
                           textAlign: TextAlign.center,
                           style: TextStyle(color: Colors.grey[600]),
@@ -462,25 +676,25 @@ class _SyncScreenState extends State<SyncScreen> {
                   SizedBox(
                     width: 280,
                     child: ElevatedButton.icon(
-                      onPressed: _isSyncing ? null : _syncNow,
+                      onPressed: (_isSyncing || _isSyncCoolingDown) ? null : _syncNow,
                       icon: _isSyncing
                           ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
-                              ),
-                            )
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
                           : const Icon(Icons.sync),
                       label: Text(
-                        _isSyncing ? 'Syncing...' : 'Sync Now',
+                        _syncButtonLabel,
                         style: const TextStyle(fontSize: 18),
                       ),
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         backgroundColor: Colors.blue,
-                        disabledBackgroundColor: Colors.blue.shade200,
+                        disabledBackgroundColor: Colors.grey.shade400,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(24),
                         ),
